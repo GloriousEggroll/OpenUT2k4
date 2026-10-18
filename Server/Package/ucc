@@ -1,0 +1,8 @@
+#!/bin/sh
+# UT2004 "ucc server" compatibility for the OpenUT2k4 dedicated server:
+#   ./ucc server DM-Rankin?game=XGame.xDeathMatch?MaxPlayers=8 ini=MyServer.ini log=server.log -port=7777 -multihome=1.2.3.4 -lanplay
+ROOT=$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")
+case "$1" in
+    server|SERVER|Server) shift; exec "$ROOT/openut2k4-server" "$@" ;;
+    *) echo "usage: $0 server <Map>?game=<GameClass>?<options> [ini=<file>] [log=<file>] [-port=<n>] [-multihome=<ip>] [-lanplay]" >&2; exit 2 ;;
+esac

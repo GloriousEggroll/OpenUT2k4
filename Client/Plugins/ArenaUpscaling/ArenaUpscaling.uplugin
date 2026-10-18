@@ -1,0 +1,19 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Arena Upscaling",
+	"Description": "AMD FSR 3.1 temporal upscaling (FidelityFX SDK source, MIT) compiled for every RHI, and Vulkan low latency (VK_AMD_anti_lag) for OpenUT2k4.",
+	"Category": "Rendering",
+	"CreatedBy": "OpenUT2k4",
+	"CanContainContent": false,
+	"EnabledByDefault": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "ArenaUpscaling",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		}
+	]
+}

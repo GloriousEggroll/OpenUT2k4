@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- OpenUT2k4 dedicated server: launchd job template. Server/mac/install-service.sh fills in the @...@ values
+     (Server/Docs/DedicatedServer.md "macOS (launchd)"). UNVERIFIED: written without a Mac to test on. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>@LABEL@</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@ROOT@/openut2k4-server</string>
+		<string>-ServerConfig=@CONFIG@</string>
+		<string>-ServerStateDir=@STATE@</string>
+		<string>-userdir=@STATE@</string>
+		<string>-abslog=@STATE@/Logs/OpenUT2k4Server.log</string>
+		<string>-NoServerConsole</string>
+@EXTRA@	</array>
+@USERNAME@	<key>WorkingDirectory</key>
+	<string>@STATE@</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- restart after a crash or a failure exit, not after a clean stop -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+	<!-- launchctl bootout sends SIGTERM (graceful: players are told, the log is flushed), SIGKILL after this many seconds -->
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+	<key>StandardInPath</key>
+	<string>/dev/null</string>
+	<key>StandardOutPath</key>
+	<string>@STATE@/Logs/stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>@STATE@/Logs/stderr.log</string>
+	<key>ProcessType</key>
+	<string>Standard</string>
+</dict>
+</plist>

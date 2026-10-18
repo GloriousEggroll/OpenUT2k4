@@ -1,0 +1,23 @@
+Binaries/
+Intermediate/
+Saved/
+# Per-run test folders (-saveddirsuffix=<Name>)
+Saved_*/
+DerivedDataCache/
+Build/Packaged/
+Dist/
+*.sln
+*.code-workspace
+.vscode/
+.idea/
+Makefile
+CMakeLists.txt
+# Content imported from a local UT2004 install is never committed
+Content/Imported/
+Content/ImportedData/
+
+# Local-only UT2004 conversion output (never commit)
+ImportCache/
+
+# Python bytecode
+__pycache__/

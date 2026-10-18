@@ -1,0 +1,20 @@
+# Build output, caches and local data (see also Client/.gitignore)
+Binaries/
+Intermediate/
+Saved/
+Saved_*/
+DerivedDataCache/
+Dist/
+__pycache__/
+*.pyc
+
+# Never commit UT2004 data or anything converted from it
+Content/Imported/
+Content/ImportedData/
+ImportCache/
+*.ut2
+*.utx
+*.usx
+*.ukx
+*.uax
+*.uz2

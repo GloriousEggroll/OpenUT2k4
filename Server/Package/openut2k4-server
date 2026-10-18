@@ -1,0 +1,29 @@
+#!/bin/sh
+# OpenUT2k4 dedicated server launcher (Linux and macOS packages; Server/Docs/DedicatedServer.md).
+#
+#   ./openut2k4-server [server] [DM-Rankin?game=XGame.xDeathMatch?MaxPlayers=8] [-ServerConfig=<ini>] [-ServerProfile=<dir>]
+#                      [-ServerStateDir=<dir>] [-port=<n>] [-ContentCache=<dir>] [-UT2004Dir=<dir>] [other engine switches]
+#   ./openut2k4-server -ConvertOnly -UT2004Dir=<UT2004 install> [-ContentCache=<dir>]    (convert the content once)
+#
+# Runs the server headless (no GPU, window or audio). Admin commands on stdin (help).
+ROOT=$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")
+BIN=""
+for CANDIDATE in \
+    "$ROOT/OpenUT2k4/Binaries/Linux/OpenUT2k4Server" \
+    "$ROOT/OpenUT2k4/Binaries/Linux/OpenUT2k4Server-Linux-Shipping" \
+    "$ROOT/OpenUT2k4/Binaries/Linux/OpenUT2k4Server-Linux-Test" \
+    "$ROOT/OpenUT2k4Server.app/Contents/MacOS/OpenUT2k4Server" \
+    "$ROOT/OpenUT2k4Server.app/Contents/MacOS/OpenUT2k4Server-Mac-Shipping" \
+    "$ROOT/OpenUT2k4Server-Mac-Shipping.app/Contents/MacOS/OpenUT2k4Server-Mac-Shipping"; do
+    if [ -f "$CANDIDATE" ]; then
+        BIN="$CANDIDATE"
+        break
+    fi
+done
+if [ -z "$BIN" ]; then
+    echo "error: the OpenUT2k4Server binary was not found next to $0" >&2
+    exit 2
+fi
+chmod +x "$BIN" 2>/dev/null
+# UCC compatibility: "ucc server <url>" style, the word "server" is accepted and ignored by the binary
+exec "$BIN" OpenUT2k4 -nullrhi -nosound -nosplash -unattended -stdout -FullStdOutLogOutput "$@"

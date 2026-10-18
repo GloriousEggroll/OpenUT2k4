@@ -1,0 +1,58 @@
+// OpenUT2k4: converts Unreal's renderer outputs into the inputs FSR 3.1 expects.
+//  - Motion vectors: Unreal's encoded velocity (current - previous position in screen space, 0 where only the camera
+//    moved) becomes an RG16F texture of UV offsets pointing from the current to the previous frame, with camera motion
+//    reconstructed from depth where no velocity was written.
+//  - Depth: copied to R32F starting at (0,0) so FSR can load it by pixel position whatever the view rect offset.
+//  - Exposure: a 1x1 texture with the exposure the tonemapper will apply to the pre-exposed scene color.
+
+#include "/Engine/Private/Common.ush"
+
+Texture2D VelocityTexture;
+Texture2D<float> DepthTexture;
+Texture2D EyeAdaptationTexture;
+int2 InputViewMin;
+int2 InputViewSize;
+float OneOverPreExposure;
+
+RWTexture2D<float2> OutMotionVectors;
+RWTexture2D<float> OutDepth;
+RWTexture2D<float2> OutExposure;
+
+[numthreads(8, 8, 1)]
+void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (all(DispatchThreadId == 0))
+	{
+		const float Exposure = EyeAdaptationTexture.Load(int3(0, 0, 0)).r * OneOverPreExposure;
+		OutExposure[uint2(0, 0)] = float2(Exposure > 0.0 ? Exposure : 1.0, 0.0);
+	}
+
+	if (any(int2(DispatchThreadId) >= InputViewSize))
+	{
+		return;
+	}
+
+	const int2 InputPos = int2(DispatchThreadId) + InputViewMin;
+	const float DeviceZ = DepthTexture.Load(int3(InputPos, 0));
+	const float4 EncodedVelocity = VelocityTexture.Load(int3(InputPos, 0));
+
+	float2 ScreenVelocity;
+	if (EncodedVelocity.x > 0.0)
+	{
+		ScreenVelocity = DecodeVelocityFromTexture(EncodedVelocity).xy;
+	}
+	else
+	{
+		// Static geometry: the motion comes from the camera only.
+		const float2 ViewportUV = (float2(DispatchThreadId) + 0.5) / float2(InputViewSize);
+		const float2 ScreenPos = ViewportUV * float2(2.0, -2.0) + float2(-1.0, 1.0);
+		const float4 ThisClip = float4(ScreenPos, DeviceZ, 1.0);
+		const float4 PrevClip = mul(ThisClip, View.ClipToPrevClip);
+		const float2 PrevScreen = PrevClip.xy / PrevClip.w;
+		ScreenVelocity = ScreenPos - PrevScreen;
+	}
+
+	// Screen space (y up, -1..1) current-minus-previous becomes a UV offset from current to previous.
+	OutMotionVectors[DispatchThreadId] = ScreenVelocity * float2(-0.5, 0.5);
+	OutDepth[DispatchThreadId] = DeviceZ;
+}
