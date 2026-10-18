@@ -38,6 +38,66 @@ Detailed documentation:
 Platform status: Linux is built and tested. The Windows and macOS scripts and service files exist but are
 **unverified**: they were written without those machines.
 
+### Getting Unreal Engine 5.8
+
+On Windows and macOS, the simplest choice is to install UE 5.8 from the Epic Games Launcher. On Linux, use the
+binary build from <https://www.unrealengine.com/linux> or build the engine from source, as shown below. A source
+build is also needed for the server's `--server-target` option. Epic's official guide is
+[Downloading Unreal Engine Source Code](https://dev.epicgames.com/documentation/unreal-engine/downloading-source-code-in-unreal-engine?lang=en-US).
+
+**1. Get access to the source.** The engine repository is private. Your GitHub account must be linked to your Epic
+Games account:
+
+1. Sign in at [unrealengine.com](https://www.unrealengine.com) with your Epic Games account, hover over your
+   username and open **Personal**.
+2. Go to **Connections**, then **Accounts**, and click **Connect** under GitHub. Accept the Unreal Engine EULA, click
+   **Link Account**, and click **Authorize EpicGames** on GitHub.
+3. **Accept the EpicGames organisation invite.** Authorizing the link isn't enough on its own: GitHub then sends an
+   invitation to join the **@EpicGames** organisation. You can accept it from the email, from
+   <https://github.com/orgs/EpicGames/invitation>, or from your GitHub notifications. It expires after seven days. If
+   it expired, unlink and link the account again to get a new one.
+
+Until you accept the invite, <https://github.com/EpicGames/UnrealEngine> shows a 404 page and git reports
+`Repository not found`, even though the account link shows as connected. Once you accept, the repository opens and
+git can clone it.
+
+**2. Clone the 5.8 release.** Cloning over HTTPS needs a GitHub
+[personal access token](https://github.com/settings/tokens) as the password, or you can clone over SSH. A shallow
+clone of a single branch is much smaller than the full history. If git still reports `Repository not found` after
+you accept the invite, git is not signed in as the account that has access:
+
+```sh
+git clone --depth=1 --branch 5.8 git@github.com:EpicGames/UnrealEngine.git ~/UnrealEngine/UE_5.8
+# or over HTTPS: https://github.com/EpicGames/UnrealEngine.git
+```
+
+The `release` branch always holds the newest official release, and `ue5-main` is unstable development. Use the
+`5.8` branch, or a tag such as `5.8.3-release`, so that the engine matches the project.
+
+**3. Build the engine (Linux).** The engine ships its own clang toolchain, so you don't need a system compiler.
+
+```sh
+cd ~/UnrealEngine/UE_5.8
+./Setup.sh                  # downloads binary dependencies and the toolchain (~20 GB) and registers file types
+./GenerateProjectFiles.sh   # generates the Makefile and IDE project files
+make                        # builds UnrealEditor, ShaderCompileWorker and the other tools (an hour or more)
+```
+
+Allow about **150 GB** of free space for a source build of the engine, on top of the project's own needs listed
+above. To check the build, start the editor with `Engine/Binaries/Linux/UnrealEditor`.
+
+On Windows, run `Setup.bat` and `GenerateProjectFiles.bat` instead, then build the **UE5** solution in Visual Studio
+2022 with the **Development Editor | Win64** configuration. On macOS, run `Setup.command` and
+`GenerateProjectFiles.command`, then build in Xcode.
+
+**4. Point the build scripts at the engine.** The engine root is the cloned folder (the folder that contains
+`Engine/`):
+
+```sh
+export UE_ROOT=~/UnrealEngine/UE_5.8
+cd OpenUT2k4/Client && Scripts/build-linux.sh      # see "Build" below
+```
+
 ---
 
 ## Client
