@@ -28,6 +28,9 @@ Package downloads (custom maps and mod packages: HTTP redirect, file channel, ne
 | `Net/UE2NetPackageMap.h/.cpp` | `FUE2PackageMap`: USES list, local package matching (GUID, generations), object / name numbering, per-class replicated field tables (`FUE2ClassNetCache`) |
 | `Net/UE2NetWorld.h/.cpp` | Step 3, `FUE2NetWorld`: the client world layer. Turns replicated actors and our PlayerController's calls into native actors, game state, HUD messages and sounds; the spectator controls (`ArenaNet::HandleSpectatorFire`) |
 | `Net/UE2NetActors.h/.cpp` | Step 3 stand-ins: `AUE2NetPawn` (xPawn: our character body, interpolation, animation, weapon, ragdoll), `AUE2NetProjectile`, `AUE2NetPlaceholder` (vehicles, bombing run ball) |
+| `Net/UE2NetNewNet.h/.cpp` | NewNet (UTComp's lag compensated weapons, all forks): the server's time stamp (`NewNet_TimeStamp` / `TimeStamp_Pawn`), `NewNet_ServerStartFire` / `NewNet_OldServerStartFire` with the parameters each weapon class declares, `NewNet_PRI` ping |
+| `Net/UE2NetModClient.h/.cpp` | Client-side parts of common mods: UTPlus and UTComp hit sounds, UTComp ready-up and warmup |
+| `Net/UE2NetModContent.h/.cpp` | On-demand conversion of single resources (sounds) from mod packages into the content cache |
 | `Net/UE2NetPlay.h/.cpp` | Step 4, `FUE2NetPlay`: playing. Our pawn (`AUE2NetLocalPawn`, an `AArenaCharacter` with the UE2 movement), saved moves, `ServerMove` / `DualServerMove` / `ShortServerMove`, corrections and replay, firing, weapons, respawn, owner-only HUD values, chat / team / ready / combo commands, the spectator's `ServerMove`; the `-UE2NetPlayScript` test hook |
 | `Net/UE2NetBits.h/.cpp` | Bit reader / writer in the UE2 layout |
 | `Net/UE2NetCDKey.h/.cpp` | login identity: AUTH hash, GM, stats password, CD key challenge response |
@@ -80,9 +83,10 @@ Command line (development and test hooks):
 | `-UE2NetNoRedirect` | ignores the server's HTTP redirect, so every download uses the file channel (test hook) |
 | `-UE2NetDownloadSelfTest` | at startup, checks the file name rules and `.uz2` unpacking and logs `UE2NetDownloadSelfTest: n passed, m failed` (non-shipping) |
 | `-UE2NetViewPlayer` | once joined, asks the server every 20 s to let our spectator follow the next player (`ServerViewNextPlayer`); keeps a pawn relevant and tests client to server calls. Local test servers only |
-| `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire) |
+| `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire; `hunt=tap`: one press per shot, released once the start fire went out) |
 | `-UE2NetPlayProbe` | step 4 test hook, local servers only: `ClientLoc` is sent 500 UU off, so the server answers every move with its own pawn state. Logged (`UE2NetPlayProbe: ...`), never applied. This measured the 3369 server's physics |
 | `-UE2NetLag=<ms>` | adds that much round trip time (half in each direction) to every packet (test hook, non-shipping) |
+| `-UE2NetNoNewNet` | NewNet weapons get the stock `ServerStartFire` (no lag compensation; A/B test hook, non-shipping) |
 | `-UE2NetNoSpectatorMoves` | spectators send no `ServerMove` (the step 3 behaviour, for comparison) |
 | `-UE2NetNoSlopeOffsets` | no learned height offsets on floors (per surface and steepness) (A/B test hook, see "Step 4") |
 | `-UE2NetCapsuleCollision` | our pawn collides as the engine's capsule instead of UE2's box (A/B test hook) |
@@ -467,8 +471,105 @@ the player does not have.
   replicate actors whose class is in a skipped package, and mods often replace central classes (PRI, pawn, weapons).
   Classes that cannot be loaded are marked broken: their bunches are skipped without breaking the connection.
 - **Decode-only mod classes**: decoding needs only the class metadata (fields, flags, types), which our loader reads
-  from any `.u`. A downloaded mod package therefore decodes without running any of its code. Running mod
-  UnrealScript (client-side simulation, HUDs) is a step 3 / VM question.
+  from any `.u`. A downloaded mod package therefore decodes without running any of its code. What the mods' client
+  code does for a player is done by `Net/UE2NetNewNet` (the NewNet fire protocol) and `Net/UE2NetModClient` (hit
+  sounds, ready-up, warmup), from the mods' own class metadata and defaults (below). Their HUDs and scoreboards are
+  not run (open problems).
+- **Mod classes of stock kinds** are shown as their stock ancestor: a weapon, its attachment and its projectiles by
+  the first stock class up the mod class's super chain (`NewNet_ShockRifle` -> `ShockRifle`, view model, effects and
+  HUD icon of our pulse rifle; `UE2NetActors::WeaponClassFor`). Before, every mod weapon was "ours none": no view model
+  and no local fire effects.
+
+### NewNet (lag compensated weapons)
+
+UTComp's "NewNet" weapons (also in its forks, such as `WSUTComp_V6`) compensate the shooter's ping on the
+server: the client tells the server when it saw the world, and the server traces against the players' positions of
+that time (`NewNet_PawnCollisionCopy`, a history of every pawn). A client that sends the stock `ServerStartFire`
+still fires, but without compensation: the server traces against where the targets are now. Worked out from the
+packages' script source (the `.u` files carry it) and their class metadata; implemented in `Net/UE2NetNewNet.h/.cpp`.
+
+- **The clock**, two variants:
+  - `NewNet_TimeStamp` (UTComp 1.7 and forks of it): a ReplicationInfo whose `ClientTimeStamp` (float) the server sets
+    every tick (`NewNetMut.Tick`). Its `Tick` is not simulated, so the client's value is simply the last one received.
+  - `TimeStamp_Pawn` (UTComp 1.8+, WSUTComp): a pawn whose replicated `Rotation` is a tick counter (yaw =
+    (counter % 256) * 256, pitch = counter / 256 * 256; it has no mesh, so `Rotation` replicates as a plain rotator,
+    not in `PawnPosition`). The client's `TimeStamp_Pawn.Tick` (simulated) turns it into `NewTimeStamp = (Yaw + Pitch *
+    256) / 256` and counts `DT`, the time since it last changed. The server keeps the time of each counter value
+    (`MutUTComp.StampArray`). The client follows the first such pawn (the script takes the first one `DynamicActors`
+    finds); the world layer never shows it.
+- **Fire**: a NewNet weapon's `ClientStartFire` sends `NewNet_ServerStartFire` on the weapon's channel instead of
+  `ServerStartFire`. Its parameters differ per weapon and per fork; ours are filled by name from the weapon class's
+  own declaration (`FUE2NetNewNet::SendStartFire`):
+
+  | Parameter | Value |
+  |---|---|
+  | `Mode` | fire mode |
+  | `ClientTimeStamp` | float: the last `NewNet_TimeStamp.ClientTimeStamp`; byte: the `TimeStamp_Pawn` counter |
+  | `DT` | time since the counter last changed (game seconds) |
+  | `avgPing` | `NewNet_PRI.PredictedPing` (below) |
+  | `R` (`ReplicatedRotator {Yaw, Pitch}`) | the view (controller rotation) |
+  | `V` (`ReplicatedVector {X, Y, Z}`) | `Pawn.Location + EyePosition()`: our camera in the frame of `ClientLoc` (with the learned floor offsets); the server uses R / V when they are within 27 UU of its own eye (`IsReasonable`) |
+  | `bBelievesHit`, `A` | what the client's own trace along the view hits first: a pawn (its UE2 cylinder where we show it) or vehicle (its bounds), before the world. UTComp's server then searches nearby times for that actor when its own trace misses, and for a miss when the client saw one |
+
+  The server turns the stamp into `PingDT` (float stamps: `ClientTimeStamp(now) - stamp + 1.75 * AverDT`, or with
+  `bNewNetExp` `+ AverDT * NewNetExp_HSMult` clamped to `NewNetExp_ThresholdHS`; UTComp: `ClientTimeStamp(now) -
+  StampArray[stamp] - DT + 0.5 * AverDT`) and rewinds the pawns by it. Projectile modes use it to move the projectile
+  ahead (capped; the float-stamp fork tested here has `NewNetExp_ThresholdProj = -1.5` by default, which turns that off).
+- **When**: UE2 sends a start fire only once the weapon is ready (`Weapon.ReadyToFire`; the engine retries
+  `ClientStartFire` every frame while the button is held). For NewNet weapons we do the same: a press while the fire
+  mode is not ready waits (`FUE2NetPlay::TickNewNetFire`), so R, V and the stamp are those of the moment the shot
+  leaves. Started while the other, exclusive mode is still busy: `NewNet_OldServerStartFire(Mode, stamp[, DT])`
+  where the weapon has it. `ServerStopFire` stays stock. Stock weapons are unchanged (`ServerStartFire` on press).
+- **Ping**: `NewNet_PRI` (linked from our PRI's `CustomReplicationInfo` chain) gets `Ping()` and answers `Pong()`
+  every `PingTweenTime` (UTComp: the class default or `UTComp_ServerReplicationInfo.PingTweenTime`; float-stamp forks: 0.5 s). The
+  round trip feeds `PredictedPing` with the script's own average (float-stamp forks: 10 samples, UTComp: `(2P + rtt) /
+  PingTweenTime`).
+- **Measuring it**: a test-only mutator in the scratch folder (never in the repository) logged every shot and every
+  damage event of the human player on the server, with the fire mode's `PingDT`. The test client hunted bots with
+  `-UE2NetPlayScript="3:route=pickups;4:hunt=tap"` (one press per shot, aimed at the target as shown). Shock rifle
+  primary, DM-Rankin, 3 bots moving and dodging, 240 s runs:
+
+  | Server | Client | Lag (RTT) | Shots | Hits | Server `PingDT` |
+  |---|---|---|---|---|---|
+  | NewNet fork with float stamps, DM | NewNet fire | 0 | 34 | 32 (94 %) | 0.021 |
+  | same | NewNet fire | 200 ms (`-UE2NetLag=200`) | 21 | 18 (86 %) | 0.255 |
+  | same | stock `ServerStartFire` (`-UE2NetNoNewNet`) | 200 ms | 28 | 10 (36 %) | (none) |
+  | WS3SPN TAM + WSUTComp_V6 (counter stamp) | NewNet fire | 0 | 46 | 42 (91 %) | 0.020 |
+  | WS3SPN TAM + WSUTComp_V6 | NewNet fire | 200 ms | 58 | 51 (88 %) | 0.252 |
+
+  With the NewNet protocol a 200 ms round trip costs a few percent of hits instead of more than half. `PingDT` follows
+  the lag (round trip plus the age of the last stamp). Before the `bBelievesHit` trace (always "no hit") the UTComp
+  server turned some of our hits into misses ("reverse fix"): 77 % at lag 0.
+
+### Mod client-side code
+
+`Net/UE2NetModClient.h/.cpp` does what common mods' client code does for the local player, reading the mods'
+settings from their own classes (class defaults and the player's config, through the script runtime) and converting
+the resources it needs on demand (`Net/UE2NetModContent`, below):
+
+| Mod | What the client does | Ours |
+|---|---|---|
+| UTPlus hit sounds (`UTPlusHitSoundTag`, an inventory of our PRI) | `PostNetReceive`: a changed `HitSoundRepInfo {HitType, HitData}` plays `UTPlusSettings`' sound for the hit type (enemy, team, vehicle, empty vehicle, objective), volume `HitSoundVolume`, pitch `(HitData & 31) * 0.0613 + 0.1` (damage) | the same; unqualified sound names are in the tag package's `HitSounds` group |
+| UTComp hit sounds (`BS_xPlayer.ReceiveHitSound(Damage, iTeam)` / `ReceiveHit(DamageType, Damage, Injured, instigatedBy)`) | `PlayEnemyHitSound` / `PlayTeammateHitSound`: `UTComp_Settings.EnemySound` / `FriendlySound` at `HitSoundVolume`, CPMA style pitch `CPMAPitchModifier * 30 / Damage`, at most every 0.05 s | the same; a sound path without its package ("Sounds.HitSound", the WSUTComp default) is in the settings class's package |
+| UTComp warmup (`UTComp_Warmup.bInWarmup`, `BS_xPlayer.NotifyEndWarmup`) | the warmup overlay, `Ready` / `NotReady` console commands: `UTComp_PRI.Ready()` / `NotReady()` and `BS_xPlayer.BroadcastReady` | `Ready` / `NotReady` send those; the HUD shows "Warmup: n of m ready (type Ready / NotReady)" from every `UTComp_PRI.bIsReady` |
+
+Sounds the server plays from a mod package (`ClientPlaySound` / `ClientHearSound` with a mod `Sound`) are converted
+the same way and play.
+
+**On-demand conversion** (`UE2NetModContent::EnsureConverted / LoadSound`): the content converter converts maps and
+what they use, so resources only mod classes use (hit sounds in a `.u`, HUD textures) are missing from the content
+cache. The first time one is needed, its package file (the script runtime's: a downloaded or installed `.u`; a name
+the install has always keeps the install's file) is opened by the converter's package manager and only that object is
+exported into the content cache (`sounds/<Package>/<Group.Name>.wav + .json`), then the runtime content index of that
+kind folder is refreshed (`ArenaRuntimeContent::OnCacheFilesAdded`). A hit sound took 2 - 5 ms. Failures are
+remembered and not retried.
+
+Results (local servers, 240 s): UTComp (WSUTComp_V6 on WS3SPN TAM) 62 of 62 and 75 of 75 hit sound events played
+(`WSUTComp_V6.Sounds.HitSound` converted on the first hit); warmup seen, `Ready` sent, the warmup ended by the server
+("UTComp warmup ended"). A replica of a popular Vehicle CTF server's mod set (stock 3369 server, NewNet with float stamps, UTPlus hit sounds,
+RezQ scoreboard, bright skins, 15 bots, `-UE2NetLag=100`, 190 s): 802 NewNet start fires (793 with a believed hit),
+262 of 262 UTPlus hit sounds played (`HitSounds.HitSound`, converted on the first hit, 17 ms), 0 bunch errors,
+185 corrections in 25219 moves (0.7 %), the NewNet weapons with our view models.
 
 ### Downloads
 
@@ -764,7 +865,8 @@ blocker (`wall probe`).
 ### Firing, weapons, HUD
 
 - **Fire / alt fire**: `Weapon.ServerStartFire(Mode)` on press and `ServerStopFire(Mode)` on release, on the current
-  weapon's channel. The local weapon plays the shot's sound, muzzle flash and view animation at its fire rate while
+  weapon's channel. NewNet weapons send their own timestamped start fire instead, once the weapon is ready (see
+  "NewNet"). The local weapon plays the shot's sound, muzzle flash and view animation at its fire rate while
   the button is held (`AArenaWeapon::PlayNetFireEffects`; UE2 clients play their own shots too). Projectiles, beams,
   hits and kills come from the server.
 - **Weapons**: weapons are replicated to their owner only; each is our inventory. The class is mapped with
@@ -932,7 +1034,14 @@ Tested against local dedicated servers (`Scripts/ut2004-test-server.sh`, native 
 
 Open problems:
 
-- ClientValidate response not seen live (no server asked); its format is read from the 3374 client.
+- ClientValidate response not seen live (no server asked); its format is read from the 3374 client. The 3369
+  server triggers it natively (`PlayerController.ClientValidate` is a native event); no local server setting that
+  sends it was found, so it is still untested.
+- Mod HUDs and scoreboards (UTComp, 3SPN, RezQ) are not run: they draw on UE2's `Canvas`, which the script runtime
+  does not bridge. Their state that matters for play is shown natively (warmup / ready line, hit sounds).
+- No comparison with a real UT2004 client in this round: the OldUnreal 3374 Linux client is no longer on this machine,
+  and the retail Windows client (Wine, own Xvfb display) stops at "Your CD key appears to be invalid" without the
+  player's key, which these tests do not use.
 - Downloads: no size limit or eviction for the net cache yet.
 - The live 3374 server's answers to file requests are only seen through refusals from a build without the index
   rotation fix. With the fix, no live request was made: every missing package there was stock. Locally, 3369 refusals
@@ -942,15 +1051,21 @@ Open problems:
   not copy `Manifest.ini` yet (`ArenaConvScripts` could).
 - Packages added by the OldUnreal 3374 patch are not in the retail manifest. A server's version of one, if missing
   locally, is requested like a mod package; the server refuses it in about 0.1 s.
-- Resources used only by mod classes (HUD textures, sounds in a mod's `.u` or `.utx`) are not converted: the
-  converter converts maps and what they use. Step 3 has to convert them on demand.
+- Resources used only by mod classes are converted on demand (see "Mod client-side code"): sounds so far. Mod HUD
+  textures are not used yet, because mod HUDs / scoreboards are not run.
 - Only one converted copy per package name: a downloaded package with the name of one in the custom content folder
   uses the custom content's conversion. Two servers with different versions of the same package name re-convert it
   when the other one is joined.
 - Converting a map also re-exports the stock material json files it uses into the content cache (the exporter
   rewrites them; the output is the same for the same converter version). The custom content scan does the same.
-- The converted copy of a map is chosen by name (`FindLayout`), not by GUID. A server that runs another map with the
-  name of a stock map shows our stock conversion.
+- **Map identity**: the converter writes the map package's GUID into `map.json` (`package_guid`). At `WELCOME` the
+  client compares it with the server's map GUID (caches from before that field: the GUID of the install's map of
+  that name). Another map with the same name joins without a map (decode only) and says so ("The server's DM-Rankin is
+  another version than the converted one (GUID ..., ours ...)"), instead of showing our map. Checked with a local
+  server whose `DM-Rankin.ut2` was another map. A server's map is never replaced by another layout either: before,
+  a VCTF map (prefix "VCTF", not "CTF") failed our CTF rules' check and the client built CTF-Face3 in its place, so the
+  pawn walked in the wrong level (5360 corrections in 180 s on the replica server); VCTF maps now count as CTF maps,
+  and `?UE2Net=1` worlds always use the server's map.
 - Not tested against real UT2004 redirect servers (only the local `http.server`), or with a real UT2004 client as
   reference.
 - `CompressedPosition`'s first byte stayed 0 in step 3 as well (the pitch comes with `ViewPitch`); the yaw byte is

@@ -6,6 +6,7 @@
 #include "../UScript/UScriptRuntime.h"
 #include "UE2NetCDKey.h"
 #include "UE2NetLog.h"
+#include "UE2ServerCodec.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 
@@ -1492,18 +1493,24 @@ bool FUE2NetConnection::WriteProperty(FUE2BitWriter& W, FUSProperty* Prop, const
 			WriteCompressedRotator(W, Value.R);
 			return true;
 		}
-		return false;
+		{
+			// other structs (Plane, CompressedPosition, mods' own: NewNet's ReplicatedRotator / ReplicatedVector...)
+			// member by member, as the server codec writes them
+			FUE2WireContext Ctx;
+			Ctx.Map = &PackageMap;
+			return UE2Codec::WriteProperty(W, Prop, &Value, Ctx);
+		}
 	default:
 		return false;
 	}
 }
 
-bool FUE2NetConnection::SendFunction(int32 Channel, FName FunctionName, const TArray<FUE2NetValue>& Params)
+FUSFunction* FUE2NetConnection::FindReplicatedFunction(int32 Channel, FName FunctionName) const
 {
-	FUE2NetActor* Actor = Actors.Find(Channel);
-	if (!Actor || !Actor->NetCache || State != EState::Joined)
+	const FUE2NetActor* Actor = Actors.Find(Channel);
+	if (!Actor || !Actor->NetCache)
 	{
-		return false;
+		return nullptr;
 	}
 	// the declaration highest up the class tree (the one a UE2 client sends)
 	FUSFunction* Function = nullptr;
@@ -1517,6 +1524,17 @@ bool FUE2NetConnection::SendFunction(int32 Channel, FName FunctionName, const TA
 			}
 		}
 	}
+	return Function;
+}
+
+bool FUE2NetConnection::SendFunction(int32 Channel, FName FunctionName, const TArray<FUE2NetValue>& Params)
+{
+	FUE2NetActor* Actor = Actors.Find(Channel);
+	if (!Actor || !Actor->NetCache || State != EState::Joined)
+	{
+		return false;
+	}
+	FUSFunction* Function = FindReplicatedFunction(Channel, FunctionName);
 	if (!Function)
 	{
 		UE_LOG(LogUE2Net, Warning, TEXT("%s has no replicated function %s"), *Actor->ClassPath, *FunctionName.ToString());

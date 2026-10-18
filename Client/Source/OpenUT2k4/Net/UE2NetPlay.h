@@ -124,6 +124,10 @@ public:
 	void Say(const FString& Text, bool bTeam);
 	void ChangeTeam(int32 Team);
 	void Ready();
+	/** UTComp's NotReady (warmup); nothing on stock servers (3369 has no "not ready" call). */
+	void NotReady();
+	/** A mod's warmup line for the HUD ("Warmup: 2 of 4 ready ..."), else empty. */
+	FString GetModStatusText() const;
 	void Suicide();
 	void Use();
 	void RequestRestart();
@@ -187,6 +191,10 @@ private:
 	void ExitVehicle(bool bToFoot);
 	void SendDrive();
 	void TickFireEffects();
+	/** NewNet weapons: the deferred start fire (sent when the weapon is ready, as UE2's ClientStartFire retries). */
+	void TickNewNetFire();
+	/** Channel of the server pawn / vehicle we show first along a ray (UU-scaled cm), before the world; 0 for none. */
+	int32 TraceShownPawn(const FVector& Start, const FVector& Dir, float Range) const;
 	void CallServerMove(const FMove* Pending, const FMove& Move, const FMove* Old);
 	void ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params, bool bHasVelocity, bool bVeryShort);
 	void ReplayMovesAfter(float TimeStamp);
@@ -265,6 +273,12 @@ private:
 	double LastRestartRequest = 0.0;
 	bool bFireHeld[2] = { false, false };
 	float NextFireEffect[2] = { 0.f, 0.f };
+	/** NewNet (Net/UE2NetNewNet.h): a held fire whose NewNet start fire is not sent yet (the weapon is not ready). */
+	bool bNewNetFirePending[2] = { false, false };
+	TUniquePtr<class FUE2NetNewNet> NewNet;
+	/** Client-side parts of server mods (Net/UE2NetModClient.h): hit sounds, ready-up, warmup. */
+	TUniquePtr<class FUE2NetModClient> ModClient;
+	bool bInActorOpen = false;
 
 	// statistics
 	int32 MovesSent = 0;
@@ -317,6 +331,11 @@ private:
 	bool bScriptCanChat = false;
 	bool bScriptDoubleJump = false;
 	bool bScriptHunt = false;
+	/** hunt=tap: one press per shot (aimed at the moment of each shot) instead of holding fire. */
+	bool bScriptHuntTap = false;
+	double ScriptTapRelease = 0.0;
+	/** -UE2NetNoNewNet (test hook): NewNet weapons get the stock ServerStartFire (no lag compensation), for A/B. */
+	bool bNoNewNet = false;
 	/** -UE2NetPlayProbe (local servers): ClientLoc is sent off by 500 UU so the server reports its state for every move. */
 	bool bProbe = false;
 	// special moves (jumps, double jumps, dodges) and the corrections in the second after one

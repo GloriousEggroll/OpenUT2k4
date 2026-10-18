@@ -30,6 +30,8 @@
 #include "UE2NetActors.h"
 #include "UE2NetConnection.h"
 #include "UE2NetLog.h"
+#include "UE2NetModClient.h"
+#include "UE2NetNewNet.h"
 #include "UE2NetWorld.h"
 
 /**
@@ -393,6 +395,8 @@ FUE2NetPlay::FUE2NetPlay(FUE2NetConnection& InConnection, UWorld* InWorld)
 	: Connection(&InConnection), World(InWorld)
 {
 	UE2NetPlayLocal::GInstance = this;
+	NewNet = MakeUnique<FUE2NetNewNet>(InConnection);
+	ModClient = MakeUnique<FUE2NetModClient>(InConnection, InWorld);
 	StartTime = FPlatformTime::Seconds();
 	NextSummary = StartTime + 30.0;
 	PostTickHandle = FWorldDelegates::OnWorldPostActorTick.AddRaw(this, &FUE2NetPlay::PostActorTick);
@@ -428,6 +432,7 @@ FUE2NetPlay::FUE2NetPlay(FUE2NetConnection& InConnection, UWorld* InWorld)
 	}
 #if !UE_BUILD_SHIPPING
 	bProbe = FParse::Param(FCommandLine::Get(), TEXT("UE2NetPlayProbe")) && bScriptCanChat;
+	bNoNewNet = FParse::Param(FCommandLine::Get(), TEXT("UE2NetNoNewNet"));
 #endif
 	UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: %s on %s (%d script steps)"), InConnection.GetSettings().bSpectator ? TEXT("spectating") : TEXT("playing"),
 		*InConnection.GetAddressString(), Script.Num());
@@ -485,7 +490,9 @@ void FUE2NetPlay::ActorOpened(const FUE2NetActor& A)
 {
 	TArray<FString> All;
 	A.Properties.GetKeys(All);
+	bInActorOpen = true;
 	ActorUpdated(A, All);
+	bInActorOpen = false;
 }
 
 void FUE2NetPlay::ActorUpdated(const FUE2NetActor& A, const TArray<FString>& Changed)
@@ -495,6 +502,8 @@ void FUE2NetPlay::ActorUpdated(const FUE2NetActor& A, const TArray<FString>& Cha
 	{
 		return;
 	}
+	NewNet->ActorUpdated(A, Changed, World.IsValid() ? World->GetTimeSeconds() : 0.0);
+	ModClient->ActorUpdated(A, Changed, bInActorOpen, OwnPRIChannel);
 	if (A.Channel == PCChannel() && Changed.Contains(TEXT("PlayerReplicationInfo")))
 	{
 		OwnPRIChannel = GetRef(A, TEXT("PlayerReplicationInfo"));
@@ -604,6 +613,7 @@ void FUE2NetPlay::ActorUpdated(const FUE2NetActor& A, const TArray<FString>& Cha
 
 void FUE2NetPlay::ActorClosed(const FUE2NetActor& A)
 {
+	NewNet->ActorClosed(A);
 	if (A.Channel != 0 && A.Channel == DrivingChannel)
 	{
 		UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: the vehicle we drove is gone (channel %d)"), A.Channel);
@@ -981,6 +991,10 @@ bool FUE2NetPlay::FunctionCall(const FUE2NetActor& A, FUSFunction* Function, con
 		return false;
 	}
 	const FName Name = Function->Name;
+	if (NewNet->FunctionCall(A, Function, World.IsValid() ? World->GetTimeSeconds() : 0.0) || ModClient->FunctionCall(A, Function, Params, OwnPRIChannel))
+	{
+		return true;
+	}
 	if (A.Channel == PCChannel())
 	{
 		if (Name == TEXT("ClientAdjustPosition") || Name == TEXT("LongClientAdjustPosition"))
@@ -1373,6 +1387,7 @@ void FUE2NetPlay::PostActorTick(UWorld* InWorld, ELevelTick TickType, float Delt
 	{
 		return;
 	}
+	NewNet->Tick(InWorld->GetTimeSeconds(), DeltaSeconds, OwnPRIChannel);
 	if (DrivingChannel && LocalPawn.IsValid())
 	{
 		DrivingTime += DeltaSeconds;
@@ -1382,6 +1397,7 @@ void FUE2NetPlay::PostActorTick(UWorld* InWorld, ELevelTick TickType, float Delt
 	{
 		RecordMove(DeltaSeconds);
 		SendMoves(false);
+		TickNewNetFire();
 		TickFireEffects();
 	}
 	else if (!IsPlaying() || ServerState == TEXT("Spectating"))
@@ -1618,6 +1634,129 @@ void FUE2NetPlay::TickFireEffects()
 			NextFireEffect[Mode] = Now + FMath::Max(0.05f, W->FireModes[Mode].RefireTime);
 		}
 	}
+}
+
+void FUE2NetPlay::TickNewNetFire()
+{
+	using namespace UE2NetPlayLocal;
+	AUE2NetLocalPawn* Pawn = LocalPawn.Get();
+	AArenaPlayerController* PC = GetPC();
+	UWorld* W = World.Get();
+	if (!Pawn || !PC || !W || (!bNewNetFirePending[0] && !bNewNetFirePending[1]))
+	{
+		return;
+	}
+	const float Now = float(W->GetTimeSeconds());
+	for (uint8 Mode = 0; Mode < 2; ++Mode)
+	{
+		if (!bNewNetFirePending[Mode] || !bFireHeld[Mode] || !CurrentWeaponChannel)
+		{
+			bNewNetFirePending[Mode] = false;
+			continue;
+		}
+		// Weapon.ReadyToFire: the fire mode's NextFireTime has passed (UE2 retries ClientStartFire every frame while
+		// the button is held); started while the other (exclusive) mode is still busy: OldServerStartFire
+		if (Now < NextFireEffect[Mode])
+		{
+			continue;
+		}
+		bNewNetFirePending[Mode] = false;
+		FUE2NetNewNet::FFire F;
+		F.Mode = Mode;
+		const FRotator View = PC->GetControlRotation();
+		F.Yaw = ToUU(View.Yaw);
+		F.Pitch = ToUU(View.Pitch);
+		// Pawn.Location + EyePosition(), in the frame of our ClientLoc (the learned floor offsets included)
+		const FVector Eye = PC->PlayerCameraManager ? PC->PlayerCameraManager->GetCameraLocation() : Pawn->GetPawnViewLocation();
+		const float FloorZ = ZOffset + (SavedMoves.Num() > 0 ? SavedMoves.Last().SlopeZ : 0.f);
+		F.EyeUU = Eye / S + FVector(0.f, 0.f, FloorZ);
+		F.bOld = NextFireEffect[1 - Mode] > Now && NewNet->HasOldStartFire(CurrentWeaponChannel);
+		// what our own trace along the view hits (NewNet's bBelievesHit / A: Trace(..., true) from the eye, 40000 UU):
+		// the world first, then the players as we show them (their UE2 collision cylinders, a vehicle's bounds)
+		F.HitChannel = TraceShownPawn(Eye, View.Vector(), 40000.f * S);
+		if (NewNet->SendStartFire(CurrentWeaponChannel, F))
+		{
+			++FireCommands;
+		}
+		else
+		{
+			Send(CurrentWeaponChannel, TEXT("ServerStartFire"), { VByte(Mode) });
+			++FireCommands;
+		}
+	}
+}
+
+int32 FUE2NetPlay::TraceShownPawn(const FVector& Start, const FVector& Dir, float Range) const
+{
+	using namespace UE2NetPlayLocal;
+	UWorld* W = World.Get();
+	FUE2NetWorld* NW = FUE2NetWorld::Get();
+	if (!W || !NW)
+	{
+		return 0;
+	}
+	float BestT = Range;
+	FHitResult Hit;
+	FCollisionQueryParams Q(SCENE_QUERY_STAT(UE2NetNewNetAim), false, LocalPawn.Get());
+	if (W->LineTraceSingleByChannel(Hit, Start, Start + Dir * Range, ECC_Visibility, Q))
+	{
+		BestT = float(Hit.Distance);
+	}
+	int32 Best = 0;
+	for (const TPair<int32, FUE2NetActor>& KV : Connection->GetActors())
+	{
+		const bool bPawn = ChainHas(KV.Value, TEXT("xPawn"));
+		const bool bVehicle = !bPawn && ChainHas(KV.Value, TEXT("Vehicle"));
+		const AActor* A = (bPawn || bVehicle) && KV.Key != OwnPawnChannel ? NW->GetNativeActor(KV.Key) : nullptr;
+		if (!A || A->IsHidden())
+		{
+			continue;
+		}
+		if (const AUE2NetPawn* P = Cast<AUE2NetPawn>(A); P && P->IsNetDead())
+		{
+			continue;
+		}
+		float T = -1.f;
+		if (bPawn)
+		{
+			// the pawn's cylinder (CollisionRadius 25, CollisionHeight 44 UU, crouched 34)
+			const float R = 25.f * S;
+			const float H = (GetInt(KV.Value, TEXT("bIsCrouched"), 0) ? 34.f : 44.f) * S;
+			const FVector C = A->GetActorLocation();
+			const FVector2D O(Start.X - C.X, Start.Y - C.Y), D2(Dir.X, Dir.Y);
+			const float a = float(D2.SizeSquared()), b = 2.f * float(FVector2D::DotProduct(O, D2)), c = float(O.SizeSquared()) - R * R;
+			const float Disc = b * b - 4.f * a * c;
+			if (a > KINDA_SMALL_NUMBER && Disc >= 0.f)
+			{
+				const float T0 = (-b - FMath::Sqrt(Disc)) / (2.f * a), T1 = (-b + FMath::Sqrt(Disc)) / (2.f * a);
+				for (float Cand : { T0, T1 })
+				{
+					const float Z = float(Start.Z + Dir.Z * Cand - C.Z);
+					if (Cand >= 0.f && FMath::Abs(Z) <= H)
+					{
+						T = Cand;
+						break;
+					}
+				}
+			}
+		}
+		else
+		{
+			FVector HitLoc, HitNormal;
+			float HitTime = 0.f;
+			const FBox Box = A->GetComponentsBoundingBox(false);
+			if (Box.IsValid && FMath::LineExtentBoxIntersection(Box, Start, Start + Dir * Range, FVector::ZeroVector, HitLoc, HitNormal, HitTime))
+			{
+				T = HitTime * Range;
+			}
+		}
+		if (T >= 0.f && T < BestT)
+		{
+			BestT = T;
+			Best = KV.Key;
+		}
+	}
+	return Best;
 }
 
 void FUE2NetPlay::RecordMove(float DeltaSeconds)
@@ -1895,7 +2034,13 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 		}
 		bFireHeld[Mode] = true;
 		NextFireEffect[Mode] = World.IsValid() ? FMath::Max(NextFireEffect[Mode], float(World->GetTimeSeconds())) : 0.f;
-		if (CurrentWeaponChannel)
+		if (CurrentWeaponChannel && !bNoNewNet && NewNet->IsNewNetWeapon(CurrentWeaponChannel))
+		{
+			// NewNet_ClientStartFire: sent once the weapon is ready (TickNewNetFire, this frame when it is)
+			bNewNetFirePending[Mode] = true;
+			TickNewNetFire();
+		}
+		else if (CurrentWeaponChannel)
 		{
 			Send(CurrentWeaponChannel, TEXT("ServerStartFire"), { VByte(Mode) });
 			++FireCommands;
@@ -1912,6 +2057,7 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 			Send(DrivingChannel, TEXT("VehicleCeaseFire"), { VBool(Mode == 1) });
 			return true;
 		}
+		bNewNetFirePending[Mode] = false;
 		if (bFireHeld[Mode])
 		{
 			bFireHeld[Mode] = false;
@@ -1964,12 +2110,30 @@ void FUE2NetPlay::ChangeTeam(int32 Team)
 
 void FUE2NetPlay::Ready()
 {
+	// a mod's ready-up (UTComp warmup: UTComp_PRI.Ready) replaces the stock one, as its controller's exec Ready does
+	if (ModClient->SetReady(true, OwnPRIChannel))
+	{
+		return;
+	}
 	// UnrealPlayer.ServerSetReadyToStart, then (PlayerWaiting) ServerReStartPlayer: ready while the match waits
 	Send(PCChannel(), TEXT("ServerSetReadyToStart"), {});
 	if (!LocalPawn.IsValid())
 	{
 		RequestRestart();
 	}
+}
+
+void FUE2NetPlay::NotReady()
+{
+	if (!ModClient->SetReady(false, OwnPRIChannel))
+	{
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: NotReady: the server has no not-ready call"));
+	}
+}
+
+FString FUE2NetPlay::GetModStatusText() const
+{
+	return ModClient ? ModClient->DescribeWarmup() : FString();
 }
 
 void FUE2NetPlay::Say(const FString& Text, bool bTeam)
@@ -2084,6 +2248,14 @@ void FUE2NetPlay::LogSummary()
 		FPlatformTime::Seconds() - StartTime, MovesSent, DualMoves, ShortMoves, PacketsWithMoves, Adjustments, Corrections, Corrections ? SumCorrection / Corrections : 0.0,
 		MaxCorrection, IgnoredAdjustments, SpectatorAdjustments, ReplayedMoves, NumJumps, NumDoubleJumps, NumDodges, CorrectionsAfterSpecial, FloorOffsets.Num(), Spawns, Deaths,
 		FireCommands, WeaponSwitches, VehicleEntries, DriveUpdates, DrivingTime, *DescribeState());
+	if (const FString N = NewNet ? NewNet->Describe() : FString(); !N.IsEmpty())
+	{
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay summary: %s"), *N);
+	}
+	if (ModClient)
+	{
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay summary: %s"), *ModClient->Describe());
+	}
 }
 
 void FUE2NetPlay::PreActorTick(UWorld* InWorld, ELevelTick TickType, float DeltaSeconds)
@@ -2230,7 +2402,24 @@ void FUE2NetPlay::PreActorTick(UWorld* InWorld, ELevelTick TickType, float Delta
 				BestDist = D;
 			}
 		}
-		if (Best)
+		if (Best && bScriptHuntTap)
+		{
+			// one press per shot: pressed when the weapon is ready, released once the start fire went out
+			const FRotator Aim = (Best->GetActorLocation() - Eye).Rotation();
+			View = FRotator(Aim.Pitch, Aim.Yaw, 0.f);
+			PC->SetControlRotation(View);
+			const double T = InWorld->GetTimeSeconds();
+			if (!bFireHeld[0] && T >= NextFireEffect[0])
+			{
+				HandleInput(PC, EInput::Fire);
+				ScriptTapRelease = T + 0.05;
+			}
+			else if (bFireHeld[0] && !bNewNetFirePending[0] && T >= ScriptTapRelease)
+			{
+				HandleInput(PC, EInput::FireRelease);
+			}
+		}
+		else if (Best)
 		{
 			const FRotator Aim = (Best->GetActorLocation() - Eye).Rotation();
 			View = FRotator(Aim.Pitch, Aim.Yaw, 0.f);
@@ -2648,6 +2837,7 @@ void FUE2NetPlay::TickScript(double Now)
 		else if (Key == TEXT("hunt"))
 		{
 			bScriptHunt = Value != TEXT("0");
+			bScriptHuntTap = Value == TEXT("tap");
 			if (!bScriptHunt && bFireHeld[0])
 			{
 				HandleInput(PC, EInput::FireRelease);
@@ -2681,6 +2871,14 @@ namespace UE2NetPlayLocal
 			if (FUE2NetPlay* P = FUE2NetPlay::Get())
 			{
 				P->Ready();
+			}
+		}));
+	FAutoConsoleCommand CmdNotReady(TEXT("NotReady"), TEXT("NotReady: take back Ready during a mod's warmup (UTComp)."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			if (FUE2NetPlay* P = FUE2NetPlay::Get())
+			{
+				P->NotReady();
 			}
 		}));
 }

@@ -328,6 +328,16 @@ void ArenaRuntimeContent::ResetCacheIndex()
 	TrimMeshData();
 }
 
+void ArenaRuntimeContent::OnCacheFilesAdded(const TCHAR* Kind)
+{
+	using namespace ArenaRuntimePrivate;
+	{
+		FScopeLock Lock(&IndexLock);
+		Indices.Remove(FString(Kind).ToLower());
+	}
+	Objects().Misses.Reset();
+}
+
 UObject* ArenaRuntimeContent::LoadByRelativePath(UClass* Class, const FString& RelativePath)
 {
 	using namespace ArenaRuntimePrivate;

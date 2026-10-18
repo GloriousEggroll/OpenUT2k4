@@ -229,6 +229,8 @@ namespace ArenaRuntimeContent
 	 * the cache. Assets already built stay valid. Game thread.
 	 */
 	OPENUT2K4_API void ResetCacheIndex();
+	/** Files of one kind folder ("sounds", "textures"...) were added to the cache: index that folder again, forget misses. */
+	OPENUT2K4_API void OnCacheFilesAdded(const TCHAR* Kind);
 
 	/** Stats line for logs: counts and time spent per kind. */
 	OPENUT2K4_API FString GetStats();

@@ -5,6 +5,9 @@ public class OpenUT2k4 : ModuleRules
 	public OpenUT2k4(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		// Files use same-named helpers in their own anonymous / local namespaces (Tube, Le32, C...), which collide when
+		// unity builds merge them. Each file is compiled on its own.
+		bUseUnity = false;
 
 		// The dedicated server binary as a real Server target (Source/OpenUT2k4Server.Target.cs on a source engine) leaves
 		// out what only a renderer uses: the upscaler plugin and the Vulkan HDR probe. As a Game target (installed engine)

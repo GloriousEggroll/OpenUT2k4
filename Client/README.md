@@ -284,7 +284,12 @@ protocol is described in `Docs/UE2Net.md`.
   list. Each file is checked (package GUID, size, safe file name; only package files, never native code) and kept
   in a per-user net cache, `NetCache/` in the game's user data folder, by GUID. Downloaded maps and texture packages
   are converted into the content cache like custom content, so the server's custom map is loaded. Mod script
-  packages are only read to decode the server's mod actors; their code is not run. Packages that cannot be downloaded
+  packages are read to decode the server's mod actors; what their client code does for a player is done natively:
+  UTComp's **NewNet** weapons (lag compensated: our client sends their timestamped fire, so hits register where you
+  saw the target), **hit sounds** (UTComp, UTPlus; the sounds are converted from the mod's package the first time
+  they play), UTComp's **warmup** (`Ready` / `NotReady` in the console, a warmup line on the HUD). Mod weapons show
+  as their stock weapon. Mod HUDs and scoreboards are not run. A map whose name matches ours but whose GUID differs
+  joins without a map rather than showing the wrong level. Packages that cannot be downloaded
   are skipped: actors that need them are not shown. UT2004's own packages (the files in the install's
   `System/Manifest.ini`) are never downloaded: when they are
   missing (install not found) they are skipped, with a notice in the connecting status and the spectator bar, and a server with another version of UT2004's code
@@ -309,13 +314,14 @@ file name rules and `.uz2` unpacking. Playing (step 4):
 - `-UE2NetPlayScript="5:route=pickups;5:hunt=1;20:dodge=l;30:dj;40:slot=2;60:suicide;63:fire"` scripts the local
   pawn. It can move, turn, jump, double jump, dodge, fire, switch weapons, restart, use, change team, ready, combo and
   chat (chat only to a server on this machine). `route=pickups` / `route=flag` walk the nav graph; `hunt=1` aims at the
-  nearest visible player and fires. `goto=water|lift|vehicle:ONSRV|x,y,z` walks there (and gets into the vehicle),
+  nearest visible player and fires (`hunt=tap`: one press per shot). `goto=water|lift|vehicle:ONSRV|x,y,z` walks there (and gets into the vehicle),
   `use` gets in and out, and driving sends `ServerDrive`.
 - `-UE2NetCapsuleCollision` / `-UE2NetNoBackoff` turn the UE2 box collision / the 2 UU `MoveActor` back-off off
   (A/B). The test server's `TestBots` mutator takes `?TestAdrenaline=1`, which keeps human players at 100 adrenaline
   for combo tests.
 - `-UE2NetPlayProbe` (local servers) logs the server's pawn state next to ours for every move.
-- `-UE2NetLag=<ms>` adds round trip time.
+- `-UE2NetLag=<ms>` adds round trip time. `-UE2NetNoNewNet` sends the stock `ServerStartFire` for NewNet weapons
+  (no lag compensation, A/B).
 - `-UE2NetNoSpectatorMoves` turns the spectator's moves off.
 - The log has a `UE2NetPlay summary` every 30 s: moves, corrections, average and maximum error.
 

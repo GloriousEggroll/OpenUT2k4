@@ -339,7 +339,8 @@ namespace ArenaImported
 			L.Description = Root->GetStringField(TEXT("description"));
 			// Every map has player starts, so DM/TDM always works; CTF needs a CTF map with both flag bases.
 			L.bSupportsDM = true;
-			L.bSupportsCTF = Prefix == TEXT("CTF") && bFlag[0] && bFlag[1];
+			// Vehicle CTF maps ("VCTF-", xVehicleCTFGame) are CTF maps with vehicles
+			L.bSupportsCTF = (Prefix == TEXT("CTF") || Prefix == TEXT("VCTF")) && bFlag[0] && bFlag[1];
 			int32 Recommended = 0;
 			for (const TSharedPtr<FJsonValue>& V : ArrayField(Root, TEXT("recommended_players")))
 			{

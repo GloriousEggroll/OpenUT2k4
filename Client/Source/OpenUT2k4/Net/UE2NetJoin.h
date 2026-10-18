@@ -29,6 +29,8 @@ namespace ArenaNet
 	 * world): "Connected to <server> - receiving game state ...". Empty when World is not such a map.
 	 */
 	OPENUT2K4_API FString GetSpectatorBarText(const UWorld* World);
+	/** A server mod's status line for the playing HUD (UTComp's warmup: "Warmup: 2 of 4 ready ..."), else empty. */
+	OPENUT2K4_API FString GetModStatusText(const UWorld* World);
 
 	/**
 	 * While joining needs package downloads or their conversion (before the map loads): true, with the status text

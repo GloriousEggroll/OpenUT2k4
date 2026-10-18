@@ -2049,6 +2049,14 @@ bool FConvMapExporter::Run()
 	Doc.Set(TEXT("map"), MapName);
 	Doc.Set(TEXT("source_file"), FPaths::GetCleanFilename(Pkg->PathOnDisk));
 	Doc.Set(TEXT("package_version"), (int32)Pkg->Version);
+	if (Pkg->Version >= 68 && Pkg->BufSize() >= 52)
+	{
+		// the package GUID (header offset 36, UE2 FGuid::String): servers name their map by it, so a joining client can
+		// tell this conversion from another map of the same name
+		uint32 G[4];
+		FMemory::Memcpy(G, Pkg->Buf() + 36, sizeof(G));
+		Doc.Set(TEXT("package_guid"), FString::Printf(TEXT("%08X%08X%08X%08X"), G[0], G[1], G[2], G[3]));
+	}
 	Doc.Set(TEXT("licensee_version"), (int32)Pkg->Licensee);
 	int32 Dash;
 	Doc.Set(TEXT("game_type_prefix"), MapName.FindChar(TEXT('-'), Dash) ? FConvJson(MapName.Left(Dash).ToUpper()) : FConvJson());

@@ -16,6 +16,8 @@
 #include "../ArenaWeaponsExtra.h"
 #include "../ArenaBR_BallLauncher.h"
 #include "../ArenaTranslocator.h"
+#include "../UScript/UScriptCore.h"
+#include "../UScript/UScriptRuntime.h"
 #include "Camera/CameraTypes.h"
 #include "Animation/AnimSequence.h"
 #include "Components/AudioComponent.h"
@@ -268,6 +270,30 @@ namespace UE2NetActorsLocal
 			{
 				return M.Class();
 			}
+		}
+		// a mod's class ("<NewNet package>.NewNet_ShockRifle", "WSUTComp_V6.UTComp_ShockAttachment"): its stock ancestor's
+		if (ClassName.Contains(TEXT(".")))
+		{
+			static TMap<FString, UClass*> Cache;
+			if (UClass** Found = Cache.Find(ClassName))
+			{
+				return *Found;
+			}
+			UClass*& Result = Cache.Add(ClassName, nullptr);
+			FUSClass* C = FUSRuntime::Get().FindClass(ClassName);
+			for (C = C ? C->GetSuperClass() : nullptr; C && !Result; C = C->GetSuperClass())
+			{
+				const FString Name = C->Name.ToString();
+				for (const FMap& M : Table)
+				{
+					if (Name.StartsWith(M.Prefix, ESearchCase::IgnoreCase))
+					{
+						Result = M.Class();
+						break;
+					}
+				}
+			}
+			return Result;
 		}
 		return nullptr;
 	}

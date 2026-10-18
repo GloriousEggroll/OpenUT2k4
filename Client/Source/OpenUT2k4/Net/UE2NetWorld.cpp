@@ -36,6 +36,7 @@
 #include "UE2NetActors.h"
 #include "UE2NetConnection.h"
 #include "UE2NetLog.h"
+#include "UE2NetModContent.h"
 #include "UE2NetPlay.h"
 
 namespace UE2NetWorldLocal
@@ -81,6 +82,11 @@ namespace UE2NetWorldLocal
 			}
 		}
 		USoundBase* Sound = ArenaArt::LoadOneShotSound(SoundPath(ObjectPath));
+		if (!Sound)
+		{
+			// a mod package's sound: converted on demand
+			Sound = UE2NetModContent::LoadSound(ObjectPath);
+		}
 		if (!Sound)
 		{
 			Missing.Add(ObjectPath);
@@ -357,6 +363,22 @@ AArenaPlayerState* FUE2NetWorld::PSForChannel(int32 PRIChannel)
 	return E ? E->PS.Get() : nullptr;
 }
 
+int32 FUE2NetWorld::FindChannelOf(const AActor* Actor) const
+{
+	// a hit on an attached part (a seated driver, a vehicle's turret) counts for the actor it is attached to
+	for (int32 Guard = 0; Actor && Guard < 8; ++Guard, Actor = Actor->GetAttachParentActor())
+	{
+		for (const TPair<int32, FEntity>& P : Entities)
+		{
+			if (P.Value.Native.Get() == Actor)
+			{
+				return P.Key;
+			}
+		}
+	}
+	return 0;
+}
+
 AUE2NetPawn* FUE2NetWorld::PawnForChannel(int32 Channel)
 {
 	FEntity* E = FindEntity(Channel);
@@ -445,6 +467,10 @@ FUE2NetWorld::EKind FUE2NetWorld::Classify(const FEntity& E) const
 	if (Has(E, TEXT("vehicle")))
 	{
 		return EKind::Vehicle;
+	}
+	if (Has(E, TEXT("timestamp_pawn")))
+	{
+		return EKind::Ignored; // UTComp's NewNet clock (Net/UE2NetNewNet.h): no body, never shown
 	}
 	if (Has(E, TEXT("pawn")))
 	{

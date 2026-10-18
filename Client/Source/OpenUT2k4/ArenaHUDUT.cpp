@@ -311,6 +311,13 @@ void AArenaHUD::DrawUTHud(AArenaCharacter* Char, bool bAlive, bool bEnded, bool 
 	DrawKillFeed();
 	DrawUTCenterMessages();
 	DrawLocalMessages();
+	if (const FString ModStatus = ArenaNet::GetModStatusText(GetWorld()); !ModStatus.IsEmpty())
+	{
+		// a server mod's state (UTComp warmup and ready-up), near the top like its own overlay
+		const int32 Font = ArenaHudFonts::FontSizeIndex(D.UTClipX(), 1);
+		const FVector2D S = D.TextSizeUT(Font, ModStatus);
+		D.TextUT(Font, ModStatus, D.W() * 0.5f - S.X * 0.5f, UTFrame.ScreenY(0.18f), FLinearColor(FColor(255, 255, 0)));
+	}
 }
 
 void AArenaHUD::DrawUTCenterMessages()

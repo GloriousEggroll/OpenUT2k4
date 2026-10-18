@@ -58,6 +58,8 @@ public:
 	class AUE2NetPawn* GetNetPawn(int32 PawnChannel) { return PawnForChannel(PawnChannel); }
 	/** Our actor for any channel (a vehicle's AUE2NetVehicle, a map actor we drive, a pawn ...), or null. */
 	AActor* GetNativeActor(int32 Channel) const { const FEntity* E = Channel ? Entities.Find(Channel) : nullptr; return E ? E->Native.Get() : nullptr; }
+	/** The channel whose actor (or a component's owner chain up to it) Actor is, or 0. */
+	int32 FindChannelOf(const AActor* Actor) const;
 	/** Our vehicle actor for a vehicle / turret channel (a gunner seat's: its base vehicle's). */
 	class AUE2NetVehicle* GetVehicle(int32 Channel) { return VehicleForChannel(Channel); }
 

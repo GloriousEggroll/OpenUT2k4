@@ -2,7 +2,9 @@
 
 #include "../ArenaGameMode.h"
 #include "../ArenaGUI2K4.h"
+#include "../ArenaContent.h"
 #include "../ArenaLevelBuilder.h"
+#include "../ArenaRuntimeMap.h"
 #include "../ArenaUserSettings.h"
 #include "GameFramework/GameModeBase.h"
 #include "UnrealClient.h"
@@ -19,6 +21,8 @@
 #include "UE2NetPlay.h"
 #include "../UScript/UScriptCore.h"
 #include "UE2NetLog.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 
 /**
  * Joining flow (Docs/UE2Net.md "Joining"):
@@ -263,10 +267,83 @@ namespace UE2NetJoinLocal
 		ContinueWelcome();
 	}
 
+	/**
+	 * Is our converted copy of the map the server's map? The server names it by GUID (its USES entry); the converter
+	 * writes the GUID it converted into map.json ("package_guid"). Caches from before that field: the install's file
+	 * of that name is what was converted (downloaded maps are converted from the server's own version anyway).
+	 */
+	bool ConvertedMapMatches(FUE2NetConnection& C, FString& OutWhy)
+	{
+		const FString MapName = C.GetMapName();
+		const FUE2PackageInfo* Server = nullptr;
+		for (const FUE2PackageInfo& P : C.GetPackageMap().GetList())
+		{
+			if (P.Name.Equals(MapName, ESearchCase::IgnoreCase))
+			{
+				Server = &P;
+			}
+		}
+		if (!Server || !Server->Guid.IsValid())
+		{
+			return true;
+		}
+		const FString ServerGuid = UE2GuidToString(Server->Guid);
+		// package_guid is near the top of map.json: the first 4 KB are enough
+		FString Head;
+		{
+			TUniquePtr<FArchive> Ar(IFileManager::Get().CreateFileReader(*(ArenaRuntimeMap::GetMapDir(MapName) / TEXT("map.json"))));
+			if (Ar)
+			{
+				TArray<uint8> Bytes;
+				Bytes.SetNumZeroed(int32(FMath::Min<int64>(Ar->TotalSize(), 4096)));
+				Ar->Serialize(Bytes.GetData(), Bytes.Num());
+				FFileHelper::BufferToString(Head, Bytes.GetData(), Bytes.Num());
+			}
+		}
+		FString Converted;
+		const int32 At = Head.Find(TEXT("\"package_guid\""));
+		if (At != INDEX_NONE)
+		{
+			FString Rest = Head.Mid(At + 14);
+			int32 Q1 = INDEX_NONE, Q2 = INDEX_NONE;
+			if (Rest.FindChar(TEXT('"'), Q1) && Rest.Mid(Q1 + 1).FindChar(TEXT('"'), Q2))
+			{
+				Converted = Rest.Mid(Q1 + 1, Q2);
+			}
+		}
+		if (Converted.IsEmpty())
+		{
+			// an older cache: the install's map of that name (if any) is what it was converted from
+			const FString Install = ArenaContent::FindUT2004Install();
+			FUE2PackageHeader H;
+			if (!Install.IsEmpty() && UE2ReadPackageHeader(Install / TEXT("Maps") / (MapName + TEXT(".ut2")), H))
+			{
+				Converted = UE2GuidToString(H.Guid);
+			}
+		}
+		if (Converted.IsEmpty() || Converted.Equals(ServerGuid, ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+		OutWhy = FString::Printf(TEXT("The server's %s is another version than the converted one (GUID %s, ours %s)"), *MapName, *ServerGuid, *Converted);
+		return false;
+	}
+
 	void ContinueWelcome()
 	{
 		FUE2NetConnection& C = *GConnection;
 		FArenaLayoutInfo Info;
+		FString Mismatch;
+		if (AArenaLevelBuilder::FindLayout(C.GetMapName(), Info) && !ConvertedMapMatches(C, Mismatch))
+		{
+			// same name, another map: showing ours would put the player in the wrong level
+			GLastError = Mismatch;
+			UE_LOG(LogUE2Net, Warning, TEXT("%s: joining without a map (decode only)"), *Mismatch);
+			bWaitingForMap = false;
+			GJoinedTime = FPlatformTime::Seconds();
+			C.SendJoin();
+			return;
+		}
 		if (!AArenaLevelBuilder::FindLayout(C.GetMapName(), Info))
 		{
 			// no converted copy of the map (a custom map: it would have to be downloaded and converted first). Join anyway
@@ -607,6 +684,16 @@ namespace ArenaNet
 			return GDownloader->DescribeStatus();
 		}
 		return (GConnection ? GConnection->DescribeStatus() : GLastError) + NoticeLine;
+	}
+
+	FString GetModStatusText(const UWorld* World)
+	{
+		using namespace UE2NetJoinLocal;
+		if (!World || !World->URL.HasOption(TEXT("UE2Net")) || !GNetPlay)
+		{
+			return FString();
+		}
+		return GNetPlay->GetModStatusText();
 	}
 
 	bool GetJoinProgress(FString& OutText, float& OutFraction)

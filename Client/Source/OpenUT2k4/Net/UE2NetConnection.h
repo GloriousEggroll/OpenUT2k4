@@ -141,6 +141,8 @@ public:
 	 * PlayerController). Params are in declaration order; missing ones are sent as "not present".
 	 */
 	bool SendFunction(int32 Channel, FName FunctionName, const TArray<FUE2NetValue>& Params);
+	/** The replicated function of that name the channel's class can be sent (the declaration highest up its class tree), or null. */
+	struct FUSFunction* FindReplicatedFunction(int32 Channel, FName FunctionName) const;
 
 	/** Channel of our own PlayerController (the actor the server lets us call functions on), or 0. */
 	int32 FindPlayerControllerChannel() const;

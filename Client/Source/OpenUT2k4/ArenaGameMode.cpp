@@ -205,8 +205,11 @@ void AArenaGameMode::InitGame(const FString& MapName, const FString& Options, FS
 		{
 			// The requested map if this mode can be played on it, else the mode's default map, else any map that fits.
 			const FString Requested = LayoutId;
+			// a UT2004 server's map is always the server's map (its game state drives the world), whatever our mode
+			// rules would pick for it
+			const bool bServerMap = UGameplayStatics::HasOption(Options, TEXT("UE2Net"));
 			LayoutId = AArenaLevelBuilder::ChooseLayout(Requested, Rules ? Rules->GetDefaultLayout() : FString(),
-				[this](const FArenaLayoutInfo& Info) { return !Rules || Rules->SupportsLayout(Info); });
+				[this, bServerMap](const FArenaLayoutInfo& Info) { return bServerMap || !Rules || Rules->SupportsLayout(Info); });
 			if (!Requested.IsEmpty() && LayoutId != Requested)
 			{
 				// a bare map name ("DM-Rankin") naming the imported layout is the normal way to ask for a map
