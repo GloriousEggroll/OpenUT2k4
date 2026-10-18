@@ -278,7 +278,8 @@ minisign's format. The owner makes a key once, outside the repository:
 python3 Client/Tools/openut2k4_signing.py genkey            # ~/.config/openut2k4/signing/release.key (0600), release.pub
 ```
 
-and publishes the public key line (README / release page). The build scripts (`Client/Scripts/build-*.sh`,
+and publishes the public key line (README / release page). The project's published release key is
+`RWTwrDCWkxaitEWZhWEHlXdSShHiq+gy9bdiuAOTGT2/dUxD5Z7d+ap/`. The build scripts (`Client/Scripts/build-*.sh`,
 `Server/build-*.sh`, `.bat`) pack the `Dist` folder into an archive and sign it **only** when `OPENUT2K4_SIGNING_KEY`
 is set to the key's path (`Client/Scripts/sign-release.sh`; Windows: a `.zip` via PowerShell and Python). Without it,
 nothing happens. Players check a download with `minisign -Vm OpenUT2k4-0.1.0-Linux.tar.gz -P <public key>`, or

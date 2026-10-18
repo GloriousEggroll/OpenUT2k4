@@ -407,9 +407,22 @@ is built into the OpenUT2k4 dedicated server (off by default):
 Build the mutator with `Server/Validator/build-validator.sh` (UCC under Wine); install with
 `ServerActors=OpenUT2k4Validator.OUTValidator`. Everything else: [`Server/Docs/Validator.md`](Server/Docs/Validator.md).
 
-**Verifying downloads**: release archives come with a minisign signature (`.minisig`) and a `.sha256` file when the
-project owner signs them; check with `minisign -Vm <archive> -P <the published public key>` (see Validator.md
-"Release signing").
+**Verifying downloads**: official release archives come with a minisign signature (`.minisig`) and a `.sha256` file.
+The project's release public key is:
+
+```
+RWTwrDCWkxaitEWZhWEHlXdSShHiq+gy9bdiuAOTGT2/dUxD5Z7d+ap/
+```
+
+Check a download with:
+
+```sh
+minisign -Vm OpenUT2k4-<version>-<platform>.tar.gz -P RWTwrDCWkxaitEWZhWEHlXdSShHiq+gy9bdiuAOTGT2/dUxD5Z7d+ap/
+# or, without minisign:
+python3 Client/Tools/openut2k4_signing.py verify --pub RWTwrDCWkxaitEWZhWEHlXdSShHiq+gy9bdiuAOTGT2/dUxD5Z7d+ap/ <archive>
+```
+
+See Validator.md, "Release signing".
 
 ## What is not in this repository
 
