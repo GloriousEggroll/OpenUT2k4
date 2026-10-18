@@ -29,4 +29,4 @@ PlayerKey.txt
 *.minisig
 
 # Cook output (file open order logs)
-Build/*/FileOpenOrder/
+**/Build/*/FileOpenOrder/
