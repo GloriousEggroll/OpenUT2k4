@@ -23,7 +23,16 @@ namespace UE2NetModContentLocal
 		{
 			return TEXT("staticmeshes");
 		}
-		return TEXT("textures");
+		if (ClassName == TEXT("Font"))
+		{
+			return TEXT("fonts");
+		}
+		if (ClassName == TEXT("Texture") || ClassName == TEXT("Cubemap"))
+		{
+			return TEXT("textures");
+		}
+		// Shader, FinalBlend, Combiner, TexRotator ... (the converter writes them to materials/, their textures to textures/)
+		return TEXT("materials");
 	}
 
 	/** The package file the script runtime has for this name (downloaded mods first), or empty. */

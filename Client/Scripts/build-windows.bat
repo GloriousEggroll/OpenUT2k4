@@ -67,5 +67,14 @@ rem Licence and notices next to the executable
 copy /y "%PROJECT_DIR%\..\LICENSE" "%ARCHIVE_DIR%\" >nul
 copy /y "%PROJECT_DIR%\..\NOTICE.md" "%ARCHIVE_DIR%\" >nul
 
+rem Release archive + detached signature, only with OPENUT2K4_SIGNING_KEY (Server/Docs/Validator.md "Release signing")
+if defined OPENUT2K4_SIGNING_KEY (
+    echo ==^> Packing and signing %ARCHIVE_DIR%.zip
+    powershell -NoProfile -Command "Compress-Archive -Path '%ARCHIVE_DIR%' -DestinationPath '%ARCHIVE_DIR%.zip' -Force"
+    if errorlevel 1 exit /b 1
+    python "%PROJECT_DIR%\Tools\openut2k4_signing.py" sign --key "%OPENUT2K4_SIGNING_KEY%" "%ARCHIVE_DIR%.zip" >nul
+    if errorlevel 1 exit /b 1
+)
+
 echo ==^> Done: %ARCHIVE_DIR%
 endlocal

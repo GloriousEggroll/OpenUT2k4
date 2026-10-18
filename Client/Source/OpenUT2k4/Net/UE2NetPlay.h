@@ -128,6 +128,8 @@ public:
 	void NotReady();
 	/** A mod's warmup line for the HUD ("Warmup: 2 of 4 ready ..."), else empty. */
 	FString GetModStatusText() const;
+	/** Actor channel of the weapon we hold (0: none), for the script HUD's Pawn.Weapon (UE2NetScriptHUD). */
+	int32 GetCurrentWeaponChannel() const { return CurrentWeaponChannel; }
 	void Suicide();
 	void Use();
 	void RequestRestart();
@@ -163,6 +165,8 @@ private:
 		int32 SlopeBucket = -1;
 		uint32 FloorKey = 0;
 		float SlopeZ = 0.f;
+		/** The floor at the end of the step (diagnostics). */
+		TWeakObjectPtr<const UPrimitiveComponent> FloorComp;
 		/** The mover we stand on at the end of the step and its location then (cm): the server's location on a lift is relative to it. */
 		TWeakObjectPtr<const AActor> EndBase;
 		FVector EndBaseLoc = FVector::ZeroVector;
@@ -243,6 +247,8 @@ private:
 	TArray<FMove> SavedMoves;
 	bool bJumpStatus = false;
 	float LastSendTime = -1.f;
+	/** The server's ClientCapBandwidth (bytes per second, 0: none). */
+	int32 ClientCap = 0;
 	float LastAdjustTimeStamp = -1.f;
 	float LastTimeStamp = 0.f;
 	/** Spectating: where the server's spectator is (UE2 units), as far as we know (its corrections tell us). */

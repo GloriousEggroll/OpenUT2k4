@@ -4,6 +4,7 @@
 
 #include "UE2ServerConnection.h"
 #include "UE2ServerUplink.h"
+#include "UE2ServerValidator.h"
 #include "UE2ServerWorld.h"
 #include "UE2NetLog.h"
 #include "../ArenaContent.h"
@@ -698,7 +699,10 @@ void FUE2Server::ConnectionLogin(FUE2ServerConnection& Conn, const FString& Url,
 	{
 		OutFailCode = TEXT("SERVERFULL");
 		OutFailText = TEXT("Server is full.");
+		return;
 	}
+	// OpenUT2k4 Validator (off unless the dedicated server installs it): combined bans by IP / UT2004 id
+	UE2ServerValidator::CheckLogin(Conn, Url, OutFailCode, OutFailText);
 }
 
 void FUE2Server::ConnectionJoined(FUE2ServerConnection& Conn)
@@ -707,10 +711,12 @@ void FUE2Server::ConnectionJoined(FUE2ServerConnection& Conn)
 	{
 		ServerWorld->PlayerJoined(Conn);
 	}
+	UE2ServerValidator::PlayerJoined(Conn);
 }
 
 void FUE2Server::ConnectionClosed(FUE2ServerConnection& Conn, const FString& Reason)
 {
+	UE2ServerValidator::PlayerLeft(Conn);
 	if (ServerWorld)
 	{
 		ServerWorld->PlayerLeft(Conn);
@@ -751,6 +757,7 @@ void FUE2Server::PostActorTick(UWorld* InWorld, ELevelTick TickType, float Delta
 	}
 	const double Now = GetTime();
 	++Frame;
+	UE2ServerValidator::Tick(Now);
 	if (ServerWorld)
 	{
 		ServerWorld->Refresh(DeltaSeconds);
@@ -1041,6 +1048,10 @@ bool ArenaHost::KickUE2Player(int32 ConnId, bool bBan)
 	{
 		return false;
 	}
+	if (bBan)
+	{
+		UE2ServerValidator::PlayerBanned(*C, TEXT("host ban"));
+	}
 	if (bBan && !C->PlayerHashId.IsEmpty())
 	{
 		TArray<FString>& Bans = UE2ServerBans::List();
@@ -1056,6 +1067,11 @@ bool ArenaHost::KickUE2Player(int32 ConnId, bool bBan)
 	C->Close(bBan ? TEXT("banned by the host") : TEXT("kicked by the host"), FString(),
 		bBan ? TEXT("You have been banned from this server.") : TEXT("You have been kicked from this server."));
 	return true;
+}
+
+bool ArenaHost::IsUE2IdBanned(const FString& Id)
+{
+	return !Id.IsEmpty() && UE2ServerBans::List().ContainsByPredicate([&Id](const FString& E) { return E == Id || E.StartsWith(Id + TEXT("|"), ESearchCase::IgnoreCase); });
 }
 
 TArray<FString> ArenaHost::GetUE2BanList()
@@ -1092,6 +1108,7 @@ bool ArenaHost::IsUE2Hosting()
 
 TArray<ArenaHost::FUE2HostPlayer> ArenaHost::GetUE2Players() { return {}; }
 bool ArenaHost::KickUE2Player(int32, bool) { return false; }
+bool ArenaHost::IsUE2IdBanned(const FString&) { return false; }
 TArray<FString> ArenaHost::GetUE2BanList() { return {}; }
 void ArenaHost::UnbanUE2(int32) {}
 void ArenaHost::SetUE2BanStore(TFunction<TArray<FString>&()>, TFunction<void()>) {}

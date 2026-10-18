@@ -997,6 +997,14 @@ bool FUE2NetPlay::FunctionCall(const FUE2NetActor& A, FUSFunction* Function, con
 	}
 	if (A.Channel == PCChannel())
 	{
+		if (Name == TEXT("ClientCapBandwidth"))
+		{
+			// PlayerController.ClientCapBandwidth: the server's MaxClientRate caps our net speed (move cadence)
+			if (const FUE2NetValue* Cap = Param(Params, TEXT("Cap")))
+			{
+				ClientCap = Cap->I;
+			}
+		}
 		if (Name == TEXT("ClientAdjustPosition") || Name == TEXT("LongClientAdjustPosition"))
 		{
 			ClientAdjust(Params, true, false);
@@ -1252,7 +1260,7 @@ void FUE2NetPlay::ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params,
 			++ZOffsetSamples;
 		}
 	}
-	if (Match && Error < 3.f && (VelError < 3.f || !bHasVelocity) && (NewPhysics == 1 || NewPhysics == 2 || NewPhysics == 3 || NewPhysics == 11))
+	if (Match && Error < 3.f && (VelError < 3.f || !bHasVelocity) && (NewPhysics == 0 || NewPhysics == 1 || NewPhysics == 2 || NewPhysics == 3 || NewPhysics == 11))
 	{
 		// UE2 LongClientAdjustPosition: already there (the server's adjustment crossed our move)
 		++IgnoredAdjustments;
@@ -1306,6 +1314,15 @@ void FUE2NetPlay::ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params,
 			Corrections, TimeStamp, Error, Match ? *(Match->EndLoc / S).ToCompactString() : TEXT("-"), *ServerLoc.ToCompactString(), VelError, NewPhysics,
 			*ServerState.ToString(), Match ? *(Match->Accel / S).ToCompactString() : TEXT("-"), Match ? Match->In.DoubleClickMove : -1, Match ? Match->In.bPressedJump : -1,
 			Match ? Match->In.bDoubleJump : -1);
+		if (Match)
+		{
+			const UPrimitiveComponent* Floor = Match->FloorComp.Get();
+			const UStaticMeshComponent* FloorSM = Cast<UStaticMeshComponent>(Floor);
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: correction %d details: velocity ours %s server %s, dt %.4f, %s, floor %s (%s)"), Corrections,
+				*(Match->EndVel / S).ToCompactString(), *NewVel.ToCompactString(), Match->Delta, Match->bEndWalking ? TEXT("walking") : TEXT("falling"),
+				Floor && Floor->GetOwner() ? *Floor->GetOwner()->GetName() : TEXT("-"),
+				FloorSM && FloorSM->GetStaticMesh() ? *FloorSM->GetStaticMesh()->GetName() : Floor ? *Floor->GetName() : TEXT("-"));
+		}
 	}
 	SavedMoves.RemoveAt(0, Keep);
 	UCharacterMovementComponent* CM = Pawn->GetCharacterMovement();
@@ -1321,6 +1338,12 @@ void FUE2NetPlay::ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params,
 			++LadderEntries;
 		}
 		CM->SetMovementMode(MOVE_Custom, UArenaCharacterMovement::CustomLadder);
+	}
+	else if (NewPhysics == 0 && !bVeryShort)
+	{
+		// PHYS_None: the server froze our pawn (Assault's RoundEnded, the end of the match): ours stops as well
+		// instead of falling or walking on, which drew a correction every move until the next round
+		CM->DisableMovement();
 	}
 	else if (Mode != MOVE_None && CM->MovementMode != Mode)
 	{
@@ -1587,12 +1610,14 @@ void FUE2NetPlay::ClassifyFloor(FMove& M) const
 	M.SlopeBucket = -1;
 	M.SlopeZ = 0.f;
 	M.EndBase = nullptr;
+	M.FloorComp = nullptr;
 	const AUE2NetLocalPawn* Pawn = LocalPawn.Get();
 	const UCharacterMovementComponent* CM = Pawn ? Pawn->GetCharacterMovement() : nullptr;
 	if (!CM || !M.bEndWalking || !CM->CurrentFloor.bBlockingHit)
 	{
 		return;
 	}
+	M.FloorComp = CM->CurrentFloor.HitResult.GetComponent();
 	if (const AArenaMover* Mover = Cast<AArenaMover>(CM->CurrentFloor.HitResult.GetActor()))
 	{
 		// on a lift: no floor height learning (the lift moves), the location is compared relative to it
@@ -1836,21 +1861,43 @@ void FUE2NetPlay::SendMoves(bool bForce)
 		return;
 	}
 	const FMove& Newest = SavedMoves[Unsent.Last()];
-	// UE2 NetMoveDelta: at most one move packet per 1/45 s at the default net speed; a jump or dodge goes at once
-	const float NetMoveDelta = FMath::Max(0.0222f, 2.f * 42.f / float(FMath::Max(1, Connection->GetSettings().NetSpeed)));
-	if (!bForce && Unsent.Num() < 2 && !Newest.IsImportant() && Newest.TimeStamp - LastSendTime < NetMoveDelta)
+	// UE2 ReplicateMove holds a move back (PendingMove, sent with the next one) while less than NetMoveDelta has passed
+	// since the last send: OldUnreal 3374 NetMoveDelta = FMax(0.011, 2 * MoveRepSize (42) / CurrentNetSpeed), the net
+	// speed capped by the server's ClientCapBandwidth; the elapsed game time counts * TimeDilation * 0.91. (3369 used
+	// 0.0222 unless the net speed is above 10000 with at most 10 players.) A jump or dodge goes at once.
+	const int32 NetSpeed = FMath::Max(1, ClientCap > 0 ? FMath::Min(ClientCap, Connection->GetSettings().NetSpeed) : Connection->GetSettings().NetSpeed);
+	static const bool bLegacy = FParse::Param(FCommandLine::Get(), TEXT("UE2NetLegacyMoves")); // test hook (A/B): the cadence before 3374
+	const float NetMoveDelta = FMath::Max(bLegacy ? 0.0222f : 0.011f, 2.f * 42.f / float(NetSpeed));
+	const float Dilation = World.IsValid() ? World->GetWorldSettings()->TimeDilation : 1.f;
+	if (!bForce && Unsent.Num() < 2 && !Newest.IsImportant() && (Newest.TimeStamp - LastSendTime) * Dilation * 0.91f < NetMoveDelta)
 	{
 		return;
 	}
-	// the last jump / dodge move of the past half second, repeated in case its packet was lost
+	// UE2 OldMove: the newest jump / dodge move of the moves not yet confirmed by an adjustment, else the newest one whose
+	// acceleration turned (dot < 0.95), repeated with the next sends in case its packet was lost (OldTimeDelta covers
+	// half a second)
 	const FMove* Old = nullptr;
-	for (int32 i = SavedMoves.Num() - 1; i >= 0; --i)
 	{
-		const FMove& C = SavedMoves[i];
-		if (C.bSent && C.IsImportant() && Newest.TimeStamp - C.TimeStamp < 0.5f)
+		const FVector NewAccelDir = Newest.Accel.GetSafeNormal();
+		for (int32 i = 0; i < SavedMoves.Num(); ++i)
 		{
-			Old = &C;
-			break;
+			const FMove& C = SavedMoves[i];
+			if (!C.bSent || Newest.TimeStamp - C.TimeStamp >= 0.5f)
+			{
+				continue;
+			}
+			if (C.IsImportant())
+			{
+				Old = &C;
+			}
+			else if (!bLegacy && (!Old || !Old->IsImportant()))
+			{
+				const FVector Compare = Old ? Old->Accel.GetSafeNormal() : NewAccelDir;
+				if (FVector::DotProduct(C.Accel.GetSafeNormal(), Compare) < 0.95f)
+				{
+					Old = &C;
+				}
+			}
 		}
 	}
 	int32 i = 0;

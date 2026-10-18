@@ -14,6 +14,6 @@ namespace UE2NetModContent
 {
 	/** "Package.Group.Name" of a Sound: the content cache's sound, converted from its package first when missing. */
 	OPENUT2K4_API USoundBase* LoadSound(const FString& ObjectPath);
-	/** Converts the object (Sound / Texture / Material...) into the content cache when it is not there yet. */
+	/** Converts the object (Sound / Texture / Material / Font ...; ClassName its UE2 class) into the content cache when it is not there yet. */
 	OPENUT2K4_API bool EnsureConverted(const FString& ObjectPath, const FString& ClassName);
 }

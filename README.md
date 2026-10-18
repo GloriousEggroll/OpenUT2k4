@@ -387,6 +387,30 @@ See the "Unverified and future work" section of `Server/Docs/DedicatedServer.md`
 
 ---
 
+## OpenUT2k4 Validator (server admins)
+
+OpenUT2k4 identifies itself honestly: every login carries `?OpenUT2k4=<version>`. It never claims to be the stock
+client and never runs, answers or imitates third-party anti-cheat tools. For admins who want more, the **OpenUT2k4
+Validator** is an opt-in mutator for stock UT2004 servers (3369 / OldUnreal 3374, source in `Server/Validator/`) and
+is built into the OpenUT2k4 dedicated server (off by default):
+
+- Each OpenUT2k4 player has a key the game makes silently on first start (no prompt, no account). The validator
+  challenges OpenUT2k4 clients (real UT2004 clients are never challenged) and the key's fingerprint becomes a stable,
+  unforgeable player id: Identified / Failed / None, with a policy per result (default: log and mark, never kick).
+- Per-server first-seen dates, key bans combined with the connection's IP, an optional subnet and the UT2004 CD key
+  id (a banned player who deletes the key is caught by the IP), a whitelist, probation for new keys, signed shared ban
+  lists (Ed25519), and an API for other mods and server-side anti-cheat.
+- Conservative, log-only server-side sanity checks (time stamp rate, walking speed, NewNet time stamps, aim snaps).
+- It proves player identity, not build integrity: a modified client identifies just as well. Cheat detection is the
+  server-side checks and the admins.
+
+Build the mutator with `Server/Validator/build-validator.sh` (UCC under Wine); install with
+`ServerActors=OpenUT2k4Validator.OUTValidator`. Everything else: [`Server/Docs/Validator.md`](Server/Docs/Validator.md).
+
+**Verifying downloads**: release archives come with a minisign signature (`.minisig`) and a `.sha256` file when the
+project owner signs them; check with `minisign -Vm <archive> -P <the published public key>` (see Validator.md
+"Release signing").
+
 ## What is not in this repository
 
 - **UT2004 game data.** No maps, textures, models, sounds, music or text from the game, and no files converted from

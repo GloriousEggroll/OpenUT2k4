@@ -2,6 +2,7 @@
 
 #include "UE2Server.h"
 #include "UE2NetLog.h"
+#include "UE2ServerValidator.h"
 #include "../UScript/UScriptCore.h"
 #include "IPAddress.h"
 #include "Misc/Parse.h"
@@ -695,6 +696,11 @@ void FUE2ServerConnection::ReceivedText(const FString& Text)
 		UE_LOG(LogUE2Net, Log, TEXT("UE2Server: %s joined (%s, %d packages, %d objects, %d names)"), *PlayerName, *GetAddrString(), PackageMap.GetList().Num(),
 			PackageMap.GetMaxObjectIndex(), PackageMap.GetMaxNameIndex());
 		Server.ConnectionJoined(*this);
+	}
+	else if (FParse::Command(&Str, TEXT("OUTVALIDATE")))
+	{
+		// an OpenUT2k4 client's answer to the validator's challenge (Net/UE2ServerValidator.h)
+		UE2ServerValidator::ReceivedControl(*this, Str);
 	}
 	else
 	{

@@ -666,9 +666,19 @@ namespace USCoreNatives
 			return RT.FindClass(Path);
 		}
 		FUSObject* O = RT.FindObject(Path, C);
+		if (O && C && (O->Flags & USF_Placeholder) && O->Class && O->Class->Name == TEXT("Package") && C->Name != TEXT("Package"))
+		{
+			// a group of the same name (a font's page textures are in a group named like the font): the object itself
+			O = RT.GetPlaceholder(Path, C);
+		}
 		if (O && C && !(O->Flags & USF_Placeholder) && !O->IsA(C))
 		{
 			return nullptr;
+		}
+		if (!O && C && Path.Contains(TEXT(".")) && RT.ContentObjectExists && RT.ContentObjectExists(Path, C->GetName()))
+		{
+			// a texture / font / sound the game has (its package is content, not script)
+			O = RT.GetPlaceholder(Path, C);
 		}
 		return O;
 	}

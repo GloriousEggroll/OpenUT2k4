@@ -80,4 +80,7 @@ chmod +x "${ARCHIVE_DIR}/openut2k4-server" "${ARCHIVE_DIR}/ucc" "${ARCHIVE_DIR}/
 cp "${SCRIPT_DIR}/../LICENSE" "${SCRIPT_DIR}/../NOTICE.md" "${ARCHIVE_DIR}/"
 
 "${PROJECT_DIR}/Scripts/check-release.sh" "${ARCHIVE_DIR}" "${UE_ROOT}"
+# release archive + detached signature, only with OPENUT2K4_SIGNING_KEY (Server/Docs/Validator.md "Release signing")
+VERSION="$(sed -n 's/^ProjectVersion=//p' "${PROJECT_DIR}/Config/DefaultGame.ini" | tr -d '\r')"
+"${PROJECT_DIR}/Scripts/sign-release.sh" "${ARCHIVE_DIR}" "OpenUT2k4Server-${VERSION}-Mac"
 echo "==> Done: ${ARCHIVE_DIR}"

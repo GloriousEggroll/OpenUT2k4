@@ -82,6 +82,17 @@ public:
 	virtual FVector NewFallVelocity(const FVector& InitialVelocity, const FVector& Gravity, float DeltaTime) const override;
 	/** UE2 processLanded: in a bBounceVelocity volume the pawn bounces off with ZoneVelocity instead of landing. */
 	virtual void ProcessLanded(const FHitResult& Hit, float remainingTime, int32 Iterations) override;
+	/**
+	 * Net play's box collision (Net/UE2NetPlay.h UUE2NetBoxCollision: UE2's pawn against the world is an axis-aligned
+	 * box of half size (R, R, H)): floors are found with that box, and a contact anywhere under its bottom face counts
+	 * (UE2 physWalking / physFalling). The engine's capsule rules (a contact within the radius, the flat base inside
+	 * the capsule) rejected the box's corners: the pawn walked off ledges a UE2 pawn still stands on, and hung in the
+	 * falling state at the floor after a landing on a corner contact (often next to a wall).
+	 */
+	bool HasBoxCollision() const;
+	virtual bool IsWithinEdgeTolerance(const FVector& CapsuleLocation, const FVector& TestImpactPoint, const float CapsuleRadius) const override;
+	virtual bool FloorSweepTest(FHitResult& OutHit, const FVector& Start, const FVector& End, ECollisionChannel TraceChannel, const struct FCollisionShape& CollisionShape,
+		const struct FCollisionQueryParams& Params, const struct FCollisionResponseParams& ResponseParam) const override;
 	/** Test hook (non-shipping): -UE2LogImpacts logs what a fast falling pawn (> 1500 cm/s) runs into. */
 	virtual void HandleImpact(const FHitResult& Hit, float TimeSlice = 0.f, const FVector& MoveDelta = FVector::ZeroVector) override;
 	/**

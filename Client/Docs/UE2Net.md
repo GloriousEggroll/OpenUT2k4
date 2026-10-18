@@ -30,10 +30,13 @@ Package downloads (custom maps and mod packages: HTTP redirect, file channel, ne
 | `Net/UE2NetActors.h/.cpp` | Step 3 stand-ins: `AUE2NetPawn` (xPawn: our character body, interpolation, animation, weapon, ragdoll), `AUE2NetProjectile`, `AUE2NetPlaceholder` (vehicles, bombing run ball) |
 | `Net/UE2NetNewNet.h/.cpp` | NewNet (UTComp's lag compensated weapons, all forks): the server's time stamp (`NewNet_TimeStamp` / `TimeStamp_Pawn`), `NewNet_ServerStartFire` / `NewNet_OldServerStartFire` with the parameters each weapon class declares, `NewNet_PRI` ping |
 | `Net/UE2NetModClient.h/.cpp` | Client-side parts of common mods: UTPlus and UTComp hit sounds, UTComp ready-up and warmup |
-| `Net/UE2NetModContent.h/.cpp` | On-demand conversion of single resources (sounds) from mod packages into the content cache |
+| `Net/UE2NetModContent.h/.cpp` | On-demand conversion of single resources (sounds, textures, materials, fonts) from mod packages into the content cache |
+| `Net/UE2NetScriptHUD.h/.cpp` | A modded server's own HUD and scoreboard classes run by the script VM: the client-side script mirror of the replicated actors, `ClientSetHUD`, the canvas backend (see "Mod HUDs and scoreboards") |
 | `Net/UE2NetPlay.h/.cpp` | Step 4, `FUE2NetPlay`: playing. Our pawn (`AUE2NetLocalPawn`, an `AArenaCharacter` with the UE2 movement), saved moves, `ServerMove` / `DualServerMove` / `ShortServerMove`, corrections and replay, firing, weapons, respawn, owner-only HUD values, chat / team / ready / combo commands, the spectator's `ServerMove`; the `-UE2NetPlayScript` test hook |
 | `Net/UE2NetBits.h/.cpp` | Bit reader / writer in the UE2 layout |
 | `Net/UE2NetCDKey.h/.cpp` | login identity: AUTH hash, GM, stats password, CD key challenge response |
+| `Net/UE2NetValidator.h/.cpp` | honest identification (`?OpenUT2k4=<version>` in every login URL), the player key, answering the OpenUT2k4 Validator's challenge (see "OpenUT2k4 identification and the validator") |
+| `Net/UE2NetValidatorCrypto.h/.cpp` | SHA-256, SHA-512, RSA-2048 (e = 3) sign / verify / key generation, Ed25519 verify: own code, shared by client and server |
 | `Net/UE2NetLog.h` | `LogUE2Net` |
 | `Net/UE2Server.h/.cpp` | Hosting, `FUE2Server`: the UDP game port, the connections, the package list (USES) from the player's install, replication of the server actors to each connection |
 | `Net/UE2ServerConnection.h/.cpp` | `FUE2ServerConnection`: one client of our server (packets, acks, resends, channels, the server side of the handshake, actor channels with per-property shadows, function calls both ways) |
@@ -41,6 +44,7 @@ Package downloads (custom maps and mod packages: HTTP redirect, file channel, ne
 | `Net/UE2ServerPlayer.h/.cpp` | `AUE2RemoteController`: a remote player's controller in our game |
 | `Net/UE2ServerCodec.h/.cpp` | Value encoding shared by server and client: properties, structs (`CompressedPosition`, `Quat`, generic), function parameters (`UE2Codec`) |
 | `Net/UE2ServerUplink.h/.cpp` | "Show in Server Browsers": the master server uplink (off by default) |
+| `Net/UE2ServerValidator.h/.cpp` | the OpenUT2k4 Validator built into our server (off by default; `Server/Docs/Validator.md`) |
 
 Small hooks outside `Net/`: `ArenaHUDUT.cpp` shows `ArenaNet::GetSpectatorBarText()` in the spectator bar, and
 `AArenaGameMode::RestartPlayer` never gives a spectator-only player (`?SpectatorOnly=1`) a pawn. For downloads,
@@ -194,6 +198,21 @@ client: JOIN          (after our map is loaded)
 - `SEC=` / `GZ=` in CHALLENGE are UT2004 additions for its security and compression features. The client does not
   need to answer them.
 
+**Compared with the OldUnreal 3374 client** (its Linux client, no CD key, run on its own Xvfb display and captured
+through a UDP logging proxy against the same local 3369 servers as ours: stock DM, a TAM server with
+WS3SPN / WSUTComp, the Vehicle CTF profile with NewNet weapons; see "Real client reference"):
+
+| Step | 3374 client | Ours |
+|---|---|---|
+| Hello | `HELLO REVISION=0 MINVER=3180 VER=3374` | `MINVER=3369 VER=3369` (the server answers `VER=3369` either way) |
+| Login | `AUTH`, `NETSPEED 20000`, `LOGIN RESPONSE=.. URL=:<port>/Index.ut2?Name=..?Class=Engine.Pawn?Character=..?team=255` in one packet | the same three; the URL carries our options without `Class=` |
+| After `WELCOME`, map loaded | every `HAVE` in USES order (one per package whose generation count differs from the server's, older or newer: 145 of 204 on DM-Rankin with the 3374 packages), then `PETE PKT=.. PKG=..`, two `REPEAT <scrambled text>`, `JOIN`, `OPENVOICE 1` | `SKIP` / `HAVE` in USES order, then `JOIN` |
+
+So the order of HAVE / SKIP relative to JOIN is the same: all of them before `JOIN`, in USES order. `PETE` and
+`REPEAT` are the stock engine's package check report (the server binary reads them, `REPEAT` carries scrambled
+package data); we do not send them, and the 3369 servers do not need them. `OPENVOICE` opens voice chat, which we do
+not have.
+
 ## CD key and AUTH
 
 ### What the OldUnreal 3374 client sends
@@ -311,6 +330,36 @@ Two things made a rejected join safe:
 
 The browser shows the message in a box, and the test hooks (`-AutoScreenshot` / `-AutoQuit`) fire even when no map
 ever loads, so a rejected join still screenshots and quits (`AutomationFallback` in `UE2NetJoin.cpp`).
+
+## OpenUT2k4 identification and the validator
+
+Our client never pretends to be the stock client. Every `LOGIN` URL ends with `?OpenUT2k4=<version>` (the project
+version, `0.1.0`); stock servers ignore options they do not know, and the server log shows it in `Login request`. The
+client does not run, answer or imitate any third-party anti-cheat; servers that require one will not admit it.
+
+Servers that run the **OpenUT2k4 Validator** (`Server/Docs/Validator.md`: a mutator for stock servers, built into our
+own server) challenge clients that sent the option; the answer proves the player's identity (a key the client made on
+first start, `<Saved>/Identity/PlayerKey.txt`), not anything about the build.
+
+- **Stock server with the mutator**: the package `OpenUT2k4Validator.u` is in USES (it calls `AddToPackageMap`) and is
+  downloaded like any mod package. After JOIN the server spawns `OpenUT2k4Validator.OUTValidatorLink`, owned by our
+  PlayerController and relevant to us only (`bOnlyRelevantToOwner`), with the replicated string `ChallengeText` =
+  `OUTV1;<32 hex nonce>;<server ip:port>;<map>;<player id>`. `FUE2NetConnection` passes every opened / updated actor to
+  `UE2NetValidator::ActorChanged`, which signs `OUT2K4RESP2;<ChallengeText>;<dialed>` with the player key (`dialed`
+  = the server IP and port we really send to, `FUE2NetConnection::GetRemoteIP`, plus `/<host>` when joined by name)
+  and calls the reliable server function `ServerResponse(int Part, int Total, string Data)` on that actor's channel,
+  240 characters per part (5 calls): the parts joined are `OUTR2;<dialed>;<public key hex>;<signature hex>`
+  (RSA-2048, e = 3, PKCS#1 v1.5 SHA-256), or `OUTR2;NOKEY;<reason>`. A challenge whose port is not the port we
+  dialed is refused that way (a relayed challenge); the server checks that the signed dialed address is its own. The world layer ignores the actor (an unknown class). `OUTValidationInfo`
+  actors (one per player, replicated only when the admin marks results) are ignored too.
+- **Our own server**: no package; after JOIN the control channel carries `OUTVALIDATE CHALLENGE=<same form, the port
+  as *:port>` and the client answers with `OUTVALIDATE PART=<i> TOTAL=<n> DATA=<part>` lines (`SendControlText`).
+  Stock servers never send `OUTVALIDATE`, and our client sends it only in answer.
+- The client signs only challenges that start with `OUTV1;`, are printable and at most 240 characters, once each per
+  connection. A challenge that arrives before the key is ready (first start) is answered from `FUE2NetConnection::Tick`.
+- Test switches (non-shipping): `-UE2PlayerKey=<file>`, `-UE2ValidatorSelfTest`, `-UE2ValidatorTest=badsig | wrongkey
+  | nokey | silent | record=<file> | replay=<file> | dialport=<n> | relaydialed=<ip:port>`. Results:
+  `Server/Docs/Validator.md` "Tests".
 
 ## Package map
 
@@ -473,8 +522,9 @@ the player does not have.
 - **Decode-only mod classes**: decoding needs only the class metadata (fields, flags, types), which our loader reads
   from any `.u`. A downloaded mod package therefore decodes without running any of its code. What the mods' client
   code does for a player is done by `Net/UE2NetNewNet` (the NewNet fire protocol) and `Net/UE2NetModClient` (hit
-  sounds, ready-up, warmup), from the mods' own class metadata and defaults (below). Their HUDs and scoreboards are
-  not run (open problems).
+  sounds, ready-up, warmup), from the mods' own class metadata and defaults (below). Their HUDs, scoreboards and HUD
+  interactions run in the script VM on a client-side copy of the replicated actors (`Net/UE2NetScriptHUD`, "Mod HUDs
+  and scoreboards" below); nothing else of a mod's code runs.
 - **Mod classes of stock kinds** are shown as their stock ancestor: a weapon, its attachment and its projectiles by
   the first stock class up the mod class's super chain (`NewNet_ShockRifle` -> `ShockRifle`, view model, effects and
   HUD icon of our pulse rifle; `UE2NetActors::WeaponClassFor`). Before, every mod weapon was "ours none": no view model
@@ -524,6 +574,17 @@ packages' script source (the `.u` files carry it) and their class metadata; impl
   every `PingTweenTime` (UTComp: the class default or `UTComp_ServerReplicationInfo.PingTweenTime`; float-stamp forks: 0.5 s). The
   round trip feeds `PredictedPing` with the script's own average (float-stamp forks: 10 samples, UTComp: `(2P + rtt) /
   PingTweenTime`).
+- **Compared with the 3374 client** (it runs the mods' own client script; its calls decoded from captures against the
+  same local servers): WSUTComp's rocket launcher sends `NewNet_ServerStartFire(Mode, Stamp, DT, R, V)` with
+  `R` = the controller's yaw / pitch and `V` = `Pawn.Location + EyePosition()`, the shock rifle and lightning gun add
+  `bBelievesHit, A`; the float-stamp fork's assault rifle sends `(Mode, ClientTimeStamp)` with the last received
+  `NewNet_TimeStamp` value (it advances 1.1 per real second with the game speed). Ours sends the same parameters with
+  the same meaning. Differences that do not matter to the server: the script passes `A` = whatever its trace hit
+  (also walls), ours only a pawn or vehicle (the server reads `A` only when `bBelievesHit`); zero parameters were sent
+  in full by ours (now a 0 bit, see "Moves"). The 3374 client also sends `NewNet_PRI.Ping` on each `NewNet_PRI`
+  channel once after joining and then on its own every `PingTweenTime` (ours: its own only), and mod UI traffic that
+  we do not run: UTComp's vote map list replies (`UTComp_PRI.ReplyToMapSend`, 20 per second while the list loads)
+  and a scoreboard's periodic requests.
 - **Measuring it**: a test-only mutator in the scratch folder (never in the repository) logged every shot and every
   damage event of the human player on the server, with the fire mode's `PingDT`. The test client hunted bots with
   `-UE2NetPlayScript="3:route=pickups;4:hunt=tap"` (one press per shot, aimed at the target as shown). Shock rifle
@@ -570,6 +631,76 @@ Results (local servers, 240 s): UTComp (WSUTComp_V6 on WS3SPN TAM) 62 of 62 and 
 RezQ scoreboard, bright skins, 15 bots, `-UE2NetLag=100`, 190 s): 802 NewNet start fires (793 with a believed hit),
 262 of 262 UTPlus hit sounds played (`HitSounds.HitSound`, converted on the first hit, 17 ms), 0 bunch errors,
 185 corrections in 25219 moves (0.7 %), the NewNet weapons with our view models.
+
+### Mod HUDs and scoreboards
+
+A modded server's HUD and scoreboard are the mod's own UnrealScript (`PlayerController.ClientSetHUD(HUD class,
+scoreboard class)`, e.g. `WS3SPN_V6.TAM_HUD` / `TAM_Scoreboard`, `WSUTComp_V6.UTComp_HudCTeamDeathmatch` /
+`UTComp_ScoreBoard`, the RezQ scoreboard on stock VCTF). `Net/UE2NetScriptHUD` runs them in the script VM and draws
+them on our canvas, like the real client draws them:
+
+- **Client mirror**: every replicated actor whose class the script runtime has (stock or downloaded) gets an object of
+  that class in a client-side script world (`FUE2NetMirrorWorld`): class defaults plus the received properties, Role
+  and RemoteRole swapped, references resolved to the mirrored actors, to classes, to placeholders of textures / fonts /
+  sounds, or, for map actors without a channel (`PRI.PlayerZone`, `PlayerLocation`), to a data copy with the map
+  package's saved properties (location names). What UE2's client sets up itself is set up the same way: the Level
+  (`NM_Client`, `TimeSeconds`, the clock, `Title` from the converted map, `GRI`, `GetLocalPlayerController`),
+  `GRI.PRIArray`, the controller's `GameReplicationInfo`, `Player` (viewport with an `InteractionMaster`) and
+  `ViewTarget` (the pawn we watch), `Pawn.Weapon` (our current weapon), the weapons' fire mode objects and ammo classes
+  (`Weapon.InitWeaponFires`), and the GameReplicationInfo's client `Timer` (elapsed / remaining time). Mirrored actors
+  are data: their code does not run, except the local PlayerController's `PostBeginPlay` (mods create their client
+  settings objects there, e.g. UTComp's `HUDSettings`) and the GRI's `Timer`.
+- **The HUD**: `ClientSetHUD` from the server runs on the mirrored controller, which spawns the HUD and scoreboard in
+  the script world (their spawn events, timers, `Tick` and state code run there). Each frame `HUD.PostRender` draws on
+  a script `Canvas` (the scoreboard when the scoreboard key is held: `bShowScoreBoard`), then the viewport's
+  interactions (`InteractionMaster.Process_PostRender`). Interactions a mod's client code adds for the local player and
+  keeps in a controller property (UTComp's team overlay, `BS_xPlayer.Overlay`) are added through the stock
+  `InteractionMaster.AddInteraction`.
+- **Canvas bridge** (`UScript/UScriptCanvas.h`, `UScriptNativesCanvas.cpp`): UE2's Canvas natives (`DrawText` with
+  UE2's word wrapping and cursor, `DrawTextClipped`, `StrLen`, `TextSize`, `DrawTextJustified`, `WrapStringToArray`,
+  `WrapText`, `DrawTile`, `DrawTileClipped`, `DrawTileStretched`, `DrawTileScaled`, `DrawTileJustified`,
+  `DrawTilePartialStretched`, `WorldToScreen`, `GetCameraLocation`), `HudBase.DrawSpriteWidget` / `DrawNumericWidget`,
+  `HUD.DrawCanvasLine` / `StaticDrawCanvasLine` / `Draw3DLine`, `Material.MaterialUSize` / `VSize`,
+  `CacheManager.GetCrosshairList` (the install's `.ucl` records), `GUIFont.GetFont`, `Interaction.Initialize`; the
+  script-side helpers (`SetPos`, `SetDrawColor`, `DrawIcon`, `DrawRect`, `Reset` ...) are the stock script. The
+  canvas state (Font, Style, DrawColor, ColorModulate, Org, Clip, Cur, SpaceX/Y, bCenter, FontScale) lives in the
+  script Canvas object. Styles: Normal / Masked / Alpha alpha blended, Translucent / Additive additive, Modulated
+  multiplied; a FinalBlend's own blending wins. `DrawActor`, `DrawPortal`, `DrawScreenActor`, `Clear` and the screen
+  lights do nothing (our renderer draws the world and the first person weapon).
+- **Widgets**: the widget natives keep their aspect ratio like OldUnreal's 3374 HUD (`ResScaleX = ResScaleY =
+  Min(SizeX / 640, SizeY / 480)`); the retail 3369 scripts in the player's install would stretch them over a wide
+  screen. Sizes and positions otherwise follow UE2 (`HudCanvasScale`, `HudScale`, pivot, scale modes, `Tints[TeamIndex]`).
+- **Resources**: a texture or material placeholder is resolved through the content cache's json (a material to its base
+  texture with its FinalBlend blending, TexRotator turning, TexScaler scale and a Combiner's FadeColor pulse; UE2 sizes
+  from the json, also as `Texture.USize` / `VSize` the first time script reads them). Fonts are the cache's UE2 bitmap
+  fonts drawn 1:1 (`ArenaRuntimeContent::LoadFontByObjectPath`), line height from the font's cell height, colour
+  codes (ESC R G B) as colour runs. What only a mod package has (WS3SPN's scoreboard and flag textures, UTComp's logo,
+  mod fonts and materials) is converted on demand from the package (`UE2NetModContent::EnsureConverted`, 15 - 25 ms per
+  texture, once per cache).
+- **What stays ours**: stock HUD classes (the game's own packages) are drawn by our native HUD (`ArenaHUDUT`) unless
+  `-UE2ScriptHUD=all`. With a script HUD our HUD still draws the messages (local messages, kill feed, console and chat
+  lines, pickup messages: the script HUD's message lists are not fed), the join / spectator notice and the mod status
+  line; a stock HUD with a mod scoreboard (VCTF with the RezQ scoreboard) draws ours and runs only the scoreboard's
+  `DrawScoreboard`. Per element (HUD, scoreboard) the script falls back to ours after 5 script errors, 120 (60) frames
+  without a draw call or a runaway frame (over 5 M tokens); unsupported natives log once and return zero.
+- **Never run**: anti-cheat and client-check packages (`AntiTCC*`, `itsfake`, `UTSecure`, `ACE*`, ... and
+  `-UE2ScriptDeny=Pkg,Pkg`) are neither mirrored nor run; no other mod actor's code runs on our side (mutators' client
+  `Tick`, menus, `ClientValidate` and the like are not emulated).
+- Statistics: `-UE2ScriptHUDLog` logs frames, average time and tokens, mirrored actors and resources every 5 s; the
+  summary line `UE2NetScriptHUD summary` is logged when the connection ends.
+
+Results (local 3369.3 servers, client at 1280x720):
+
+| Server | Drawn by the script VM | Cost |
+|---|---|---|
+| WS3SPN_V6 TAM + WSUTComp_V6 (DM-Rankin, DM-TrainingDay, 4 bots) | `TAM_HUD` (timer, team scores with team symbols, adrenaline, health / shield, weapon bar with ammo bars, ammo with icon, the weapon's custom crosshair, spectator bar) and `TAM_Scoreboard` (header with score limit / stats / server skill / date, both teams with NOT RDY, ranks and the TAM logo, elapsed and round time) | 0.1 - 0.25 ms, 2000 - 4000 tokens per frame |
+| WSUTComp_V6 on stock TDM | `UTComp_HudCTeamDeathmatch`, `UTComp_ScoreBoard` (UTComp logo, per player ping / PL / time, location names), the team overlay interaction runs | 0.2 - 0.3 ms, about 5000 tokens |
+| Replica of a popular Vehicle CTF server (stock VCTF HUD, RezQ scoreboard, 16 bots) | `RZQ_ScoreBoardTeamDeathMatch` (per player stats, denied / flag kills, location names, times) | 1.3 ms per scoreboard frame |
+| Stock TDM with `-UE2ScriptHUD=all` | `HudCTeamDeathMatch` / `ScoreBoardTeamDeathMatch` | 0.2 ms |
+
+Compared with the OldUnreal 3374 client on the same TAM server (screenshots of the other test round): HUD layout,
+widget sizes, scoreboard layout, fonts, date line and team scores match; texts the mods show as local messages ("You
+are in warmup, press F5 ...") are ours (the warmup line).
 
 ### Downloads
 
@@ -814,15 +945,32 @@ resulting location and velocity. Moves are sent like UE2 does:
 | `ShortServerMove` | a move without acceleration, dodge or double jump | `TimeStamp, ClientLoc, NewbRun, NewbDuck, NewbJumpStatus, ClientRoll, View` |
 
 - `InAccel` is the acceleration in UU/s² times 10, because vectors travel as whole numbers. It is the acceleration we
-  simulated with (`AccelRate` 2048 at full input): the server's walking physics adds `Acceleration * DeltaTime` as is.
+  simulated with (`AccelRate` 2048 at full input). The 3374 client sends the input acceleration capped at 3072
+  (`SavedMove.SetMoveFor`, 30720 on the wire at full input); its own positions (and the server's) show that the
+  native physics limits it to `AccelRate`, so both arrive at the same motion.
 - `NewbJumpStatus` toggles with each jump press (the server compares it with its last value).
   `PendingCompress` = run0 1, duck0 2, jump status0 4, double jump0 8, run 16, duck 32, jump status 64, double jump 128.
 - `View` = `(32767 & (Pitch / 2)) * 32768 + (32767 & (Yaw / 2))`.
-- `OldTimeDelta` (500 per second) / `OldAccel` repeat the last jump or dodge move of the past half second, in case its
-  packet was lost. `OldAccel` packs `CompressAccel(0.05 * accel + 0.5)` per axis at bits 23 / 15 / 7, plus 64 run,
-  32 double jump, 16 jump and the dodge direction.
-- At most one send per 1/45 s (UE2 `NetMoveDelta` at net speed 10000); a jump or dodge goes at once.
+- `OldTimeDelta` (500 per second) / `OldAccel` repeat an important move of the past half second, in case its packet
+  was lost: as UE2's `ReplicateMove` picks `OldMove` among the moves not yet confirmed, the newest jump / dodge move,
+  else the newest one whose acceleration turned (dot product of the directions < 0.95). `OldAccel` packs
+  `CompressAccel(0.05 * accel + 0.5)` per axis at bits 23 / 15 / 7, plus 64 run, 32 double jump, 16 jump and the
+  dodge direction. (Before: jump and dodge moves only.)
+- **Cadence**: a move is held back and sent with the next one (`DualServerMove`) while less than `NetMoveDelta` has
+  passed since the last send, counting game time * `TimeDilation` * 0.91 as UE2 does. `NetMoveDelta` follows the
+  OldUnreal 3374 script: `FMax(0.011, 2 * MoveRepSize (42) / CurrentNetSpeed)`, the net speed capped by the server's
+  `ClientCapBandwidth` (stock servers: 10000), so 0.011 s. 3369 used `FMax(0.0222, ...)` unless the net speed was
+  above 10000 with at most 10 players, so we sent at most every 1/45 s and below 45 fps two frames per packet. The
+  3374 client measured at 50 fps sends one `ServerMove` per frame; ours now does the same. A jump or dodge goes at
+  once. `-UE2NetLegacyMoves` (test hook) brings the old cadence and the old `OldMove` choice back for A/B runs.
+- UE2 does not combine moves the way we save them (one per physics step): its `ReplicateMove` merges a held-back
+  walking move into the next one when the acceleration direction is the same. That only changes how many moves a
+  packet carries, not where the pawn goes.
 - `ClientLoc` is our location in UU plus the measured offsets below.
+- **Zero parameters**: like UE2's `UNetDriver::ProcessRemoteFunction`, a parameter equal to zero (0, 0.0, a zero
+  vector or struct, None, an empty string) is sent as a single 0 bit (`FUE2NetConnection::SendFunction`); the
+  receiver zeroes it. Before, we sent zeros in full: `ServerStopFire(0)` took 15 bits instead of the 3374 client's 7,
+  a ShortServerMove's zero `ClientRoll` 9 instead of 1.
 
 ### Corrections (`ClientAdjustPosition` and its short forms)
 
@@ -854,13 +1002,18 @@ that showed, and what our pawn now does to match:
 | The floor height differs by surface (BSP, each static mesh, terrain) and steepness | a height offset learned per floor component and steepness class from height-only corrections; the class average for a surface not seen yet |
 | On a lift the adjustment's location is relative to the lift, and the two copies of the lift move on their own clocks | matching compares our location relative to our lift at the end of that move |
 | Swimming at part input: UE2 `calcVelocity` has no analog speed limit (a part input reaches `WaterSpeed` / `GroundSpeed`, only more slowly) | net play skips the engine's `AnalogInputModifier` limit in `UArenaCharacterMovement::CalcVelocity` (a 0.6 input swam 88 UU/s slower than the server) |
+| Falling while pressing into a wall (jumps, dodges and falls along walls): the server's pawn gets no air control at all. Its horizontal velocity stays exactly as it was (0 into the wall, unchanged along it, also above the maximum speed during a dodge), so it never drifts closer than where it took off. physFalling's `TestWalk` check (the next step's horizontal move with air control) cuts air control when it would hit something: to 0.05 on a walkable slope, to 0 on a wall | `UArenaCharacterMovement::GetAirControl`: 0 when the test move (with the pawn's own collision shape, the box in net play) hits a wall. Ours drifted up to 2 UU into the wall's 2 UU gap during every jump and slid along it with air control: one correction after another while jumping along walls |
+| Air control at the maximum speed: the server's horizontal speed is bound only while it is already above the maximum (`BoundSpeed`); from at or below it, one step may go past it (440 → 444.7 UU/s at 7 ms steps, 448.4 at 11 ms) | `CalcVelocity` (falling) binds to the current speed only when that is above the maximum |
+| Floors under the box: UE2 finds the floor with the pawn's box (physWalking's drop to the floor, physFalling's landing), so a contact anywhere under the bottom face counts, also at a corner (up to √2 R from the centre). The engine's capsule rules (a contact within the radius; its flat-base floor check is an octagon inside the capsule) rejected those: our pawn hung in the falling state at the floor after landing on a corner contact (often next to a wall, 3.9 UU below the server's walking pawn, until the next correction or jump), and walked off ledges the server's pawn still stood on (on DM-Rankin the server's pawn walked 32 UU higher along a ledge for 40 s while ours dropped back after every correction: 964 corrections) | for a box pawn `UArenaCharacterMovement::FloorSweepTest` sweeps the box (a walkable contact is the floor; where the box only catches a step's edge with a contact normal that is not walkable, the engine's own floor sweep decides, or the pawn slid down stairs it pressed against) and `IsWithinEdgeTolerance` accepts the whole bottom face (less the engine's 0.15 cm margin) |
+| `PHYS_None` in an adjustment (Assault's `RoundEnded`, the end of a match): the server's pawn stands still | our pawn stops too (`DisableMovement`); before, it kept falling or walking and drew a correction every move until the next round |
 
 Remaining differences are mostly geometry. Static meshes with a UE2 collision model collide with that model since map
 schema 7 (the pillar `PF_Ancient_Pillar2` on DM-1on1-Spirit: a correction every move while pushing into it before,
 one now). Some still differ: DM-Rankin's `houredoorframe` (its collision model blocks our pawn on the floor where the
 server's pawn steps up, 24 - 37 UU) and AS-BP2-Outback's `painting1` (the server's pawn stops 5 - 8 UU before ours).
 Terrain heights differ by up to 20 UU (DM-DesertIsle, DM-CBP2-KillbillyBarn). Test runs log each correction's
-blocker (`wall probe`).
+blocker (`wall probe`) and a `details` line: our and the server's velocity, the move's length, walking or falling,
+and our floor component.
 
 ### Firing, weapons, HUD
 
@@ -985,12 +1138,61 @@ Map schema 7 (static mesh collision models, hidden collision meshes, invisible B
 | AS-BP2-Outback wall push | 1673 | 253 (was 28) | 4.4 / 8.9 UU | the server stops at `painting1` 5 - 8 UU before ours |
 | Movement test (jumps, dodges) | 2736 | **20** (was 44) | 2.7 / 9.0 UU | |
 
+### Real client reference (OldUnreal 3374)
+
+The reference: OldUnreal's 3374 Linux patch (preview 23) applied to a scratch copy of the player's install (`System/`
+copied, the other folders linked read-only), run with its own HOME on its own Xvfb display and driven with xdotool on
+that display only. It runs without a CD key (it makes its own `System/cdkey` in that HOME). A UDP logging proxy sat
+between it and the server; a small decoder (packet and bunch framing, control strings, function calls by field index
+with the parameter types of the scripts) read the captures, and our client went through the same proxy. Servers, all
+local 3369.3 dedicated servers on 127.0.0.1 without uplink or stats: stock DM-Rankin, a WS3SPN TAM server with
+WSUTComp_V6 (its stats link off), and a Vehicle CTF profile with NewNet weapons (its anti-cheat packages are not part
+of it). None of this is in the repository.
+
+| Topic | 3374 client | Ours before | Ours now |
+|---|---|---|---|
+| Handshake | `HELLO MINVER=3180 VER=3374`; HAVE in USES order, then `PETE`, `REPEAT`, `JOIN`, `OPENVOICE` | HAVE / SKIP in USES order, `JOIN` | unchanged (see "Control channel") |
+| Move cadence | `NetMoveDelta` 0.011 s: one `ServerMove` per frame at 50 fps | at most one packet per 1/45 s: below 45 fps two frames per `DualServerMove` | the 3374 rule, capped by `ClientCapBandwidth` |
+| Redundant old move | the newest jump / dodge move, else one whose acceleration turned | jump / dodge moves only | as the 3374 client |
+| Zero parameters | one 0 bit | sent in full | one 0 bit |
+| `InAccel` | the input capped at 3072 UU/s² | `AccelRate` (2048) | unchanged: the native physics caps it to `AccelRate`, the motion is the same |
+| NewNet fire | `NewNet_ServerStartFire` with the class's own parameters (stamp, `DT`, view, eye location, believed hit) | the same | unchanged |
+
+Movement against the same servers was compared with `-UE2NetPlayProbe` (the server's state for every move): standing
+at a wall on DM-1on1-Spirit and jumping while pressing into it, the server's pawn kept its distance from the wall and
+landed walking; ours drifted 2 UU towards the wall in every jump (air control) and then hung in the falling state at
+the floor 3.9 UU too low (the box's corner contact refused as a landing). Both are fixed (see "What the server's
+physics turned out to be"); the same test now matches to 0.05 - 0.15 UU in height and 0.2 UU from the wall.
+
+Correction rates, our client through the route script (`route=pickups`, CTF-Face3 `route=flag`, with jumps, double
+jumps and dodges) for 110 s on an empty local 3369.3 server, editor build:
+
+| Map | Before: corrections / moves (falling) | After (falling) | Average / max error before → after | Left (after) |
+|---|---|---|---|---|
+| DM-Rankin | 80 / 13881, 0.58 % (42) | 32 / 8736, 0.37 % (13) | 5.6 / 45.5 → 2.4 / 10.8 UU | `houredoorframe` and a step down that block our box where the server's pawn passes, once per lap |
+| DM-1on1-Spirit (lifts) | 92 / 16077, 0.57 % (61) | 64 / 6848, 0.93 % (19) | 2.1 / 13.9 → 6.5 / 39.2 UU | a 37 UU step the server's pawn steps up and ours does not (7, depending on the route), stairs walls |
+| CTF-Face3 (jump pads) | 92 / 12948, 0.71 % (14) | 75 / 9889, 0.76 % (14) | 11.7 / 39.0 → 10.3 / 38.2 UU | pillar and door frame collision models, jump pad launches one move apart, floor heights of BSP sections |
+| ONS-Torlan (terrain) | 83 / 12624, 0.66 % (30) | 76 / 9507, 0.80 % (9) | 4.1 / 20.8 → 4.8 / 12.9 UU | height only (43): the road trims' collision model is flat where the server's floor rises and falls 3 - 10 UU |
+| AS-Convoy | 207 / 9589, 2.16 % (59) | 49 / 10330, 0.47 % (22) | 3.0 / 38.2 → 7.9 / 38.3 UU | before: a correction every move after `RoundEnded` (`PHYS_None`); walls of the spawn trucks |
+
+"Before" is the build with the old physics, run with `-UE2NetLegacyMoves`; "after" sends at the 3374 cadence, so the server
+checks more moves per second (a `DualServerMove`'s first move is never checked), and the frame rate (so the number of
+moves) differed with the load other work put on the machine (60 - 145 fps). The falling corrections (jumps, dodges,
+falls along walls, landings) dropped on four of the five maps (CTF-Face3: 14 and 14); most of what is left is geometry (collision models, BSP edges and
+terrain under static meshes), checked per spot with the correction log's `details` line (our and the server's
+velocity, the move's length, our floor component).
+The offline movement rig (`DM-1on1-Spirit -MoveTest=all,weapons -benchmark -fps=60`) passes 286 of 286 checks with
+these changes.
+
 ### Step 4 open problems
 
 - Static meshes with a UE2 collision model, and terrain, differ from our runtime collision (see above). A wall the
   server's pawn stops at a few UU away from ours gives a correction every checked move while we push into it.
-- Jumping against a wall: our pawn moves up to 1.7 UU closer to it in the air than the server's.
 - Swimming at the surface (in and out of the water) is a few UU apart from the server.
+- Steps near the step height: on DM-1on1-Spirit the server's pawn steps up a 37 UU ledge that ours stops at.
+- Jump pads launch our pawn one move later than the server's (the pad's actor tick, not the move), and replayed
+  moves do not touch pads.
+- UE2 merges a held-back walking move into the next one (`ReplicateMove`); we send each physics step as its own move.
 - No "not ready" call exists in 3369; tournament ready-up uses `ServerReStartPlayer` while the match waits.
 
 ## Testing, evidence, open problems
@@ -1037,11 +1239,13 @@ Open problems:
 - ClientValidate response not seen live (no server asked); its format is read from the 3374 client. The 3369
   server triggers it natively (`PlayerController.ClientValidate` is a native event); no local server setting that
   sends it was found, so it is still untested.
-- Mod HUDs and scoreboards (UTComp, 3SPN, RezQ) are not run: they draw on UE2's `Canvas`, which the script runtime
-  does not bridge. Their state that matters for play is shown natively (warmup / ready line, hit sounds).
-- No comparison with a real UT2004 client in this round: the OldUnreal 3374 Linux client is no longer on this machine,
-  and the retail Windows client (Wine, own Xvfb display) stops at "Your CD key appears to be invalid" without the
-  player's key, which these tests do not use.
+- Mod HUDs and scoreboards run in the script VM ("Mod HUDs and scoreboards"). Not run: the mods' local messages
+  (their HUDs' message lists are not fed: messages stay ours), their in-game menus (UTComp's settings menu; the
+  settings come read-only from the player's ini, as for the hit sounds), their client mutators' `Tick`, and
+  interactions other than the ones a controller property holds. First person weapon overlays drawn with
+  `Canvas.DrawActor` (sniper zoom etc. in script) are left to our weapons.
+- The real client reference (see "Real client reference") covers the handshake, moves and NewNet fire. Not compared
+  yet: vehicles (`ServerDrive`), spectator moves in the free camera, and the 3374 client against a 3374 server.
 - Downloads: no size limit or eviction for the net cache yet.
 - The live 3374 server's answers to file requests are only seen through refusals from a build without the index
   rotation fix. With the fix, no live request was made: every missing package there was stock. Locally, 3369 refusals
@@ -1051,8 +1255,8 @@ Open problems:
   not copy `Manifest.ini` yet (`ArenaConvScripts` could).
 - Packages added by the OldUnreal 3374 patch are not in the retail manifest. A server's version of one, if missing
   locally, is requested like a mod package; the server refuses it in about 0.1 s.
-- Resources used only by mod classes are converted on demand (see "Mod client-side code"): sounds so far. Mod HUD
-  textures are not used yet, because mod HUDs / scoreboards are not run.
+- Resources used only by mod classes are converted on demand (see "Mod client-side code"): sounds, textures,
+  materials and fonts. Static meshes and animations of mod packages are not.
 - Only one converted copy per package name: a downloaded package with the name of one in the custom content folder
   uses the custom content's conversion. Two servers with different versions of the same package name re-convert it
   when the other one is joined.
@@ -1066,8 +1270,7 @@ Open problems:
   a VCTF map (prefix "VCTF", not "CTF") failed our CTF rules' check and the client built CTF-Face3 in its place, so the
   pawn walked in the wrong level (5360 corrections in 180 s on the replica server); VCTF maps now count as CTF maps,
   and `?UE2Net=1` worlds always use the server's map.
-- Not tested against real UT2004 redirect servers (only the local `http.server`), or with a real UT2004 client as
-  reference.
+- Not tested against real UT2004 redirect servers (only the local `http.server`).
 - `CompressedPosition`'s first byte stayed 0 in step 3 as well (the pitch comes with `ViewPitch`); the yaw byte is
   right (bots face where they run).
 - Generic struct serialization is checked with `AnimRep`, `HitFXData` and the ONS vehicle states (with the `Quat`
@@ -1079,9 +1282,8 @@ Open problems:
   suspension is local (ground traces), not the server's. The hold / use progress bar is counted locally while the
   server says an objective is held. Mod message classes run through the VM as far as it runs their `GetString`; a class
   whose `GetString` returns nothing stays counted as not shown.
-- No reference capture from a real UT2004 client yet (no headless compositor here). A capture would settle the
-  remaining details, such as the order of HAVE / SKIP relative to JOIN. The file channel request is confirmed by working
-  downloads from the 3369 server.
+- The order of HAVE / SKIP relative to JOIN is settled by the 3374 client's capture (all before `JOIN`, see
+  "Control channel"). The file channel request is confirmed by working downloads from the 3369 server.
 - While loading a map the game thread does not tick the connection. The server waits for `JOIN`, so this is fine for
   the 2 s loads seen; a very slow load could hit the 20 s timeout of map-change reconnects.
 

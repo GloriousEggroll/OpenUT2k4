@@ -78,6 +78,9 @@ cp "${PROJECT_DIR}/../LICENSE" "${PROJECT_DIR}/../NOTICE.md" "${ARCHIVE_DIR}/"
 
 if [[ ${WITH_IMPORTS} -eq 0 ]]; then
     "${SCRIPT_DIR}/check-release.sh" "${ARCHIVE_DIR}" "${UE_ROOT}"
+    # release archive + detached signature, only with OPENUT2K4_SIGNING_KEY (Server/Docs/Validator.md "Release signing")
+    VERSION="$(sed -n 's/^ProjectVersion=//p' "${PROJECT_DIR}/Config/DefaultGame.ini" | tr -d '\r')"
+    "${SCRIPT_DIR}/sign-release.sh" "${ARCHIVE_DIR}" "OpenUT2k4-${VERSION}-Linux$([[ ${CONFIG} == Development ]] && echo -Dev)"
 fi
 
 echo "==> Done: ${ARCHIVE_DIR}"

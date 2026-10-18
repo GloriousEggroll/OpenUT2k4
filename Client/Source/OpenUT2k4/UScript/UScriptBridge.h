@@ -92,6 +92,7 @@ public:
 	bool AddMutator(const FString& ClassPath);
 
 	// FUSWorld
+	virtual FUSGameWorld* AsGameWorld() override { return this; }
 	virtual FUSObject* SpawnActor(FUSClass* Class, FUSObject* Owner, FName Tag, const FUSVector* Location, const FUSRotator* Rotation, FUSObject* Spawner) override;
 	virtual bool DestroyActor(FUSObject* Actor) override;
 

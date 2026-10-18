@@ -8,6 +8,7 @@
 #include "../ArenaLevelBuilder.h"
 #include "../ArenaPlayerState.h"
 #include "../Net/UE2Server.h"
+#include "../Net/UE2ServerValidator.h"
 #include "../Net/UE2ServerConnection.h"
 #include "../Net/UE2ServerPlayer.h"
 #include "../Net/UE2ServerWorld.h"
@@ -930,6 +931,7 @@ bool PrepareFirstMatch(FString& OutUrl, FString& OutError)
 	}
 
 	LoadBans();
+	UE2ServerValidator::Configure(ServerCfg.Validator, StateDir);
 	UE_LOG(LogArenaServer, Display, TEXT("Server: %d bans (%s)"), Bans.Num(), *BansFile());
 	StartAdminConsole();
 	if (!FParse::Param(FCommandLine::Get(), TEXT("NoServerConsole")) && !ArenaServerService::IsRunningAsService())
@@ -974,6 +976,7 @@ FString ExecCommand(const FString& InLine)
 			TEXT("maplist                         the rotation\n")
 			TEXT("minplayers <n>                  bots fill the match up to n players\n")
 			TEXT("addbot [n] / removebot [n]      bots now (MinPlayers moves them back over time)\n")
+			TEXT("validator [status|ban|unban|whitelist|unwhitelist|export|import]   the OpenUT2k4 Validator (Server/Docs/Validator.md)\n")
 			TEXT("quit | exit | shutdown          stop the server (TCP console: shutdown; logout leaves)");
 	}
 	if (Cmd == TEXT("status") || Cmd == TEXT("players") || Cmd == TEXT("listplayers"))
@@ -1024,6 +1027,10 @@ FString ExecCommand(const FString& InLine)
 		Bans.Add(Id + TEXT("|") + Name.TrimStartAndEnd().Replace(TEXT("|"), TEXT("")));
 		SaveBans();
 		return TEXT("banned ") + Id;
+	}
+	if (Cmd == TEXT("validator"))
+	{
+		return UE2ServerValidator::AdminCommand(Arg);
 	}
 	if (Cmd == TEXT("bans") || Cmd == TEXT("banlist"))
 	{

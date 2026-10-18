@@ -103,4 +103,7 @@ UT2004 install (converted once into the content cache). Documentation: Server/Do
 TXT
 
 "${PROJECT_DIR}/Scripts/check-release.sh" "${ARCHIVE_DIR}" "${UE_ROOT}"
+# release archive + detached signature, only with OPENUT2K4_SIGNING_KEY (Server/Docs/Validator.md "Release signing")
+VERSION="$(sed -n 's/^ProjectVersion=//p' "${PROJECT_DIR}/Config/DefaultGame.ini" | tr -d '\r')"
+"${PROJECT_DIR}/Scripts/sign-release.sh" "${ARCHIVE_DIR}" "OpenUT2k4Server-${VERSION}-Linux"
 echo "==> Done: ${ARCHIVE_DIR} ($(du -sh "${ARCHIVE_DIR}" | cut -f1))"

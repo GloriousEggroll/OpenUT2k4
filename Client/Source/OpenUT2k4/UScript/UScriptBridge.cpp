@@ -1938,7 +1938,7 @@ namespace USBridgeOverrides
 {
 	FUSGameWorld* GWOf(FUSObject* O)
 	{
-		return (O && O->World && O->World != &FUSWorld::Transient()) ? static_cast<FUSGameWorld*>(O->World) : nullptr;
+		return (O && O->World) ? O->World->AsGameWorld() : nullptr;
 	}
 
 	void EventImpl(FUSObject* Self, FUSFrame& Stack, bool bTrigger)
@@ -2055,7 +2055,12 @@ namespace USBridgeOverrides
 	{
 		USP_FINISH;
 		FUSGameWorld* W = GWOf(Self);
-		UWorld* UW = W ? W->GetUWorld() : nullptr;
+		if (!W)
+		{
+			US_RESULT(FUSObject*) = (Self && Self->World) ? Self->World->GetLocalPlayerController() : nullptr;
+			return;
+		}
+		UWorld* UW = W->GetUWorld();
 		APlayerController* PC = UW ? UW->GetFirstPlayerController() : nullptr;
 		US_RESULT(FUSObject*) = PC ? W->ProxyForController(PC) : nullptr;
 	}

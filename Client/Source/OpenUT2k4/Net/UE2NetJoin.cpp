@@ -19,6 +19,7 @@
 #include "UE2NetDownload.h"
 #include "UE2NetWorld.h"
 #include "UE2NetPlay.h"
+#include "UE2NetScriptHUD.h"
 #include "../UScript/UScriptCore.h"
 #include "UE2NetLog.h"
 #include "HAL/FileManager.h"
@@ -59,9 +60,12 @@ namespace UE2NetJoinLocal
 	TUniquePtr<FUE2NetWorld> GNetWorld;
 	/** Step 4: our own pawn, movement and input on the server (Net/UE2NetPlay.h); lives with GNetWorld. */
 	TUniquePtr<FUE2NetPlay> GNetPlay;
+	/** A modded server's own HUD and scoreboard classes run by the script VM (Net/UE2NetScriptHUD.h); lives with GNetWorld. */
+	TUniquePtr<FUE2NetScriptHUD> GNetScriptHUD;
 
 	void ResetNetWorld()
 	{
+		GNetScriptHUD.Reset();
 		GNetPlay.Reset();
 		GNetWorld.Reset();
 	}
@@ -389,6 +393,7 @@ namespace UE2NetJoinLocal
 			GJoinedTime = FPlatformTime::Seconds();
 			GNetWorld = MakeUnique<FUE2NetWorld>(*GConnection, World);
 			GNetPlay = MakeUnique<FUE2NetPlay>(*GConnection, World);
+			GNetScriptHUD = MakeUnique<FUE2NetScriptHUD>(*GConnection, World);
 			GConnection->SendJoin();
 		}
 	}
@@ -425,6 +430,10 @@ namespace UE2NetJoinLocal
 					if (GNetPlay)
 					{
 						GNetPlay->Tick(DeltaTime);
+					}
+					if (GNetScriptHUD)
+					{
+						GNetScriptHUD->Tick(DeltaTime);
 					}
 				}
 			}
@@ -578,6 +587,10 @@ namespace ArenaNet
 			{
 				bServerTravel = true;
 			}
+			if (GNetScriptHUD)
+			{
+				GNetScriptHUD->FunctionCall(Actor, Function, Params); // ClientSetHUD only; the call goes on to ours too
+			}
 			if (GNetPlay && GNetPlay->FunctionCall(Actor, Function, Params))
 			{
 				return; // our own pawn's movement, possession and weapons (Net/UE2NetPlay.h)
@@ -598,6 +611,10 @@ namespace ArenaNet
 			{
 				GNetWorld->ActorOpened(Actor);
 			}
+			if (GNetScriptHUD)
+			{
+				GNetScriptHUD->ActorOpened(Actor);
+			}
 		};
 		GConnection->OnActorUpdated = [](const FUE2NetActor& Actor, const TArray<FString>& Changed)
 		{
@@ -609,6 +626,10 @@ namespace ArenaNet
 			{
 				GNetWorld->ActorUpdated(Actor, Changed);
 			}
+			if (GNetScriptHUD)
+			{
+				GNetScriptHUD->ActorUpdated(Actor, Changed);
+			}
 		};
 		GConnection->OnActorClosed = [](const FUE2NetActor& Actor)
 		{
@@ -619,6 +640,10 @@ namespace ArenaNet
 			if (GNetWorld)
 			{
 				GNetWorld->ActorClosed(Actor);
+			}
+			if (GNetScriptHUD)
+			{
+				GNetScriptHUD->ActorClosed(Actor);
 			}
 		};
 		FString Err;

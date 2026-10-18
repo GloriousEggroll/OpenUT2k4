@@ -13,6 +13,7 @@ namespace USVM
 	FUSNativeFunc GNatives[4096] = {};
 	uint64 GStatCalls = 0;
 	uint64 GStatTokens = 0;
+	uint64 GStatAborts = 0;
 }
 
 namespace
@@ -192,6 +193,7 @@ void USVM::ScriptError(const FUSFrame* Stack, const FString& Message)
 {
 	UE_LOG(LogUScript, Error, TEXT("%s: %s (script call aborted)"), Stack ? *Stack->Describe() : TEXT("?"), *Message);
 	GAbort = true;
+	++GStatAborts;
 }
 
 // =============================================================================================
@@ -275,6 +277,10 @@ namespace USExec
 	{
 		FUSProperty* P = static_cast<FUSProperty*>(Stack.ReadObject());
 		GProperty = P;
+		if (Self && !Self->Data && (Self->Flags & USF_Placeholder))
+		{
+			GRT->MaterializePlaceholder(Self); // a texture's USize ... (the content behind it gives the values)
+		}
 		if (!P || !Self || !Self->Data || !Self->Class || P->Offset + P->GetSize() > Self->Class->PropertiesSize)
 		{
 			GPropAddr = nullptr;

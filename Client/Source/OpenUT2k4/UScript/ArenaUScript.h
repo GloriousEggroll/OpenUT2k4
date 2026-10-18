@@ -39,6 +39,12 @@ namespace ArenaUScript
 	/** -UScriptCanRunReport: logs CanRun() for every mutator class of the cache's script packages ("UScriptCanRun: ..."). */
 	OPENUT2K4_API void LogMutatorSupport();
 
+	/**
+	 * Unimplemented natives a script class can reach from the given entry points (function names called on it, e.g. a
+	 * HUD's PostRender), as "Class.Function (from Pkg.Class.Function)". Same static analysis as CanRun, other roots.
+	 */
+	OPENUT2K4_API TArray<FString> FindReachableMissingNatives(const FString& ClassPath, const TArray<FString>& EntryPoints);
+
 	/** Runs the VM self tests (stock Core/Engine/XGame functions with known results). */
 	OPENUT2K4_API void RunSelfTests(int32& OutPassed, int32& OutFailed);
 }

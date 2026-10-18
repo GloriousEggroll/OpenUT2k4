@@ -409,6 +409,50 @@ void UArenaCharacterMovement::ProcessLanded(const FHitResult& Hit, float remaini
 	Super::ProcessLanded(Hit, remainingTime, Iterations);
 }
 
+bool UArenaCharacterMovement::HasBoxCollision() const
+{
+	return UpdatedPrimitive && UpdatedPrimitive->GetCollisionShape().IsBox();
+}
+
+bool UArenaCharacterMovement::IsWithinEdgeTolerance(const FVector& CapsuleLocation, const FVector& TestImpactPoint, const float CapsuleRadius) const
+{
+	if (!HasBoxCollision())
+	{
+		return Super::IsWithinEdgeTolerance(CapsuleLocation, TestImpactPoint, CapsuleRadius);
+	}
+	// the box's bottom face: a square of half size R (the box does not turn), less the engine's edge margin
+	const FVector D = ProjectToGravityFloor(TestImpactPoint - CapsuleLocation);
+	const double Reduced = FMath::Max(double(SWEEP_EDGE_REJECT_DISTANCE + UE_KINDA_SMALL_NUMBER), double(CapsuleRadius - SWEEP_EDGE_REJECT_DISTANCE));
+	return FMath::Abs(D.X) < Reduced && FMath::Abs(D.Y) < Reduced;
+}
+
+bool UArenaCharacterMovement::FloorSweepTest(FHitResult& OutHit, const FVector& Start, const FVector& End, ECollisionChannel TraceChannel, const FCollisionShape& CollisionShape,
+	const FCollisionQueryParams& Params, const FCollisionResponseParams& ResponseParam) const
+{
+	if (!HasBoxCollision() || !CollisionShape.IsCapsule())
+	{
+		return Super::FloorSweepTest(OutHit, Start, End, TraceChannel, CollisionShape, Params, ResponseParam);
+	}
+	// the engine's (shrunk) capsule as the box it stands for: half size (radius, radius, half height), axis-aligned.
+	// A walkable contact of the box is the floor (also under a corner that the capsule's flat base does not reach);
+	// otherwise (the box catches a step's edge, whose contact normal is not walkable) the engine's own floor sweep
+	// decides, as before: with the box alone the pawn slid down stairs it pressed against.
+	const FCollisionShape Box = FCollisionShape::MakeBox(FVector(CollisionShape.GetCapsuleRadius(), CollisionShape.GetCapsuleRadius(), CollisionShape.GetCapsuleHalfHeight()));
+	FHitResult BoxHit(1.f);
+	const bool bBoxHit = GetWorld()->SweepSingleByChannel(BoxHit, Start, End, FQuat::Identity, TraceChannel, Box, Params, ResponseParam);
+	if (bBoxHit && !BoxHit.bStartPenetrating && IsWalkable(BoxHit))
+	{
+		OutHit = BoxHit;
+		return true;
+	}
+	if (Super::FloorSweepTest(OutHit, Start, End, TraceChannel, CollisionShape, Params, ResponseParam))
+	{
+		return true;
+	}
+	OutHit = BoxHit;
+	return bBoxHit;
+}
+
 float UArenaCharacterMovement::GetMaxSpeed() const
 {
 	switch (MovementMode)
@@ -530,12 +574,17 @@ void UArenaCharacterMovement::CalcVelocity(float DeltaTime, float Friction, bool
 	if (IsFalling())
 	{
 		// UE2 physFalling: Acceleration is AccelRate * AirControl (GetFallingLateralAcceleration) and Velocity.Z was
-		// zeroed by the caller. Air control steers; the horizontal speed is bound to max(current, AirSpeed).
+		// zeroed by the caller. Air control steers; a horizontal speed above the maximum is bound to itself (BoundSpeed),
+		// one at or below it is not bound: one step of air control may take it past the maximum (a 3369 server's
+		// pawn jumping forward at 440 UU/s goes on at 440 + AccelRate * AirControl * dt).
 		if (!bZeroAcceleration)
 		{
-			const float BoundSpeed = FMath::Max(Velocity.Size(), MaxSpeed);
+			const float Speed = Velocity.Size();
 			Velocity += Acceleration * DeltaTime;
-			Velocity = Velocity.GetClampedToMaxSize(BoundSpeed);
+			if (Speed > MaxSpeed)
+			{
+				Velocity = Velocity.GetClampedToMaxSize(Speed);
+			}
 		}
 		return;
 	}
@@ -657,6 +706,9 @@ FVector UArenaCharacterMovement::GetAirControl(float DeltaTime, float TickAirCon
 {
 	// UE2 APawn::physFalling: TestWalk = (AirControl * AccelRate * AccelDir + Velocity) * dt (horizontal); when that
 	// move would hit a walkable floor (normal Z >= MINFLOORZ), air control is cut to 0.05 so it can't climb slopes.
+	// When it would hit a wall, there is no air control at all for the step: a UT2004 server's pawn that jumps or
+	// dodges while pressing into a wall keeps its horizontal velocity exactly (measured with -UE2NetPlayProbe against
+	// a 3369 server: no drift towards the wall, no air control along it).
 	if (TickAirControl > 0.05f && UpdatedComponent && CharacterOwner)
 	{
 		FVector TestWalk = (TickAirControl * GetMaxAcceleration() * FallAcceleration.GetSafeNormal() + Velocity) * DeltaTime;
@@ -668,10 +720,12 @@ FVector UArenaCharacterMovement::GetAirControl(float DeltaTime, float TickAirCon
 			FCollisionResponseParams ResponseParam;
 			InitCollisionParams(Params, ResponseParam);
 			const FVector Start = UpdatedComponent->GetComponentLocation();
+			// the pawn's own collision shape (net play: the UE2 box, Net/UE2NetPlay.h UUE2NetBoxCollision)
+			const FCollisionShape Shape = UpdatedPrimitive ? UpdatedPrimitive->GetCollisionShape() : GetPawnCapsuleCollisionShape(SHRINK_None);
 			if (GetWorld()->SweepSingleByChannel(Hit, Start, Start + TestWalk, UpdatedComponent->GetComponentQuat(), UpdatedComponent->GetCollisionObjectType(),
-				GetPawnCapsuleCollisionShape(SHRINK_None), Params, ResponseParam) && Hit.ImpactNormal.Z >= GetWalkableFloorZ())
+				Shape, Params, ResponseParam) && !Hit.bStartPenetrating)
 			{
-				TickAirControl = 0.05f;
+				TickAirControl = Hit.ImpactNormal.Z >= GetWalkableFloorZ() ? 0.05f : 0.f;
 			}
 		}
 	}

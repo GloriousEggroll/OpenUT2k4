@@ -264,6 +264,8 @@ namespace ArenaHost
 	OPENUT2K4_API TArray<FUE2HostPlayer> GetUE2Players();
 	/** Removes a player (UT2004 admin "kick"); bBan also adds the player id to the ban list. */
 	OPENUT2K4_API bool KickUE2Player(int32 ConnId, bool bBan);
+	/** A player id (or an OpenUT2k4 Validator key fingerprint) is on the ban list. */
+	OPENUT2K4_API bool IsUE2IdBanned(const FString& Id);
 	/** The ban list ("name (id...)") and lifting a ban. */
 	OPENUT2K4_API TArray<FString> GetUE2BanList();
 	OPENUT2K4_API void UnbanUE2(int32 Index);

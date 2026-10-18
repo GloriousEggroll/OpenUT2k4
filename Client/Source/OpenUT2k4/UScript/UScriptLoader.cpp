@@ -285,15 +285,19 @@ FUSObject* FUSLinker::GetImport(int32 Ii)
 	if (bScriptField)
 	{
 		FString Err;
+		bool bPackageLoaded = false;
 		if (FUSLinker* L = Runtime->LoadPackage(FName(*Top), &Err))
 		{
+			bPackageLoaded = true;
 			const int32 Ei = L->FindExport(RelPath, Im.ClassName);
 			if (Ei != INDEX_NONE)
 			{
 				Result = L->GetExport(Ei);
 			}
 		}
-		if (!Result && Kind == EFieldKind::Class && Top.Equals(TEXT("Core"), ESearchCase::IgnoreCase))
+		// classes without script (Core's, and C++-only classes such as Engine.Font or Engine.Viewport, which have no
+		// export in their package) are intrinsic
+		if (!Result && Kind == EFieldKind::Class && (bPackageLoaded || Top.Equals(TEXT("Core"), ESearchCase::IgnoreCase)))
 		{
 			Result = Runtime->GetIntrinsicClass(FName(*Im.Name));
 		}
@@ -1624,6 +1628,11 @@ FUSObject* FUSRuntime::GetPlaceholder(const FString& PathName, FUSClass* ObjClas
 	const FString Key = PathName.ToLower();
 	if (FUSObject** Hit = Placeholders.Find(Key))
 	{
+		// made as the outer of another placeholder (a font's page textures are inside the font): now its class is known
+		if (ObjClass && (*Hit)->Class && (*Hit)->Class->Name == TEXT("Package") && ObjClass->Name != TEXT("Package"))
+		{
+			(*Hit)->Class = ObjClass;
+		}
 		return *Hit;
 	}
 	FString Outer, Leaf;
@@ -1644,6 +1653,30 @@ FUSObject* FUSRuntime::GetPlaceholder(const FString& PathName, FUSClass* ObjClas
 	Placeholders.Add(Key, P);
 	AddMetadata(P);
 	return P;
+}
+
+bool FUSRuntime::MaterializePlaceholder(FUSObject* Obj)
+{
+	if (!Obj || Obj->Data || !(Obj->Flags & USF_Placeholder) || !Obj->Class || (Obj->Class->Flags & USF_Intrinsic) || !Obj->Class->EnsureLoaded()
+		|| Obj->Class->PropertiesSize <= 0)
+	{
+		return Obj && Obj->Data;
+	}
+	FUSClass* C = Obj->Class;
+	Obj->Data = static_cast<uint8*>(FMemory::Malloc(C->PropertiesSize, 16));
+	FMemory::Memzero(Obj->Data, C->PropertiesSize);
+	if (C->Defaults.Num() >= C->PropertiesSize)
+	{
+		for (FUSProperty* P : C->AllProps)
+		{
+			P->CopyComplete(Obj->Data + P->Offset, C->Defaults.GetData() + P->Offset);
+		}
+	}
+	if (PlaceholderInit)
+	{
+		PlaceholderInit(Obj);
+	}
+	return true;
 }
 
 void FUSRuntime::AddMetadata(FUSObject* Obj)

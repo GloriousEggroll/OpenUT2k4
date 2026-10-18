@@ -136,6 +136,26 @@ A VM actor ("script actor") can be paired with a UE5 actor:
   (`UArenaEventSubsystem`), so script triggers drive native movers and native triggers reach script actors.
   Kinds that are not supported yet keep the native stand-in for their stock base class.
 
+## Canvas bridge
+
+`UScriptCanvas.h` / `UScriptNativesCanvas.cpp` implement UE2's Canvas natives with UE2's layout rules (the cursor,
+`DrawText` word wrapping at `ClipX`, `DrawTextClipped` / `DrawTileClipped` clipping with UV adjustment, the
+`DrawTileStretched` corners at 1:1 texels, `ColorModulate` and `bForceAlpha`), the HUD widget natives
+(`DrawSpriteWidget` / `DrawNumericWidget` with `HudCanvasScale`, `HudScale`, pivots, scale modes, `Tints[TeamIndex]`;
+`ResScaleX = ResScaleY = Min(SizeX / 640, SizeY / 480)` as in OldUnreal's 3374), HUD lines and material sizes on top of
+a backend (`IUSCanvasBackend`: tiles, text, text size, material size, projection, lines) set while script draws. The
+canvas state lives in the script `Engine.Canvas` object. Without a backend the natives draw nothing and return zero
+sizes. The only backend is the UE2 client's (`Net/UE2NetScriptHUD`: our UCanvas, the content cache's textures and
+UE2 bitmap fonts).
+
+Runtime support added for it: placeholders of script classes with properties (`Engine.Texture` ...) get property memory
+the first time script reads one of their variables (`FUSRuntime::MaterializePlaceholder`, values from the game's
+`PlaceholderInit`: `USize` / `VSize`); `DynamicLoadObject` / `FindObject` return the placeholder of a content object
+the game has (`ContentObjectExists`), also when a group of the same name exists (a font's page textures); imports of
+C++-only classes (`Engine.Font`, `Engine.Viewport`) resolve to intrinsic classes; `FUSWorld::AsGameWorld` /
+`GetLocalPlayerController` let natives work in worlds that are not game worlds (the UE2 client mirror);
+`USVM::GStatAborts` counts aborted script calls.
+
 ## Public API (`UScript/ArenaUScript.h`)
 
 * `ArenaUScript::CanRun(PackageOrClass)` / `GetUnsupportedReason(PackageOrClass)`: whether a script class
@@ -157,6 +177,9 @@ A VM actor ("script actor") can be paired with a UE5 actor:
     gameplay code: Controller.FindPathToward (from <Pkg.Class.Function>), ...`.
   * A missing native that is reached anyway at run time (code the analysis cannot see, e.g. through a delegate bound
     at run time) is still safe: it logs once (`native function X.Y is not implemented`) and returns zero.
+* `ArenaUScript::FindReachableMissingNatives(Class, EntryPoints)`: the same analysis from other entry points (e.g. a
+  HUD's `PostRender`); `-UScriptReachReport=Pkg.Class,... [-UScriptReachEntries=...] [-UScriptPackageFiles=a.u;b.u]`
+  logs it ("UScriptReach: ...").
 * `-UScriptCanRunReport` logs `CanRun()` for every non-abstract mutator class of the cache's script packages
   (`UScriptCanRun: Pkg.Class: ok | reason`, then `UScriptCanRun: N of M mutator classes can run`).
 * `ArenaUScript::Runtime()` — the process-wide runtime (package/class cache).
@@ -175,6 +198,7 @@ A VM actor ("script actor") can be paired with a UE5 actor:
 | `UScriptNativesEngine.cpp` | Engine natives (spawn/destroy, timers, latent, traces, iterators, controller list, sounds, colours ...) |
 | `UScriptWorld.*` | instances, pending kill and UE2 `CleanupDestroyed` |
 | `UScriptBridge.*` | `FUSGameWorld` (LevelInfo, shadow GameInfo, proxies, sync), game hooks, map script actors, script functions replaced by the game (`TriggerEvent`, `ClientMessage`, `Broadcast` ...) |
+| `UScriptCanvas.h`, `UScriptNativesCanvas.cpp` | Canvas bridge: UE2's Canvas natives, `HudBase.DrawSpriteWidget` / `DrawNumericWidget`, `HUD.DrawCanvasLine`, `Material.MaterialUSize` / `VSize`, `CacheManager.GetCrosshairList`, `GUIFont.GetFont`; the drawing backend interface (`IUSCanvasBackend`) |
 | `ArenaScriptActor.*` | game-side body of a map script actor (event system, touch cylinder, shootable capsule, static mesh) |
 | `ArenaUScript.*` | public API (`CanRun`, `GetUnsupportedReason`, `ArenaUScriptHooks`), class support policy, `-UScriptTest` |
 | `UScriptTests.cpp` | self tests |
@@ -243,8 +267,9 @@ every custom class, so maps whose script classes all run are no longer marked un
    ammo, `Instigator.Weapon` chain, `WeaponFire` classes, hit scan/projectile spawning with our effects). Large.
 2. **Script pawns, monsters, vehicles, AI controllers** (Invasion monster packs, vehicle mods): need physics
    (`PHYS_Walking/Falling/Karma`), animation natives and the path-finding natives (`FindPathToward` ...). Large.
-3. **HUDs, scoreboards, GUI/menus** (`Canvas` natives, `GUIController`): a canvas bridge is medium effort; full GUI is
-   large.
+3. **HUDs, scoreboards, GUI/menus**: the Canvas bridge exists (`UScriptCanvas.h`, `UScriptNativesCanvas.cpp`, see
+   "Canvas bridge" above) and runs UT2004 servers' mod HUDs and scoreboards (`Net/UE2NetScriptHUD`). Script HUDs in our
+   own matches and the GUI (`GUIController`, menus) are not done; full GUI is large.
 4. **Game types written in script** (a whole `GameInfo` subclass): would replace our C++ game mode; needs 1-3.
 5. Smaller items: `GameRules.PreventDeath` (needs a hook in `AArenaCharacter::Die`), `Mutate` console command,
    `bAdrenalineEnabled`, head scaling on the character model, `ignores`/probe masks (UE2 probe name indices),

@@ -30,6 +30,11 @@ public:
 	/** Destroy an actor (Destroyed event + pending kill). */
 	virtual bool DestroyActor(FUSObject* Actor);
 
+	/** The game world (FUSGameWorld) when this world is one; other worlds (Transient, the UE2 client mirror) return null. */
+	virtual class FUSGameWorld* AsGameWorld() { return nullptr; }
+	/** LevelInfo.GetLocalPlayerController of worlds that are not game worlds (the UE2 client mirror). */
+	virtual FUSObject* GetLocalPlayerController() { return nullptr; }
+
 	/** Seconds since the world started (Level.TimeSeconds). */
 	float TimeSeconds = 0.f;
 

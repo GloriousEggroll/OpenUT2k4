@@ -22,11 +22,7 @@ namespace
 	/** The script world of an object (FUSGameWorld when it lives in a game world). */
 	FUSGameWorld* GW(FUSObject* O)
 	{
-		if (!O || !O->World || O->World == &FUSWorld::Transient())
-		{
-			return nullptr;
-		}
-		return static_cast<FUSGameWorld*>(O->World);
+		return (O && O->World) ? O->World->AsGameWorld() : nullptr;
 	}
 
 	UWorld* UW(FUSObject* O)
@@ -529,6 +525,7 @@ void USRegisterBridgeOverrides();
 void USNatives::RegisterEngine()
 {
 	USRegisterBridgeOverrides();
+	RegisterCanvas();
 	using namespace USEngineNatives;
 	static const FUSNativeEntry Entries[] = {
 		{ TEXT("Actor"), TEXT("Spawn"), &Spawn }, { TEXT("Actor"), TEXT("Destroy"), &Destroy }, { TEXT("Actor"), TEXT("Error"), &ActorError },

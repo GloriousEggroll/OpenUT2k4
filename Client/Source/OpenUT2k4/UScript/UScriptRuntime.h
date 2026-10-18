@@ -76,6 +76,8 @@ public:
 	/** Extra package files (UserContent): "<Name>.int" files are used for localization. */
 	void AddPackageFiles(const TArray<FString>& Files);
 	const FString& GetGameDir() const { return GameDir; }
+	/** Folders added with AddPackageFolder (the install when the runtime runs from the content cache's scripts). */
+	const TArray<FString>& GetExtraFolders() const { return ExtraFolders; }
 
 	/** Loads a package by name (no extension). Null when missing/unreadable (error in OutError). */
 	FUSLinker* LoadPackage(FName PackageName, FString* OutError = nullptr);
@@ -105,6 +107,20 @@ public:
 
 	/** Placeholder for a non-script object (texture, sound, mesh ...) by full path. */
 	FUSObject* GetPlaceholder(const FString& PathName, FUSClass* ObjClass);
+	/**
+	 * Gives a placeholder whose class is a script class with properties (Engine.Texture, Shader ...) property memory from
+	 * its class defaults, once, then lets PlaceholderInit fill what the game knows about the object (a texture's USize /
+	 * VSize from the content cache). Called the first time script reads a variable of the placeholder.
+	 */
+	bool MaterializePlaceholder(FUSObject* Obj);
+	/**
+	 * Set by the game (Net/UE2NetScriptHUD): true when a content object (texture, font, sound ... "Pkg.Group.Name" of
+	 * that UE2 class) exists in the player's content, so DynamicLoadObject / FindObject give its placeholder without
+	 * opening the content package.
+	 */
+	TFunction<bool(const FString&, const FString&)> ContentObjectExists;
+	/** Set by the game (Net/UE2NetScriptHUD): fills a materialized placeholder's values. */
+	TFunction<void(FUSObject*)> PlaceholderInit;
 	/** The package object (outermost) for a name. */
 	FUSObject* GetPackageObject(FName PackageName);
 

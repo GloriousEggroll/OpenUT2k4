@@ -502,6 +502,8 @@ namespace USVM
 	/** Number of script calls / tokens executed (perf counters). */
 	extern uint64 GStatCalls;
 	extern uint64 GStatTokens;
+	/** Script calls aborted by ScriptError (runaway loops, fatal errors) since startup. */
+	extern uint64 GStatAborts;
 	/** Infers the value type of the expression at Code (does not execute). Code advances past it. */
 	FUSExprType InferExpr(FUSStruct* Node, const uint8*& Code, FUSClass* ContextClass);
 	/** Skips one expression without executing it. */
@@ -651,4 +653,6 @@ namespace USNatives
 	FUSNativeFunc Find(FName ClassName, FName FuncName);
 	void RegisterCore();
 	void RegisterEngine();
+	/** Canvas, HUD widget and material natives (UScriptNativesCanvas.cpp, UScriptCanvas.h). */
+	void RegisterCanvas();
 }

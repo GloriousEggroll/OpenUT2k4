@@ -1,0 +1,6 @@
+[Public]
+Object=(Class=Class,MetaClass=Engine.Mutator,Name=OpenUT2k4Validator.OUTValidator,Description="OpenUT2k4 Validator: identifies OpenUT2k4 players by their player key, key bans, probation for new keys, server-side sanity checks.")
+
+[OUTValidator]
+FriendlyName="OpenUT2k4 Validator"
+Description="Identifies OpenUT2k4 players by their player key (stable, unforgeable id for bans), probation for new keys, combined bans, server-side sanity checks. Real UT2004 clients are not challenged."

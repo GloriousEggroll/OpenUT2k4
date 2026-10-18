@@ -6,6 +6,7 @@
 #include "../UScript/UScriptRuntime.h"
 #include "UE2NetCDKey.h"
 #include "UE2NetLog.h"
+#include "UE2NetValidator.h"
 #include "UE2ServerCodec.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -134,14 +135,58 @@ namespace UE2NetConnectionLocal
 		FString Out = Text.Replace(TEXT("\n"), TEXT("\\n")).Replace(TEXT("\r"), TEXT(""));
 		return Out.Len() > 200 ? Out.Left(200) + TEXT("...") : Out;
 	}
+
+	/** True for a value equal to its type's zero (UE2 UProperty::Matches against no default): not sent as a parameter. */
+	bool IsZeroValue(const FUE2NetValue& V)
+	{
+		switch (V.Kind)
+		{
+		case FUE2NetValue::EKind::None:
+			return true;
+		case FUE2NetValue::EKind::Byte:
+		case FUE2NetValue::EKind::Int:
+		case FUE2NetValue::EKind::Bool:
+			return V.I == 0;
+		case FUE2NetValue::EKind::Float:
+			return V.F == 0.f;
+		case FUE2NetValue::EKind::Object:
+			return V.Obj.IsNone();
+		case FUE2NetValue::EKind::Name:
+			return V.N.IsNone();
+		case FUE2NetValue::EKind::Str:
+			return V.S.IsEmpty();
+		case FUE2NetValue::EKind::Vector:
+			return V.V.X == 0.f && V.V.Y == 0.f && V.V.Z == 0.f;
+		case FUE2NetValue::EKind::Rotator:
+			return V.R == FIntVector::ZeroValue;
+		case FUE2NetValue::EKind::Plane:
+			return V.P.X == 0.f && V.P.Y == 0.f && V.P.Z == 0.f && V.P.W == 0.f;
+		case FUE2NetValue::EKind::Struct:
+			for (const TPair<FName, FUE2NetValue>& M : V.Members)
+			{
+				if (!IsZeroValue(M.Value))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+		return false;
+	}
 }
 
 using namespace UE2NetConnectionLocal;
 
 FUE2NetConnection::FUE2NetConnection() = default;
 
+FString FUE2NetConnection::GetRemoteIP() const
+{
+	return RemoteAddr.IsValid() ? RemoteAddr->ToString(false) : FString();
+}
+
 FUE2NetConnection::~FUE2NetConnection()
 {
+	UE2NetValidator::ConnectionClosed(*this);
 	if (IsOpen())
 	{
 		Close(TEXT(""));
@@ -312,6 +357,7 @@ void FUE2NetConnection::Tick(double Now)
 	{
 		return;
 	}
+	UE2NetValidator::Tick(*this);
 	if (Now - LastReceiveTime > ReceiveTimeout)
 	{
 		SetClosed(TEXT("the server stopped responding"));
@@ -774,6 +820,8 @@ void FUE2NetConnection::ReceivedText(const FString& Text)
 			URL += TEXT("?SpectatorOnly=1");
 		}
 		URL += Settings.ExtraOptions;
+		// honest identification: OpenUT2k4 and its version (stock servers ignore unknown options; Net/UE2NetValidator.h)
+		URL += UE2NetValidator::GetLoginOption();
 		// the OldUnreal 3374 client's order: AUTH, NETSPEED, LOGIN
 		SendAuth();
 		SendControl(FString::Printf(TEXT("NETSPEED %d"), Settings.NetSpeed));
@@ -835,6 +883,11 @@ void FUE2NetConnection::ReceivedText(const FString& Text)
 		FParse::Value(Str, TEXT("VER="), Ver);
 		CloseFailCode = TEXT("UPGRADE");
 		SetClosed(FString::Printf(TEXT("the server needs engine version %d or newer (server %d)"), MinVer, Ver));
+	}
+	else if (FParse::Command(&Str, TEXT("OUTVALIDATE")))
+	{
+		// OpenUT2k4 Validator challenge of our own server (Net/UE2NetValidator.h)
+		UE2NetValidator::ReceivedControl(*this, Str);
 	}
 	else if (FParse::Command(&Str, TEXT("DLMGR")))
 	{
@@ -1375,6 +1428,11 @@ void FUE2NetConnection::ReceivedActorBunch(FInBunch& Bunch)
 	{
 		return;
 	}
+	if (bJustOpened || Changed.Num() > 0)
+	{
+		// OpenUT2k4Validator's challenge actor (Net/UE2NetValidator.h)
+		UE2NetValidator::ActorChanged(*this, *Actor);
+	}
 	if (bJustOpened)
 	{
 		if (OnActorOpened)
@@ -1568,7 +1626,8 @@ bool FUE2NetConnection::SendFunction(int32 Channel, FName FunctionName, const TA
 			B.Data.WriteBit(V && V->I != 0);
 			continue;
 		}
-		const bool bPresent = V && V->Kind != FUE2NetValue::EKind::None;
+		// UE2 UNetDriver::ProcessRemoteFunction: a parameter equal to zero is not sent (one 0 bit), the receiver zeroes it
+		const bool bPresent = V && !IsZeroValue(*V);
 		B.Data.WriteBit(bPresent);
 		if (bPresent && !WriteProperty(B.Data, P, *V))
 		{
@@ -1578,7 +1637,8 @@ bool FUE2NetConnection::SendFunction(int32 Channel, FName FunctionName, const TA
 	}
 	if (Settings.bTrace)
 	{
-		Trace(FString::Printf(TEXT("[ch %d] send %s.%s"), Channel, *Actor->ClassPath, *FunctionName.ToString()));
+		Trace(FString::Printf(TEXT("[ch %d] send %s.%s (index %d of %d, %lld bits)"), Channel, *Actor->ClassPath, *FunctionName.ToString(),
+			Actor->NetCache->GetIndexOf(Function), Actor->NetCache->GetMaxIndex(), B.Data.GetNumBits()));
 	}
 	QueueBunch(MoveTemp(B));
 	return true;

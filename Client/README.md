@@ -64,7 +64,7 @@ To remove a map, delete its files from the folder; the game cleans up its conver
 | Custom texture, static mesh, sound and music packages a map needs | Supported |
 | Maps whose objects need custom UnrealScript code (from a `.u` package or embedded in the map) | The game runs the map's own script for triggers, counters, custom health and shield pickups and other scripted map events. Custom weapons, monsters, vehicles, movers, pickup bases and effects still play as their standard UT2004 version (or are left out); such maps are marked **[custom\*]** |
 | Mutators made of UnrealScript (UT2004's own and custom ones) | Rule mutators work: low gravity, InstaGib, quad jump, regeneration, vampire, no adrenaline, big head (heads grow with the score: the head bone is scaled, and the head hit sphere with it), game speed, weapon replacements and more. Pick them on the Instant Action Mutators tab, or start a match with `?Mutator=Package.Class` (several separated by commas) |
-| Mods that add new weapons, game types, HUDs or menus in UnrealScript | Not supported yet |
+| Mods that add new weapons, game types, HUDs or menus in UnrealScript | Not supported yet in our own matches. On UT2004 servers, a mod's HUD and scoreboard (3SPN / TAM, UTComp, RezQ ...) are drawn by the mod's own UnrealScript, like the real client draws them (`Docs/UE2Net.md`, "Mod HUDs and scoreboards") |
 | Character packs (`.upl` + skins) and `.umx` music | Recognised but not used yet |
 | A custom file with the same name as a UT2004 file | UT2004's own file is used; rename the custom one |
 
@@ -302,6 +302,12 @@ protocol is described in `Docs/UE2Net.md`.
   and only its MD5 is sent, like the unique key the OldUnreal client makes for itself. The stats account goes only to
   servers that track stats, with Track Stats on, and the password is encrypted the same way. Keys, ids and hashes are
   never logged. Details in `Docs/UE2Net.md` "CD key and AUTH".
+- Every login says honestly that it is OpenUT2k4 (`?OpenUT2k4=<version>`); the client never imitates the stock client
+  or any anti-cheat. Servers that run the opt-in OpenUT2k4 Validator get a signature from the player key the game
+  makes silently on first start (`<Saved>/Identity/PlayerKey.txt`, private, mode 0600): a stable player id for bans
+  and whitelists, nothing about the build. Test hooks: `-UE2ValidatorSelfTest` (crypto test vectors), `-UE2PlayerKey=<file>`,
+  `-UE2ValidatorTest=badsig|wrongkey|nokey|silent|record=<file>|replay=<file>|dialport=<n>|relaydialed=<ip:port>`. Details in `../Server/Docs/Validator.md`
+  and `Docs/UE2Net.md` "OpenUT2k4 identification and the validator".
 
 Test hooks: `-UE2Connect=<address>` joins at startup, `-UE2NoCDKey` ignores an installed CD key (tests the no-key login), `-UE2TestStats` uses a throw-away stats account, `-UE2NetTrace` logs every decoded actor, property and function
 call, and `-UE2NetTraceBits` adds raw bits and the replicated field tables. `-UE2NetSpectateScript="8:next;30:alt;40:scores"`
@@ -317,8 +323,9 @@ file name rules and `.uz2` unpacking. Playing (step 4):
   nearest visible player and fires (`hunt=tap`: one press per shot). `goto=water|lift|vehicle:ONSRV|x,y,z` walks there (and gets into the vehicle),
   `use` gets in and out, and driving sends `ServerDrive`.
 - `-UE2NetCapsuleCollision` / `-UE2NetNoBackoff` turn the UE2 box collision / the 2 UU `MoveActor` back-off off
-  (A/B). The test server's `TestBots` mutator takes `?TestAdrenaline=1`, which keeps human players at 100 adrenaline
-  for combo tests.
+  (A/B). `-UE2NetLegacyMoves` sends moves at the old 3369 cadence (at most one packet per 1/45 s) instead of the
+  OldUnreal 3374 client's. The test server's `TestBots` mutator takes `?TestAdrenaline=1`, which keeps human players
+  at 100 adrenaline for combo tests.
 - `-UE2NetPlayProbe` (local servers) logs the server's pawn state next to ours for every move.
 - `-UE2NetLag=<ms>` adds round trip time. `-UE2NetNoNewNet` sends the stock `ServerStartFire` for NewNet weapons
   (no lag compensation, A/B).
@@ -1602,8 +1609,9 @@ and weapon boosts.
 - **Wall dodge**: in the air, double-tap away from a wall that is within 64 cm of your feet: the same kick as a
   dodge. One dodge per air time (a ground dodge or a wall dodge), but a wall dodge works after a double jump and a
   double jump still works after a wall dodge.
-- **Air control**: 35% (steering at 1434 cm/s^2); in the air you can steer but never get faster than
-  max(current speed, 880 cm/s).
+- **Air control**: 35% (steering at 1434 cm/s^2); in the air you can steer, and air control takes you at most one
+  step past 880 cm/s (above that, never faster than your current speed). Pressing into a wall in the air gives no
+  air control at all: you neither creep towards the wall nor steer along it (UT2004's physFalling).
 - **Rocket jump**: look down, jump and fire the Rocket Launcher at your feet. The blast pushes with UT2004's
   MomentumTransfer 50000 (1000 cm/s at the centre, 60% for your own rockets), so rocket plus jump reaches about
   3 m. It costs about 80 health, or about 40 at bot skill 3 or lower (UT2004 halves your own damage offline at
@@ -2031,6 +2039,12 @@ UnrealEditor OpenUT2k4.uproject -game -nullrhi -RuntimeContent -ContentCache=<di
 UnrealEditor OpenUT2k4.uproject "/Game/Maps/Arena?Mode=DM?Layout=DM-Rankin?Bots=3?Mutator=XGame.MutInstaGib,UnrealGame.MutLowGrav" -game ...
 # map script actors: -UScriptShootTest=<seconds> shoots every script actor with the shock beam and makes the player
 # touch every script pickup (e.g. DM-CBP2-Reconstruct's ShockHitTriggers, DM-UCMP4-Mania's custom pickups)
+# unimplemented natives a class can reach from given entry points (e.g. a mod HUD's): logs "UScriptReach: ..."
+UnrealEditor OpenUT2k4.uproject -game -nullrhi ... -UScriptTest -UScriptTestQuit "-UScriptPackageFiles=<a.u>;<b.u>" \
+  -UScriptReachReport=Pkg.HudClass,Pkg.ScoreboardClass -UScriptReachEntries=PostRender,DrawHUD,DrawScoreboard,UpdateScoreBoard
+# on a modded UT2004 server: the server's HUD / scoreboard classes run in the VM (Docs/UE2Net.md "Mod HUDs and
+# scoreboards"); -UE2ScriptHUD=0 turns that off, =all runs stock HUD classes too; -UE2ScriptHUDLog logs per-frame
+# statistics every 5 s; -UE2ScriptDeny=Pkg,Pkg adds packages that are never mirrored or run
 ```
 
 ## Project layout

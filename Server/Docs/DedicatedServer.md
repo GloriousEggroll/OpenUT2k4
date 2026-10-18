@@ -91,6 +91,7 @@ Layers, later ones win:
 | `[Engine.GameInfo]`, `[UnrealGame.DeathMatch]`, `[UnrealGame.TeamGame]`, `[<game class>]` | `MaxPlayers`, `MaxSpectators`, `TimeLimit`, `GoalScore`, `MinPlayers`, `GameDifficulty` (later sections win: the game class's own section last) |
 | `[Engine.GameEngine]` | `ServerPackages` (informational unless `UseServerPackages=True`, then they replace the install's list in the clients' package list), `ServerActors` (the stock uplink, beacon, query and web server actors have native equivalents; others are reported as unsupported) |
 | `[OpenUT2k4.AdminConsole]` | `bEnabled`, `ListenAddress` (default 127.0.0.1), `Port` (default 7780) |
+| `[OpenUT2k4Validator.OUTValidator]` | the OpenUT2k4 Validator, built in and **off** unless `ServerActors=` / `Mutators=` names `OpenUT2k4Validator.OUTValidator` (the line that installs the mutator on a stock server): the same keys as the mutator, plus `BanListSource`, `bUseKeyAsPlayerId`. See [`Validator.md`](Validator.md) |
 | `[OpenUT2k4.Paths]` | `ContentCache`, `UT2004Dir`, `UserContent` (relative to the ini's folder; empty: the game's defaults) |
 
 - **Map rotation**: `Maps=` lines, else the UT2004 install's own stock map list for the game type (`[XInterface.MapListDeathMatch]`
@@ -105,7 +106,8 @@ Layers, later ones win:
 - **Tick rate**: `t.MaxFPS` is kept at `TickRate` (the game user settings would otherwise reset it to unlimited).
 - **State** (`-ServerStateDir`, default `<Saved>/Server`): `Bans.ini`, the bans made with the admin commands
   (`[Engine.AccessControl] BannedIDs=`), merged at start with the ini's `BannedIDs`. Player ids are the stock server's
-  CD key hash ids (`Docs/UE2Net.md` "AUTH"); a banned id gets `FAILCODE LOCALBAN`.
+  CD key hash ids (`Docs/UE2Net.md` "AUTH"); a banned id gets `FAILCODE LOCALBAN`. With the validator on, also
+  `ValidatorKeys.ini` (keys, combined bans, whitelist) and `ValidatorShared.ini` (imported signed ban lists).
 - **Exit codes**: 0 normal (143 / 130 after SIGTERM / SIGINT), 2 bad configuration, 3 no content cache or UT2004 install,
   4 the match could not be hosted (3 failed matches in a row, or the UE2 server did not start: port in use). The
   service files do not restart on 2 and 3.
@@ -124,6 +126,7 @@ On stdin (an interactive server) and on the TCP admin console (`[OpenUT2k4.Admin
 | `banid <id> [name]` / `bans` / `unban <n\|id>` | the ban list without a connection |
 | `map <Map>` / `nextmap` / `restartmap` / `maplist` | map changes, the clients follow |
 | `minplayers <n>` / `addbot [n]` / `removebot [n]` | bots |
+| `validator [status \| ban \| unban \| whitelist \| unwhitelist \| export \| import]` | the OpenUT2k4 Validator when it is on ([`Validator.md`](Validator.md)) |
 | `quit` / `exit` / `shutdown` | stop the server (on the TCP console: `shutdown`; `logout` leaves) |
 
 The TCP console sends the password in clear text: keep it on 127.0.0.1 or behind an SSH tunnel. Not done yet (future

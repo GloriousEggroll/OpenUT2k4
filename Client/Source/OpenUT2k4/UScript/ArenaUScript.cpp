@@ -81,6 +81,8 @@ namespace
 	{
 		FUSClass* Root = nullptr;
 		FUSClass* MutatorClass = nullptr;
+		/** Entry points (empty: the gameplay ones, GEntryPoints). */
+		TArray<FName> Entries;
 		FUSClass* GameRulesClass = nullptr;
 		/** Nodes walked / queued, with the class of the object running them. */
 		TSet<FUSStruct*> Seen;
@@ -161,9 +163,19 @@ namespace
 		void AddRoot(FUSClass* K)
 		{
 			Roots.Add(K);
-			for (const TCHAR* Entry : GEntryPoints)
+			if (Entries.Num())
 			{
-				AddByName(K, FName(Entry), K);
+				for (const FName& Entry : Entries)
+				{
+					AddByName(K, Entry, K);
+				}
+			}
+			else
+			{
+				for (const TCHAR* Entry : GEntryPoints)
+				{
+					AddByName(K, FName(Entry), K);
+				}
 			}
 			// state code runs every tick
 			for (const TPair<FName, FUSState*>& KV : K->StateMap)
@@ -271,6 +283,36 @@ namespace
 		if (FParse::Param(FCommandLine::Get(), TEXT("UScriptCanRunReport")))
 		{
 			ArenaUScript::LogMutatorSupport();
+		}
+		// developer hook: -UScriptReachReport=Pkg.Class,... [-UScriptReachEntries=PostRender,...] [-UScriptPackageFiles=a.u;b.u]
+		// logs the unimplemented natives each class can reach from those entry points ("UScriptReach: ...")
+		FString ReachClasses;
+		if (FParse::Value(FCommandLine::Get(), TEXT("UScriptReachReport="), ReachClasses, false) && ArenaUScript::EnsureRuntime())
+		{
+			FString PackageFiles, EntryList;
+			if (FParse::Value(FCommandLine::Get(), TEXT("UScriptPackageFiles="), PackageFiles, false))
+			{
+				TArray<FString> Files;
+				PackageFiles.ParseIntoArray(Files, TEXT(";"));
+				FUSRuntime::Get().AddPackageFiles(Files);
+				for (const FString& F : Files)
+				{
+					FUSRuntime::Get().LoadPackageFile(F);
+				}
+			}
+			FParse::Value(FCommandLine::Get(), TEXT("UScriptReachEntries="), EntryList, false);
+			TArray<FString> Classes, Entries;
+			ReachClasses.ParseIntoArray(Classes, TEXT(","));
+			EntryList.ParseIntoArray(Entries, TEXT(","));
+			for (const FString& C : Classes)
+			{
+				const TArray<FString> Missing = ArenaUScript::FindReachableMissingNatives(C, Entries);
+				for (const FString& M : Missing)
+				{
+					UE_LOG(LogUScript, Display, TEXT("UScriptReach: %s: %s"), *C, *M);
+				}
+				UE_LOG(LogUScript, Display, TEXT("UScriptReach: %s: %d missing natives"), *C, Missing.Num());
+			}
 		}
 		if (!FParse::Param(FCommandLine::Get(), TEXT("UScriptTest")))
 		{
@@ -401,6 +443,26 @@ void ArenaUScript::LogMutatorSupport()
 	UE_LOG(LogUScript, Display, TEXT("UScriptCanRun: %d of %d mutator classes can run"), NumOk, Num);
 }
 
+TArray<FString> ArenaUScript::FindReachableMissingNatives(const FString& ClassPath, const TArray<FString>& EntryPoints)
+{
+	if (!EnsureRuntime())
+	{
+		return {};
+	}
+	FUSClass* C = FUSRuntime::Get().FindClass(ClassPath);
+	if (!C || !C->EnsureLoaded())
+	{
+		return { FString::Printf(TEXT("%s cannot be loaded"), *ClassPath) };
+	}
+	FUSReach Reach;
+	for (const FString& E : EntryPoints)
+	{
+		Reach.Entries.Add(FName(*E));
+	}
+	Reach.Run(C);
+	return Reach.Missing;
+}
+
 #else // OPENUT2K4_USCRIPT_ENABLED
 
 bool ArenaUScript::IsAvailable() { return false; }
@@ -408,6 +470,7 @@ bool ArenaUScript::EnsureRuntime(FString* OutError) { if (OutError) { *OutError 
 bool ArenaUScript::CanRun(const FString& PackageOrClass, FString* OutReason) { if (OutReason) { *OutReason = TEXT("the script runtime is not part of this build"); } return false; }
 void ArenaUScript::RunSelfTests(int32& OutPassed, int32& OutFailed) { OutPassed = 0; OutFailed = 0; }
 void ArenaUScript::LogMutatorSupport() {}
+TArray<FString> ArenaUScript::FindReachableMissingNatives(const FString&, const TArray<FString>&) { return {}; }
 void ArenaUScriptHooks::InitGame(AArenaGameMode*, const FString&) {}
 void ArenaUScriptHooks::LevelBuilt(AArenaGameMode*) {}
 bool ArenaUScriptHooks::FilterPickup(UWorld*, const FVector&, EArenaPickupType&, TSubclassOf<AArenaWeapon>&) { return true; }

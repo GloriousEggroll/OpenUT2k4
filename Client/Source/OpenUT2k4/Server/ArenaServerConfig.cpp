@@ -473,6 +473,16 @@ bool FArenaServerConfig::Load(const TCHAR* CommandLine, FString& OutError)
 	BotSkill = FMath::Clamp(BotSkill, 0, 7);
 	TickRate = FMath::Clamp(TickRate, 10, 120);
 
+	// the OpenUT2k4 Validator: installed like the mutator, run natively (Net/UE2ServerValidator.h)
+	auto TakeValidator = [this](TArray<FString>& List)
+	{
+		if (List.RemoveAll([](const FString& A) { return UE2ServerValidator::IsValidatorClass(A); }) > 0)
+		{
+			Validator.bEnabled = true;
+		}
+	};
+	TakeValidator(ServerActors);
+	TakeValidator(Mutators);
 	for (const FString& Actor : ServerActors)
 	{
 		// the stock server actors and what stands in for them here
@@ -606,6 +616,8 @@ void FArenaServerConfig::ApplyIni(const FArenaIniFile& Ini)
 			ServerPackages = Packages;
 		}
 	}
+
+	Validator.ApplyIni(Ini);
 
 	const TCHAR* Admin = TEXT("OpenUT2k4.AdminConsole");
 	if (Ini.Get(Admin, TEXT("bEnabled"), V)) bAdminConsole = FArenaIniFile::ParseBool(V, bAdminConsole);

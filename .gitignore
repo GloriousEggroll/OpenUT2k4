@@ -18,3 +18,12 @@ ImportCache/
 *.ukx
 *.uax
 *.uz2
+
+# OpenUT2k4 Validator: the compiled mutator is a build artifact (Server/Validator/build-validator.sh)
+Server/Validator/Build/
+*.u
+# Keys never go into the repository (Server/Docs/Validator.md): release / ban list signing keys, player keys
+*.key
+signing/
+PlayerKey.txt
+*.minisig

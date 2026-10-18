@@ -16,6 +16,7 @@
 #include "ArenaPlayerState.h"
 #include "Net/UE2NetDownload.h"
 #include "Net/UE2NetJoin.h"
+#include "Net/UE2NetScriptHUD.h"
 #include "ArenaTypes.h"
 #include "ArenaUserSettings.h"
 #include "ArenaWeapon.h"
@@ -263,16 +264,52 @@ void AArenaHUD::DrawUTHud(AArenaCharacter* Char, bool bAlive, bool bEnded, bool 
 			UTFrame.HudRed = UTFrame.HudBlue = FColor(200, 0, 128, 100);
 		}
 	}
+	// a modded UT2004 server's own HUD / scoreboard classes, drawn by their UnrealScript (Net/UE2NetScriptHUD.h); ours
+	// draws what they leave out (messages, kill feed, chat, our notices) and every element they cannot draw
+	FUE2NetScriptHUD::FDrawResult Script;
+	if (FUE2NetScriptHUD* ScriptHud = FUE2NetScriptHUD::Get())
+	{
+		Script = ScriptHud->Draw(this, Canvas, bScoreboard);
+	}
 	if (bScoreboard)
 	{
 		// the HUD is not drawn under the scoreboard; ScoreBoard.bDisplayMessages shows the console messages
-		DrawUTScoreboard();
+		if (!Script.bScoreboard)
+		{
+			DrawUTScoreboard();
+		}
 		DrawKillFeed();
 		return;
 	}
 	const APawn* Pawn = GetOwningPawn();
 	const AArenaPlayerState* MyPS = PlayerOwner ? PlayerOwner->GetPlayerState<AArenaPlayerState>() : nullptr;
-	if (bAlive && !bEnded)
+	if (Script.bHud)
+	{
+		// the server's HUD drew the player HUD, crosshair, score pass and spectator bar; the pickup messages (its
+		// LocalizedMessage list is not fed) and the join notice / bar text stay ours
+		if (bAlive && !bEnded)
+		{
+			DrawUTPickupMessage();
+		}
+		else if (!bEnded)
+		{
+			const FString Bar = ArenaNet::GetSpectatorBarText(GetWorld());
+			if (!Bar.IsEmpty())
+			{
+				const int32 Font = ArenaHudFonts::FontSizeIndex(D.UTClipX(), -1);
+				TArray<FString> Lines;
+				Bar.ParseIntoArray(Lines, TEXT("\n"));
+				float Y = UTFrame.ScreenY(0.8f);
+				for (const FString& Line : Lines)
+				{
+					const FVector2D S = D.TextSizeUT(Font, Line);
+					D.TextUT(Font, Line, D.W() * 0.5f - S.X * 0.5f, Y, FLinearColor(FColor(255, 255, 255)), EArenaAlign::Left, true);
+					Y += S.Y;
+				}
+			}
+		}
+	}
+	else if (bAlive && !bEnded)
 	{
 		DrawUTDamageIndicators(Char);
 		DrawUTPlayerHud(Char);
@@ -304,7 +341,7 @@ void AArenaHUD::DrawUTHud(AArenaCharacter* Char, bool bAlive, bool bEnded, bool 
 			DrawUTScorePass();
 		}
 	}
-	if (UArenaGameRules* Rules = GetRules())
+	if (UArenaGameRules* Rules = GetRules(); Rules && !Script.bHud)
 	{
 		Rules->DrawHUD(this, Canvas);
 	}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "../Net/UE2ServerValidator.h"
 
 /**
  * A UT2004 style ini file: [Section] headers, Key=Value lines, repeated keys for lists (also "Key[n]=Value"),
@@ -109,6 +110,11 @@ struct OPENUT2K4_API FArenaServerConfig
 	 * package list (USES). Off by default: a UT2004.ini's list often names mods the clients would need to download.
 	 */
 	bool bUseServerPackages = false;
+
+	// ---- [OpenUT2k4Validator.OUTValidator]: the OpenUT2k4 Validator, native (Net/UE2ServerValidator.h). On when
+	// ServerActors= or Mutators= names OpenUT2k4Validator.OUTValidator (the same line that installs the mutator on a
+	// stock server); off by default ----
+	FUE2ValidatorSettings Validator;
 
 	// ---- [OpenUT2k4.AdminConsole]: line based TCP admin console ----
 	bool bAdminConsole = false;

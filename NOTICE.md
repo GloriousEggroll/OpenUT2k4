@@ -20,6 +20,10 @@ Terms of Service (https://legal.epicgames.com/en-US/epicgames/tos) apply to that
 - OpenUT2k4 is built with Unreal Engine. Unreal Engine is licensed separately by Epic Games under the Unreal
   Engine EULA (https://www.unrealengine.com/eula); its source code is not part of this project, and its own
   third-party notices ship with packaged builds (`NOTICES.txt`).
+- The OpenUT2k4 Validator's cryptography (`Source/OpenUT2k4/Net/UE2NetValidatorCrypto.*`, `Server/Validator/Classes/`,
+  `Tools/openut2k4_signing.py`: SHA-256 / SHA-512 per FIPS 180-4, RSA PKCS#1 v1.5 per RFC 8017, Ed25519 per RFC 8032,
+  minisign's signature file format) is OpenUT2k4's own code under the MIT licence; no third-party crypto library is
+  included.
 - The InstallShield cabinet reader in `Source/OpenUT2k4/Download/ArenaDlCab.*` is a C++ port of parts of
   unshield (https://github.com/twogood/unshield), Copyright (c) 2003 David Eriksson, MIT licence
   (`Source/OpenUT2k4/Download/ThirdParty/unshield-LICENSE.txt`).

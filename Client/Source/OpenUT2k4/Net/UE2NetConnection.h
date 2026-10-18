@@ -120,6 +120,8 @@ public:
 	bool IsOpen() const { return State != EState::Idle && State != EState::Closed; }
 	const FSettings& GetSettings() const { return Settings; }
 	FString GetAddressString() const { return FString::Printf(TEXT("%s:%d"), *Settings.Host, Settings.Port); }
+	/** The server's resolved IP (the address we actually send to), empty before Connect. */
+	FString GetRemoteIP() const;
 	/** WELCOME LEVEL= / GAME=. */
 	const FString& GetMapName() const { return MapName; }
 	const FString& GetGameClass() const { return GameClass; }
@@ -143,6 +145,9 @@ public:
 	bool SendFunction(int32 Channel, FName FunctionName, const TArray<FUE2NetValue>& Params);
 	/** The replicated function of that name the channel's class can be sent (the declaration highest up its class tree), or null. */
 	struct FUSFunction* FindReplicatedFunction(int32 Channel, FName FunctionName) const;
+
+	/** Sends a control channel text message (the OpenUT2k4 Validator's answer to our own server, Net/UE2NetValidator.h). */
+	void SendControlText(const FString& Text) { SendControl(Text); }
 
 	/** Channel of our own PlayerController (the actor the server lets us call functions on), or 0. */
 	int32 FindPlayerControllerChannel() const;
