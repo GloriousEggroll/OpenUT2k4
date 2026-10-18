@@ -88,6 +88,7 @@ cp "${SCRIPT_DIR}/Package/OpenUT2k4Server.ini" "${ARCHIVE_DIR}/Server/"
 cp "${SCRIPT_DIR}/Package/linux/"* "${ARCHIVE_DIR}/Server/linux/"
 chmod +x "${ARCHIVE_DIR}/openut2k4-server" "${ARCHIVE_DIR}/ucc" "${ARCHIVE_DIR}/Server/linux/"*.sh
 cp "${SCRIPT_DIR}/../LICENSE" "${SCRIPT_DIR}/../NOTICE.md" "${ARCHIVE_DIR}/"
+"${SCRIPT_DIR}/package-validator.sh" "${ARCHIVE_DIR}"
 cat > "${ARCHIVE_DIR}/Server/README.txt" <<'TXT'
 OpenUT2k4 dedicated server (Linux)
 

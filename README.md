@@ -424,6 +424,13 @@ python3 Client/Tools/openut2k4_signing.py verify --pub RWTwrDCWkxaitEWZhWEHlXdSS
 
 See Validator.md, "Release signing".
 
+## Releases
+
+Pushing a version tag (`vX.Y.Z`, matching `ProjectVersion` in `Client/Config/DefaultGame.ini`) runs
+`.github/workflows/release.yml` on self-hosted runners. It builds the client, and the server with the OpenUT2k4
+Validator, signs the archives and attaches them to the GitHub release. Runner setup and the signing secret are
+described in [`.github/RUNNERS.md`](.github/RUNNERS.md).
+
 ## What is not in this repository
 
 - **UT2004 game data.** No maps, textures, models, sounds, music or text from the game, and no files converted from

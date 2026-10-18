@@ -78,6 +78,7 @@ cp "${SCRIPT_DIR}/Package/OpenUT2k4Server.ini" "${ARCHIVE_DIR}/Server/"
 cp "${SCRIPT_DIR}/Package/mac/"* "${ARCHIVE_DIR}/Server/mac/"
 chmod +x "${ARCHIVE_DIR}/openut2k4-server" "${ARCHIVE_DIR}/ucc" "${ARCHIVE_DIR}/Server/mac/"*.sh
 cp "${SCRIPT_DIR}/../LICENSE" "${SCRIPT_DIR}/../NOTICE.md" "${ARCHIVE_DIR}/"
+"${SCRIPT_DIR}/package-validator.sh" "${ARCHIVE_DIR}"
 
 "${PROJECT_DIR}/Scripts/check-release.sh" "${ARCHIVE_DIR}" "${UE_ROOT}"
 # release archive + detached signature, only with OPENUT2K4_SIGNING_KEY (Server/Docs/Validator.md "Release signing")

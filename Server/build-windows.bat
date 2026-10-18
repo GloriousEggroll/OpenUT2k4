@@ -74,6 +74,22 @@ copy /y "%SCRIPT_DIR%Package\OpenUT2k4Server.ini" "%ARCHIVE_DIR%\Server\" >nul
 copy /y "%SCRIPT_DIR%Package\windows\*" "%ARCHIVE_DIR%\Server\windows\" >nul
 copy /y "%SCRIPT_DIR%..\LICENSE" "%ARCHIVE_DIR%\" >nul
 copy /y "%SCRIPT_DIR%..\NOTICE.md" "%ARCHIVE_DIR%\" >nul
+rem The OpenUT2k4 Validator (same layout as Server/package-validator.sh)
+set "VDST=%ARCHIVE_DIR%\Validator"
+mkdir "%VDST%\System" "%VDST%\Classes" "%VDST%\Tools" 2>nul
+if exist "%SCRIPT_DIR%Validator\Build\OpenUT2k4Validator.u" (
+    copy /y "%SCRIPT_DIR%Validator\Build\OpenUT2k4Validator.u" "%VDST%\System\" >nul
+    copy /y "%SCRIPT_DIR%Validator\OpenUT2k4Validator.int" "%VDST%\System\" >nul
+) else if "%OPENUT2K4_REQUIRE_VALIDATOR%"=="1" (
+    echo error: no compiled validator ^(build it with Server/Validator/build-validator.sh^)
+    exit /b 1
+) else (
+    echo warning: no compiled validator: the package gets its source and tools only
+)
+copy /y "%SCRIPT_DIR%Validator\OpenUT2k4Validator.ini" "%VDST%\System\" >nul
+copy /y "%SCRIPT_DIR%Validator\Classes\*.uc" "%VDST%\Classes\" >nul
+copy /y "%SCRIPT_DIR%..\Client\Tools\openut2k4_signing.py" "%VDST%\Tools\" >nul
+copy /y "%SCRIPT_DIR%Docs\Validator.md" "%VDST%\" >nul
 
 rem Release archive + detached signature, only with OPENUT2K4_SIGNING_KEY (Server/Docs/Validator.md "Release signing")
 if defined OPENUT2K4_SIGNING_KEY (

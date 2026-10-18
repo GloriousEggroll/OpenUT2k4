@@ -1,0 +1,215 @@
+# Builds the OpenUT2k4 client and dedicated server (with the OpenUT2k4 Validator) and attaches them to a GitHub
+# release. Runs on SELF-HOSTED runners only: GitHub's hosted runners have no Unreal Engine, and the engine may not be
+# redistributed. Setup: .github/RUNNERS.md.
+#
+# Security: this workflow never runs for pull requests (self-hosted runners must not run code from forks). It runs
+# for pushed version tags (v1.2.3) and by hand (Actions > Release > Run workflow).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (vX.Y.Z, must match ProjectVersion in Client/Config/DefaultGame.ini)'
+        required: true
+      draft:
+        description: 'Create the release as a draft'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # Linux: the validator mutator (needs a UT2004 install + Wine), client and server packages.
+  linux:
+    runs-on: [self-hosted, Linux, X64, openut2k4]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          clean: false        # keep Intermediate/ and DerivedDataCache/ between runs (git-ignored build caches)
+
+      - name: Check version
+        id: ver
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^ProjectVersion=//p' Client/Config/DefaultGame.ini | tr -d '\r')"
+          if [[ "v${VERSION}" != "${TAG}" ]]; then
+            echo "::error::tag ${TAG} does not match ProjectVersion=${VERSION}"; exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          : "${UE_ROOT:?set UE_ROOT in the runner's .env (.github/RUNNERS.md)}"
+          : "${UT2004_DIR:?set UT2004_DIR in the runner's .env (.github/RUNNERS.md)}"
+
+      - name: Validator mutator
+        run: Server/Validator/build-validator.sh --ut2004 "$UT2004_DIR"
+
+      - name: Client package
+        run: Client/Scripts/build-linux.sh "$UE_ROOT"
+
+      - name: Server package
+        run: OPENUT2K4_REQUIRE_VALIDATOR=1 Server/build-linux.sh "$UE_ROOT"
+
+      - name: Pack and sign
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.OPENUT2K4_SIGNING_KEY }}
+        run: |
+          rm -rf "$RUNNER_TEMP/release" && mkdir -p "$RUNNER_TEMP/release"
+          if [[ -n "${SIGNING_KEY}" ]]; then
+            umask 077
+            printf '%s\n' "${SIGNING_KEY}" > "$RUNNER_TEMP/release.key"
+            export RELEASE_KEY_FILE="$RUNNER_TEMP/release.key"
+          else
+            echo "::warning::OPENUT2K4_SIGNING_KEY secret not set: archives are not signed"
+          fi
+          V=${{ steps.ver.outputs.version }}
+          .github/scripts/pack-and-sign.sh Client/Dist/Linux "$RUNNER_TEMP/release" "OpenUT2k4-${V}-Linux"
+          .github/scripts/pack-and-sign.sh Client/Dist/Server-Linux "$RUNNER_TEMP/release" "OpenUT2k4Server-${V}-Linux"
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.key"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: ${{ runner.temp }}/release/*
+          retention-days: 3
+          compression-level: 0
+
+      # the compiled mutator for the Windows / macOS server packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validator
+          path: Server/Validator/Build/OpenUT2k4Validator.u
+          retention-days: 3
+
+  # Windows and macOS: enabled by the repository variables OPENUT2K4_BUILD_WINDOWS / OPENUT2K4_BUILD_MAC = true
+  # once a self-hosted runner with Unreal Engine 5.8 exists for them (.github/RUNNERS.md).
+  windows:
+    if: vars.OPENUT2K4_BUILD_WINDOWS == 'true'
+    needs: linux
+    runs-on: [self-hosted, Windows, X64, openut2k4]
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          clean: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: validator
+          path: Server/Validator/Build
+      - name: Client package
+        shell: cmd
+        run: call Client\Scripts\build-windows.bat "%UE_ROOT%"
+      - name: Server package
+        shell: cmd
+        run: |
+          set OPENUT2K4_REQUIRE_VALIDATOR=1
+          call Server\build-windows.bat "%UE_ROOT%"
+      - name: Pack and sign
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.OPENUT2K4_SIGNING_KEY }}
+        run: |
+          rm -rf "$RUNNER_TEMP/release" && mkdir -p "$RUNNER_TEMP/release"
+          if [[ -n "${SIGNING_KEY}" ]]; then
+            umask 077; printf '%s\n' "${SIGNING_KEY}" > "$RUNNER_TEMP/release.key"
+            export RELEASE_KEY_FILE="$RUNNER_TEMP/release.key"
+          fi
+          V="${TAG#v}"
+          .github/scripts/pack-and-sign.sh --zip Client/Dist/Windows "$RUNNER_TEMP/release" "OpenUT2k4-${V}-Windows"
+          .github/scripts/pack-and-sign.sh --zip Client/Dist/Server-Windows "$RUNNER_TEMP/release" "OpenUT2k4Server-${V}-Windows"
+      - name: Remove the key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/release.key"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: ${{ runner.temp }}/release/*
+          retention-days: 3
+          compression-level: 0
+
+  mac:
+    if: vars.OPENUT2K4_BUILD_MAC == 'true'
+    needs: linux
+    runs-on: [self-hosted, macOS, openut2k4]
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          clean: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: validator
+          path: Server/Validator/Build
+      - name: Client package
+        run: Client/Scripts/build-mac.sh "$UE_ROOT"
+      - name: Server package
+        run: OPENUT2K4_REQUIRE_VALIDATOR=1 Server/build-mac.sh "$UE_ROOT"
+      - name: Pack and sign
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.OPENUT2K4_SIGNING_KEY }}
+        run: |
+          rm -rf "$RUNNER_TEMP/release" && mkdir -p "$RUNNER_TEMP/release"
+          if [[ -n "${SIGNING_KEY}" ]]; then
+            umask 077; printf '%s\n' "${SIGNING_KEY}" > "$RUNNER_TEMP/release.key"
+            export RELEASE_KEY_FILE="$RUNNER_TEMP/release.key"
+          fi
+          V="${TAG#v}"
+          .github/scripts/pack-and-sign.sh Client/Dist/Mac "$RUNNER_TEMP/release" "OpenUT2k4-${V}-Mac"
+          .github/scripts/pack-and-sign.sh Client/Dist/Server-Mac "$RUNNER_TEMP/release" "OpenUT2k4Server-${V}-Mac"
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.key"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-mac
+          path: ${{ runner.temp }}/release/*
+          retention-days: 3
+          compression-level: 0
+
+  # Attaches every platform's archives to the release (created on first run, as a draft for manual runs by default).
+  release:
+    needs: [linux, windows, mac]
+    if: always() && needs.linux.result == 'success' && needs.windows.result != 'failure' && needs.mac.result != 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: List assets
+        run: ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: OpenUT2k4 ${{ env.TAG }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.draft == 'true' }}
+          files: release/*
+          fail_on_unmatched_files: true
+          body: |
+            OpenUT2k4 ${{ env.TAG }}: client and dedicated server (the server package includes the OpenUT2k4 Validator).
+            No UT2004 game data is included: you need your own copy of UT2004 (or the free OldUnreal download).
+
+            Verify a download with the release public key:
+            `minisign -Vm <archive> -P RWTwrDCWkxaitEWZhWEHlXdSShHiq+gy9bdiuAOTGT2/dUxD5Z7d+ap/`
