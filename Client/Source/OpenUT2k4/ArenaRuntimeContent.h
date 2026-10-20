@@ -88,6 +88,9 @@ namespace ArenaRuntimeContent
 	 */
 	OPENUT2K4_API class UMaterialInstanceDynamic* CreateMaterialInstance(UMaterialInterface* Source, UObject* Outer);
 
+	/** True for the plain material that UE2 "None" material slots get (the mesh leaves the skin to the actor's Skins). */
+	OPENUT2K4_API bool IsDefaultMaterial(const UMaterialInterface* Material);
+
 	// ---- static meshes -------------------------------------------------------------------------
 
 	/**

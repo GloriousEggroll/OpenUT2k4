@@ -1,5 +1,6 @@
 #include "ArenaRuntimeSkeletal.h"
 #include "OpenUT2k4.h"
+#include "ArenaHitchLog.h"
 #include "ArenaContent.h"
 #include "ArenaRuntimeContent.h"
 #include "Algo/BinarySearch.h"
@@ -687,11 +688,20 @@ namespace ArenaRuntimeSkeletalPrivate
 		}
 
 		// ---- material slots: distinct section materials in first-use order (importer: S0, S1, ...) ----
-		TArray<FString> SlotMaterials;
-		for (const TSharedPtr<FJsonValue>& V : Arr(Meta, TEXT("sections")))
+		// Sections without a material (None: the skin comes from the character record, xPawn Skins[0] / Skins[1])
+		// keep a slot each, so slot = UE2 material index and body and face can be skinned separately.
+		const TArray<TSharedPtr<FJsonValue>>& Sections = Arr(Meta, TEXT("sections"));
+		TArray<FString> SectionKeys;
+		for (const TSharedPtr<FJsonValue>& V : Sections)
 		{
-			FString M = StrField(V.IsValid() ? V->AsObject() : nullptr, TEXT("material"));
-			SlotMaterials.AddUnique(M.IsEmpty() ? FString(TEXT("None")) : M);
+			const TSharedPtr<FJsonObject> Sec = V.IsValid() ? V->AsObject() : nullptr;
+			const FString M = StrField(Sec, TEXT("material"));
+			SectionKeys.Add(M.IsEmpty() || M == TEXT("None") ? FString::Printf(TEXT("None#%d"), IntField(Sec, TEXT("index"))) : M);
+		}
+		TArray<FString> SlotMaterials;
+		for (const FString& Key : SectionKeys)
+		{
+			SlotMaterials.AddUnique(Key);
 		}
 		const TArray<TSharedPtr<FJsonValue>>& GMaterials = Arr(G.Doc, TEXT("materials"));
 
@@ -715,6 +725,12 @@ namespace ArenaRuntimeSkeletalPrivate
 		TArray<TPair<int32, int32>> PrimOrder; // (slot, primitive)
 		for (int32 p = 0; p < GPrims.Num(); ++p)
 		{
+			// the converter writes one primitive per section, in section order
+			if (GPrims.Num() == SectionKeys.Num())
+			{
+				PrimOrder.Add({ SlotMaterials.AddUnique(SectionKeys[p]), p });
+				continue;
+			}
 			const TSharedPtr<FJsonObject> P = GPrims[p].IsValid() ? GPrims[p]->AsObject() : nullptr;
 			FString MatName = StrField(ObjAt(GMaterials, IntField(P, TEXT("material"))), TEXT("name"));
 			PrimOrder.Add({ SlotMaterials.AddUnique(MatName.IsEmpty() ? FString(TEXT("None")) : MatName), p });
@@ -883,7 +899,7 @@ namespace ArenaRuntimeSkeletalPrivate
 		TArray<FSkeletalMaterial>& Materials = Mesh->GetMaterials();
 		for (int32 s = 0; s < SlotMaterials.Num(); ++s)
 		{
-			UMaterialInterface* Mat = ArenaRuntimeContent::LoadMaterialByObjectPath(SlotMaterials[s]);
+			UMaterialInterface* Mat = ArenaRuntimeContent::LoadMaterialByObjectPath(SlotMaterials[s].StartsWith(TEXT("None#")) ? FString(TEXT("None")) : SlotMaterials[s]);
 			FSkeletalMaterial& SM = Materials.Add_GetRef(FSkeletalMaterial(Mat, FName(*FString::Printf(TEXT("S%d"), s))));
 			SM.UVChannelData.bInitialized = true;
 		}
@@ -1023,6 +1039,7 @@ namespace ArenaRuntimeSkeletalPrivate
 		S.MeshSeconds += Dt;
 		UE_LOG(LogOpenUT2k4, Log, TEXT("RuntimeSkeletal: mesh %s: %d bones, %d verts, %d tris, %d sections, %d sockets, skeleton %s (%.1f ms)"),
 			*Info.ObjectPath, NumBones, NumVerts, Indices.Num() / 3, Prims.Num(), Mesh->GetMeshOnlySocketList().Num(), *Skeleton->GetName(), Dt * 1000.0);
+		ArenaHitchLog::Note(FString::Printf(TEXT("skeletal mesh %s (%.0f ms)"), *Info.ObjectPath, Dt * 1000.0));
 		return Mesh;
 	}
 
@@ -1244,6 +1261,7 @@ namespace ArenaRuntimeSkeletalPrivate
 		S.AnimSeconds += Dt;
 		UE_LOG(LogOpenUT2k4, Log, TEXT("RuntimeSkeletal: animation set %s: %d sequences, skeleton %s (%.1f ms)"),
 			*Set.ObjectPath, Out.Num(), *Skeleton->GetName(), Dt * 1000.0);
+		ArenaHitchLog::Note(FString::Printf(TEXT("animation set %s (%.0f ms)"), *Set.ObjectPath, Dt * 1000.0));
 		return true;
 	}
 

@@ -1,4 +1,5 @@
 #include "UE2NetWorld.h"
+#include "../ArenaHitchLog.h"
 
 #include "../ArenaArt.h"
 #include "../ArenaArtFX.h"
@@ -116,6 +117,11 @@ namespace UE2NetWorldLocal
 		A->Attenuation.AttenuationShapeExtents = FVector(Key * S * 0.5f, 0.f, 0.f);
 		A->Attenuation.FalloffDistance = Key * S * 8.f;
 		A->Attenuation.DistanceAlgorithm = EAttenuationDistanceModel::Logarithmic;
+		// a source within about a pawn's height of the listener has no meaningful direction (the listener is the eye,
+		// sounds come from actor centres): blend it to centred instead of a hard pan picked by a few units of offset
+		A->Attenuation.NonSpatializedRadiusStart = 150.f * S;
+		A->Attenuation.NonSpatializedRadiusEnd = 60.f * S;
+		A->Attenuation.NonSpatializedRadiusMode = ENonSpatializedRadiusSpeakerMapMode::Direct2D;
 		Cache.Add(Key, TStrongObjectPtr<USoundAttenuation>(A));
 		return A;
 	}
@@ -953,6 +959,7 @@ void FUE2NetWorld::ApplyPawn(FEntity& E, const FUE2NetActor& A, const TArray<FSt
 		FActorSpawnParameters P;
 		P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		P.ObjectFlags |= RF_Transient;
+		ArenaHitchLog::FScopedNote HitchNote(TEXT("player pawn spawned"));
 		Pawn = W->SpawnActor<AUE2NetPawn>(AUE2NetPawn::StaticClass(), Loc * S, FRotator(0.f, A.SpawnRotation.Y * 360.f / 65536.f, 0.f), P);
 		if (!Pawn)
 		{
@@ -983,6 +990,7 @@ void FUE2NetWorld::ApplyPawn(FEntity& E, const FUE2NetActor& A, const TArray<FSt
 		}
 		if (const FUE2NetActor* PRI = PRIChannel ? Connection->GetActors().Find(PRIChannel) : nullptr)
 		{
+			ArenaHitchLog::FScopedNote HitchNote(TEXT("player pawn character set"));
 			Pawn->SetCharacter(GetStr(*PRI, TEXT("CharacterName")), GetInt(*PRI, TEXT("PlayerID")));
 		}
 	}
@@ -2662,13 +2670,22 @@ void FUE2NetWorld::HearSound(const TArray<TPair<FName, FUE2NetValue>>& Params, b
 	// Parameters = (Volume * 1000, Radius, Pitch * 1000), confirmed from captures: landing sounds (xPawn: volume
 	// FMin(1, ...)) top out at 1000, Actor.TransientSoundVolume 0.3 (pickups, switches) arrives as 300, ONS vehicle guns'
 	// SoundVolume 160 / 255 as 627; LightningGunChargeUp (pitch 1.1) as 1100; radii are TransientSoundRadius (300 ...)
-	const float Volume = FMath::Clamp(float(Parameters.X) / 1000.f, 0.02f, 2.f);
+	// UE2 plays through OpenAL at Volume * SoundVolume (0.3, the output stage's mix level), capped at 1 (AL_MAX_GAIN):
+	// louder requests (vehicle guns' 1.25 ...) play louder than volume 1, up to 1 / 0.3
+	const float Volume = FMath::Clamp(float(Parameters.X) / 1000.f, 0.02f, 1.f / 0.3f);
 	const float Pitch = Parameters.Z > 0.f ? FMath::Clamp(float(Parameters.Z) / 1000.f, 0.5f, 2.f) : 1.f;
 	const float Radius = Parameters.Y > 0.f ? float(Parameters.Y) : 300.f;
 	++SoundsPlayed;
+	// UE2 hears the sounds of the view target (our own pawn, or the player we spectate in first person) at the
+	// listener: not spatialized, so the pawn's own voice, pickups and landings are centred
+	const FUE2NetPlay* Play = FUE2NetPlay::Get();
+	if (SourceChannel != 0 && ((Play && Play->IsOwnPawnChannel(SourceChannel)) || SourceChannel == FollowPawn))
+	{
+		b2D = true;
+	}
 	if (b2D)
 	{
-		UGameplayStatics::PlaySound2D(W, S2, FMath::Min(1.f, Volume * 1.5f), Pitch);
+		UGameplayStatics::PlaySound2D(W, S2, Volume, Pitch);
 		return;
 	}
 	if (FEntity* Src = FindEntity(SourceChannel))
@@ -2889,8 +2906,13 @@ void FUE2NetWorld::Tick(float DeltaSeconds)
 			break;
 		}
 	}
-	// following a player: their new pawn after a respawn
+	// following a player: their new pawn after a respawn (playing: until we have a pawn of our own again)
 	AArenaPlayerController* PC = GetPC();
+	if (const FUE2NetPlay* Play = FUE2NetPlay::Get(); Play && Play->GetLocalPawn() && FollowPRI)
+	{
+		FollowPRI = 0;
+		FollowPawn = 0;
+	}
 	if (PC && !bFreeCamera && FollowPRI)
 	{
 		AUE2NetPawn* Current = Cast<AUE2NetPawn>(PC->GetViewTarget());

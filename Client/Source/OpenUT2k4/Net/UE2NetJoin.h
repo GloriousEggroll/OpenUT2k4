@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 class UWorld;
+class FUE2NetMapVote;
 
 /**
  * Joining stock UT2004 (UE2, build 3369/3374) servers from OpenUT2k4. See Docs/UE2Net.md.
@@ -29,6 +30,12 @@ namespace ArenaNet
 	 * world): "Connected to <server> - receiving game state ...". Empty when World is not such a map.
 	 */
 	OPENUT2K4_API FString GetSpectatorBarText(const UWorld* World);
+	/**
+	 * The name of an anti-cheat that never lets OpenUT2k4 play when Text (a package name, a server rule key or value)
+	 * names it ("AntiTCC"), else empty. Such a server holds new players until the anti-cheat's client check answers,
+	 * and OpenUT2k4 never runs, answers or imitates anti-cheat: on those servers we can only spectate.
+	 */
+	OPENUT2K4_API FString FindSpawnBlockingAntiCheat(const FString& Text);
 	/** A server mod's status line for the playing HUD (UTComp's warmup: "Warmup: 2 of 4 ready ..."), else empty. */
 	OPENUT2K4_API FString GetModStatusText(const UWorld* World);
 
@@ -50,6 +57,20 @@ namespace ArenaNet
 	/** UT2004's UT2K4StatsPrompt texts (from GUI2K4.int). For the NEEDSTATS dialog: YES opens the stats settings and retries. */
 	OPENUT2K4_API bool GetStatsPrompt(FString& OutHeader, FString& OutDescription, FString& OutYes, FString& OutNo);
 
+	/**
+	 * While the server changes maps (from its ClientTravel until the next map is up): true, with a title ("Loading
+	 * DM-Rankin"), what happens now (reconnecting, downloading or converting packages, or why the next map cannot be
+	 * shown) and the fraction done (0..1, or -1 without a progress bar). The HUD covers the old map with it.
+	 */
+	OPENUT2K4_API bool GetMapChangeStatus(const UWorld* World, FString& OutTitle, FString& OutDetail, float& OutFraction);
+	/** The server's map voting (xVoting) when it runs one, else null. Game thread only; valid until the next tick. */
+	OPENUT2K4_API const FUE2NetMapVote* GetMapVote();
+	/** Votes for a map (index into GetMapVote()->GetMaps()) and game type (GetGameConfigs()). */
+	OPENUT2K4_API bool SendMapVote(int32 MapIndex, int32 GameIndex);
+	/** True once when the server asked to open the map voting window (end of the match). */
+	OPENUT2K4_API bool ConsumeMapVoteOpenRequest();
+	/** True once when the server closed map voting (a map was chosen). */
+	OPENUT2K4_API bool ConsumeMapVoteCloseRequest();
 	/** Re-joins the last server (same URL and options). Used after the player set a password or stats and chose retry. */
 	OPENUT2K4_API bool RetryLastJoin();
 }

@@ -476,14 +476,14 @@ namespace ArenaGUI2K4Local
 		return T ? T->GetResource() : nullptr;
 	}
 
-	void TileUV(UCanvas* Canvas, const FTexture* Res, float X, float Y, float W, float H, FVector2D UV0, FVector2D UV1, const FLinearColor& C, bool bAdditive)
+	void TileUV(UCanvas* Canvas, const FTexture* Res, float X, float Y, float W, float H, FVector2D UV0, FVector2D UV1, const FLinearColor& C, ESimpleElementBlendMode Blend)
 	{
 		if (!Canvas || !Res || W <= 0.f || H <= 0.f || C.A <= 0.f)
 		{
 			return;
 		}
 		FCanvasTileItem Item(FVector2D(X, Y), Res, FVector2D(W, H), UV0, UV1, C);
-		Item.BlendMode = bAdditive ? SE_BLEND_Additive : SE_BLEND_Translucent;
+		Item.BlendMode = Blend;
 		Canvas->DrawItem(Item);
 	}
 
@@ -991,6 +991,17 @@ void FGUI::InjectKey(const FKey& Key)
 	FArenaGUIInput::Get().Push(E);
 }
 
+void FGUI::InjectText(const FString& Text)
+{
+	for (const TCHAR C : Text)
+	{
+		FGuiEvent E;
+		E.Type = FGuiEvent::EType::Char;
+		E.Char = C;
+		FArenaGUIInput::Get().Push(E);
+	}
+}
+
 void FGUI::InjectClick(float X, float Y, bool bPixels)
 {
 	InjectedClicks.Add(bPixels ? FVector2D(X, Y) : FVector2D(SafeX + X * SafeW, Y * D.H()));
@@ -1053,6 +1064,9 @@ void FGUI::Begin(UCanvas* Canvas, APlayerController* InPC, bool bCaptureInput)
 	PrevChain = MoveTemp(FocusChain);
 	FocusChain.Reset();
 	PrevPopupRect = PopupId != 0 ? PopupRect : FRect();
+	PrevOverlayRect = OverlayRect;
+	OverlayRect = FRect();
+	bInOverlay = false;
 	LastHot = HotId;
 	HotId = 0;
 
@@ -1217,33 +1231,47 @@ void FGUI::End()
 		PlaySound(ESound::Over);
 	}
 
-	// tool tip (STY2MouseOverLabel) for the hovered widget after a short delay, like GUIToolTip
+	// tool tip, like XInterface.GUIToolTip (StyleName MouseOver = STY2MouseOverLabel): shown InitialDelay 0.25 s after
+	// the mouse comes to rest on a control with a hint, hidden after ExpirationSeconds 3 s, wrapped to MaxWidth 0.3 of
+	// the screen; the box is Controls.editboxSquare_b stretched with MSTY_Normal (an RGBA8 texture without
+	// bAlphaTexture: drawn opaque, tinted by ImgColors (221,221,221), the colour's alpha unused), the text inside the
+	// style's BorderOffsets
 	static uint32 TipId = 0;
 	static double TipSince = 0.0;
-	if (HotId != TipId)
+	static FVector2D TipMouse = FVector2D::ZeroVector;
+	if (HotId != TipId || (HotId != 0 && FVector2D::Distance(MousePos, TipMouse) > 2.f && Now - TipSince <= 0.25))
 	{
+		// the delay restarts while the mouse still moves over the control
 		TipId = HotId;
 		TipSince = Now;
+		TipMouse = MousePos;
 	}
-	if (bCapture && HotId != 0 && !Hint.IsEmpty() && Now - TipSince > 0.75 && PopupId == 0 && CaptureId == 0)
+	const double TipAge = Now - TipSince;
+	if (bCapture && HotId != 0 && !Hint.IsEmpty() && TipAge > 0.25 && TipAge < 0.25 + 3.0 && PopupId == 0 && CaptureId == 0)
 	{
 		const FStyle& S = GetStyle(TEXT("MouseOver"));
 		const FFontRef F = StyleFont(S, EMenuState::Blurry, EFontScale::Small);
-		const TArray<FString> Lines = Wrap(F, Hint, FMath::Min(SafeW * 0.4f, L(360.f)));
+		const float PadL = L(S.BorderOffsets[0]), PadT = L(S.BorderOffsets[1]), PadR = L(S.BorderOffsets[2]), PadB = L(S.BorderOffsets[3]);
+		const TArray<FString> Lines = Wrap(F, Hint, FMath::Max(L(60.f), D.W() * 0.3f - PadL - PadR));
 		float TW = 0.f;
 		for (const FString& Ln : Lines) TW = FMath::Max(TW, TextSize(F, Ln).X);
-		const float PadX = L(S.BorderOffsets[0]), PadY = L(4.f);
-		FRect R(MousePos.X + L(14.f), MousePos.Y + L(22.f), TW + PadX * 2.f, Lines.Num() * F.Height + PadY * 2.f);
-		R.X = FMath::Min(R.X, D.W() - R.W - 2.f);
-		R.Y = FMath::Min(R.Y, D.H() - R.H - 2.f);
-		if (!StyleImage(S, EMenuState::Blurry, R))
+		FRect R(MousePos.X + L(14.f), MousePos.Y + L(22.f), TW + PadL + PadR, Lines.Num() * F.Height + PadT + PadB);
+		R.X = FMath::Max(2.f, FMath::Min(R.X, D.W() - R.W - 2.f));
+		if (R.B() > D.H() - 2.f)
 		{
-			D.Rect(R.X, R.Y, R.W, R.H, FLinearColor(0.86f, 0.86f, 0.86f, 0.85f));
+			// no room below the cursor: above it
+			R.Y = MousePos.Y - R.H - L(4.f);
 		}
-		float Y = R.Y + PadY;
+		R.Y = FMath::Max(2.f, R.Y);
+		const FColor Tint = S.ImgColors[0];
+		if (!Image(S.Images[0], R, EImgStyle::Stretched, ToLinear(FColor(Tint.R, Tint.G, Tint.B, 255)), nullptr, false, true))
+		{
+			D.Rect(R.X, R.Y, R.W, R.H, ToLinear(FColor(Tint.R, Tint.G, Tint.B, 255)));
+		}
+		float Y = R.Y + PadT;
 		for (const FString& Ln : Lines)
 		{
-			Text(F, Ln, R.X + PadX, Y, ToLinear(S.FontColors[0]));
+			Text(F, Ln, R.X + PadL, Y, ToLinear(S.FontColors[0]));
 			Y += F.Height;
 		}
 	}
@@ -1489,8 +1517,9 @@ bool FGUI::ImageNormal(const FString& A, const FString& B, float BlendB, const F
 	return true;
 }
 
-bool FGUI::Image(const FString& ObjectPath, const FRect& R, EImgStyle Style, const FLinearColor& Color, const FBox2f* SubRect, bool bAdditive) const
+bool FGUI::Image(const FString& ObjectPath, const FRect& R, EImgStyle Style, const FLinearColor& Color, const FBox2f* SubRect, bool bAdditive, bool bOpaque) const
 {
+	const ESimpleElementBlendMode Blend = bAdditive ? SE_BLEND_Additive : (bOpaque ? SE_BLEND_Opaque : SE_BLEND_Translucent);
 	UTexture2D* Tex = LoadTex(ObjectPath);
 	const FTexture* Res = ResourceOf(Tex);
 	if (!Res || !D.Canvas)
@@ -1515,23 +1544,23 @@ bool FGUI::Image(const FString& ObjectPath, const FRect& R, EImgStyle Style, con
 	{
 	case EImgStyle::Scaled:
 	case EImgStyle::Bound:
-		TileUV(C, Res, R.X, R.Y, R.W, R.H, UV(SX1, SY1), UV(SX2, SY2), Color, bAdditive);
+		TileUV(C, Res, R.X, R.Y, R.W, R.H, UV(SX1, SY1), UV(SX2, SY2), Color, Blend);
 		break;
 	case EImgStyle::Justified:
 	{
 		const float S = FMath::Min(R.W / SW, R.H / SH);
 		const float W = SW * S, H = SH * S;
-		TileUV(C, Res, R.X + (R.W - W) * 0.5f, R.Y + (R.H - H) * 0.5f, W, H, UV(SX1, SY1), UV(SX2, SY2), Color, bAdditive);
+		TileUV(C, Res, R.X + (R.W - W) * 0.5f, R.Y + (R.H - H) * 0.5f, W, H, UV(SX1, SY1), UV(SX2, SY2), Color, Blend);
 		break;
 	}
 	case EImgStyle::Normal:
 	{
 		const float W = FMath::Min(R.W, L(SW)), H = FMath::Min(R.H, L(SH));
-		TileUV(C, Res, R.X, R.Y, W, H, UV(SX1, SY1), UV(SX1 + W / LScale, SY1 + H / LScale), Color, bAdditive);
+		TileUV(C, Res, R.X, R.Y, W, H, UV(SX1, SY1), UV(SX1 + W / LScale, SY1 + H / LScale), Color, Blend);
 		break;
 	}
 	case EImgStyle::Tiled:
-		TileUV(C, Res, R.X, R.Y, R.W, R.H, UV(SX1, SY1), UV(SX1 + R.W / L(SW) * SW, SY1 + R.H / L(SH) * SH), Color, bAdditive);
+		TileUV(C, Res, R.X, R.Y, R.W, R.H, UV(SX1, SY1), UV(SX1 + R.W / L(SW) * SW, SY1 + R.H / L(SH) * SH), Color, Blend);
 		break;
 	case EImgStyle::PartialScaled:
 	{
@@ -1539,12 +1568,12 @@ bool FGUI::Image(const FString& ObjectPath, const FRect& R, EImgStyle Style, con
 		// middle column stretches; vertically the image is scaled to the height
 		const float Cap = FMath::Min(L(SW * 0.5f), R.W * 0.5f);
 		const float SrcCap = SW * 0.5f;
-		TileUV(C, Res, R.X, R.Y, Cap, R.H, UV(SX1 + 0.5f, SY1), UV(SX1 + SrcCap, SY2), Color, bAdditive);
+		TileUV(C, Res, R.X, R.Y, Cap, R.H, UV(SX1 + 0.5f, SY1), UV(SX1 + SrcCap, SY2), Color, Blend);
 		if (R.W > Cap * 2.f)
 		{
-			TileUV(C, Res, R.X + Cap, R.Y, R.W - Cap * 2.f, R.H, UV(SX1 + SrcCap - 0.5f, SY1), UV(SX1 + SrcCap + 0.5f, SY2), Color, bAdditive);
+			TileUV(C, Res, R.X + Cap, R.Y, R.W - Cap * 2.f, R.H, UV(SX1 + SrcCap - 0.5f, SY1), UV(SX1 + SrcCap + 0.5f, SY2), Color, Blend);
 		}
-		TileUV(C, Res, R.R() - Cap, R.Y, Cap, R.H, UV(SX2 - SrcCap, SY1), UV(SX2 - 0.5f, SY2), Color, bAdditive);
+		TileUV(C, Res, R.R() - Cap, R.Y, Cap, R.H, UV(SX2 - SrcCap, SY1), UV(SX2 - 0.5f, SY2), Color, Blend);
 		break;
 	}
 	case EImgStyle::Stretched:
@@ -1566,7 +1595,7 @@ bool FGUI::Image(const FString& ObjectPath, const FRect& R, EImgStyle Style, con
 				const float PW = DX[Col + 1] - DX[Col], PH = DY[Row + 1] - DY[Row];
 				if (PW > 0.01f && PH > 0.01f)
 				{
-					TileUV(C, Res, DX[Col], DY[Row], PW, PH, UV(UX[Col], VY[Row]), UV(UX[Col + 1], VY[Row + 1]), Color, bAdditive);
+					TileUV(C, Res, DX[Col], DY[Row], PW, PH, UV(UX[Col], VY[Row]), UV(UX[Col + 1], VY[Row + 1]), Color, Blend);
 				}
 			}
 		}
@@ -1583,7 +1612,7 @@ bool FGUI::ImageUV(const FString& ObjectPath, const FRect& R, float U0, float V0
 	{
 		return false;
 	}
-	TileUV(D.Canvas, Res, R.X, R.Y, R.W, R.H, FVector2D(U0, V0), FVector2D(U1, V1), Color, bAdditive);
+	TileUV(D.Canvas, Res, R.X, R.Y, R.W, R.H, FVector2D(U0, V0), FVector2D(U1, V1), Color, bAdditive ? SE_BLEND_Additive : SE_BLEND_Translucent);
 	return true;
 }
 
@@ -1733,6 +1762,11 @@ void FGUI::ScrollText(uint32 InId, const FRect& R, const FString& InText, const 
 bool FGUI::Hovered(const FRect& R) const
 {
 	if (!bCapture || !R.Contains(MousePos))
+	{
+		return false;
+	}
+	// an overlay panel covers the page below it
+	if (!bInOverlay && PrevOverlayRect.W > 0.f && PrevOverlayRect.Contains(MousePos))
 	{
 		return false;
 	}
@@ -2296,7 +2330,8 @@ void FGUI::EndTextEdit(bool bCommit)
 	TextSinkHolder.Reset();
 }
 
-bool FGUI::EditBox(uint32 InId, const FRect& R, const FString& Caption, FString& Value, const FString& InHint, float CaptionWidth, int32 MaxLen)
+bool FGUI::EditBox(uint32 InId, const FRect& R, const FString& Caption, FString& Value, const FString& InHint, float CaptionWidth, int32 MaxLen,
+	bool bMasked)
 {
 	CaptionWidth = CaptionWidthFor(R, Caption, CaptionWidth);
 	const bool bEditing = EditingId == InId;
@@ -2314,11 +2349,12 @@ bool FGUI::EditBox(uint32 InId, const FRect& R, const FString& Caption, FString&
 	}
 	const FFontRef F = StyleFont(Edit, EMenuState::Blurry, EFontScale::Medium);
 	const FRect TR = Comp.Inset(L(Edit.BorderOffsets[0]), 0.f, L(4.f), 0.f);
-	const FString& Shown = bEditing ? EditText : Value;
+	const FString& Text = bEditing ? EditText : Value;
+	const FString Shown = bMasked ? FString::ChrN(Text.Len(), TEXT('*')) : Text;
 	TextIn(F, Shown, TR, ToLinear(Edit.FontColors[int32(bEditing ? EMenuState::Focused : EMenuState::Blurry)]), EAlign::Left);
 	if (bEditing && FMath::Fmod(Now - EditStart, 1.0) < 0.6)
 	{
-		const float CX = TR.X + FMath::Min(TR.W, TextSize(F, EditText).X) + 1.f;
+		const float CX = TR.X + FMath::Min(TR.W, TextSize(F, Shown).X) + 1.f;
 		D.Rect(CX, TR.Y + TR.H * 0.18f, FMath::Max(1.f, L(1.5f)), TR.H * 0.64f, FLinearColor::White);
 	}
 	bool bCommitted = false;

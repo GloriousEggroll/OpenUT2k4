@@ -207,9 +207,12 @@ namespace ArenaGUI2K4
 		FFontRef StyleFont(const FStyle& S, EMenuState State, EFontScale Scale) const;
 
 		// ---- images ----
-		/** A texture drawn into R with a UE2 image style. SubRect = source pixels (X1, Y1, X2, Y2), all <0 = whole. False when missing. */
+		/**
+		 * A texture drawn into R with a UE2 image style. SubRect = source pixels (X1, Y1, X2, Y2), all <0 = whole. False when missing.
+		 * bOpaque: UE2 MSTY_Normal with a texture that is not bAlphaTexture (the texture's alpha and Color.A are not used).
+		 */
 		bool Image(const FString& ObjectPath, const FRect& R, EImgStyle Style, const FLinearColor& Color, const FBox2f* SubRect = nullptr,
-			bool bAdditive = false) const;
+			bool bAdditive = false, bool bOpaque = false) const;
 		/**
 		 * UE2 GUIImage with MSTY_Normal (map / game type previews): A scaled into R, opaque (the texture's alpha is not
 		 * used: DM-Injector's DXT3 shots have alpha 0), cross faded to B by BlendB. False when A is missing.
@@ -227,6 +230,13 @@ namespace ArenaGUI2K4
 		// ---- backgrounds ----
 		/** UT2k4MainPage backdrop: Bgndtile, BkRenders.Char01, scanlines (full screen). */
 		void PageBackground(float Alpha = 1.f) const;
+
+		/**
+		 * A panel drawn over the page after it (a status band with its own buttons): widgets outside BeginOverlay /
+		 * EndOverlay do not react to the mouse inside R (from the next frame on, as the page is drawn first).
+		 */
+		void BeginOverlay(const FRect& R) { OverlayRect = R; bInOverlay = true; }
+		void EndOverlay() { bInOverlay = false; }
 		/** GUIHeader (STY2Header, NewHeader) across the screen at the top; returns its rectangle. */
 		FRect Header(const FString& Caption) const;
 		/** ButtonFooter (STY2Footer, NewFooter) across the screen at the bottom with the status hint; returns its rectangle. */
@@ -253,9 +263,12 @@ namespace ArenaGUI2K4
 		/** moNumericEdit / spinner: caption, value field and +/- spinner. Returns -1 / +1 when stepped, 0 otherwise. */
 		int32 Spinner(uint32 Id, const FRect& R, const FString& Caption, const FString& ValueText, const FString& Hint, float CaptionWidth = 0.5f,
 			bool bEnabled = true);
-		/** moEditBox: caption and a text field (typing through a focus widget). Returns true when the text was committed (Enter / focus lost). */
+		/**
+		 * moEditBox: caption and a text field (typing through a focus widget). Returns true when the text was committed (Enter / focus lost).
+		 * bMasked draws the text as asterisks (GUIEditBox.bMaskText, password fields).
+		 */
 		bool EditBox(uint32 Id, const FRect& R, const FString& Caption, FString& Value, const FString& Hint, float CaptionWidth = 0.5f,
-			int32 MaxLen = 24);
+			int32 MaxLen = 24, bool bMasked = false);
 		/**
 		 * GUIListBox (+ GUIVertScrollBar): rows in the list style, selection in STY2ListSelection, wheel / drag scrolling.
 		 * Returns true when Selected changed; bOutActivated on double click / Enter.
@@ -308,6 +321,8 @@ namespace ArenaGUI2K4
 		// ---- automation (non-shipping test hooks; never touches the real desktop) ----
 		/** Injects a key press into the GUI's input queue. */
 		static void InjectKey(const FKey& Key);
+		/** Test hook: typed characters, as if entered on the keyboard. */
+		static void InjectText(const FString& Text);
 		/** Injects a click at a page-relative position (0..1 of the 4:3 page) or screen pixels (bPixels). */
 		void InjectClick(float X, float Y, bool bPixels = false);
 		void InjectWheel(int32 Delta);
@@ -375,6 +390,11 @@ namespace ArenaGUI2K4
 		int32 PopupResult = -1;
 		uint32 PopupResultId = 0;
 		FRect PrevPopupRect;
+
+		// overlay (BeginOverlay): covers the widgets drawn before it, from the next frame on
+		FRect OverlayRect;
+		FRect PrevOverlayRect;
+		bool bInOverlay = false;
 
 		// scrolling lists: id -> first visible row
 		TMap<uint32, float> Scrolls;

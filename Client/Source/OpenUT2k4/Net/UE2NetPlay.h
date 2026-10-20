@@ -115,6 +115,12 @@ public:
 	bool IsPlaying() const;
 	/** A pawn was given to us at least once on this map. */
 	bool HasSpawned() const { return Spawns > 0; }
+	/**
+	 * Without a pawn, the server keeps us spectating until something else spawns us: our PRI is out of lives (round
+	 * games such as 3SPN / Freon put players who join mid-round there until the next round starts; LMS) or the
+	 * server's controller is in its Spectating state. Fire then views the next player instead of asking to restart.
+	 */
+	bool IsWaitingForRound() const;
 
 	enum class EInput : uint8 { Fire, AltFire, FireRelease, AltFireRelease, NextWeapon, PrevWeapon, Slot, Use, Suicide };
 	/** Input of the local player while on the server; true when handled (the local game must not act on it). */

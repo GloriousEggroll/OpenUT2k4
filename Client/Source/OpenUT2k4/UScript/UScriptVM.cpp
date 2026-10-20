@@ -181,7 +181,10 @@ void FUSFrame::Step(FUSObject* Context, void* Result)
 void USVM::ScriptWarn(const FUSFrame* Stack, const FString& Message)
 {
 	const FString Where = Stack ? Stack->Describe() : FString();
-	const FString Key = Where + Message;
+	// once per code location and message, not per object: every new instance of a class (a weapon on each respawn)
+	// would repeat its warnings ("Class.Function:Offset (Object)")
+	int32 ObjStart = INDEX_NONE;
+	const FString Key = (Where.FindLastChar(TEXT('('), ObjStart) ? Where.Left(ObjStart) : Where) + Message;
 	if (GWarned.Num() < 4096 && !GWarned.Contains(Key))
 	{
 		GWarned.Add(Key);

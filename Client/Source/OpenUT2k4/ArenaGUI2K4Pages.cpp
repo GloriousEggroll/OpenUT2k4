@@ -107,7 +107,7 @@ namespace ArenaGUI2K4PagesLocal
 	}
 
 	// ---- settings model: our UArenaUserSettings rows in the UT2K4SettingsPage tabs ----
-	enum class EKind : uint8 { Check, Combo, Slider, Spinner, Name };
+	enum class EKind : uint8 { Check, Combo, Slider, Spinner, Name, StatsName, StatsPassword };
 	enum ETab : int32 { TabDisplay, TabAudio, TabPlayer, TabGame, TabInput, TabHUD, NumTabs };
 
 	struct FRow
@@ -162,13 +162,34 @@ namespace ArenaGUI2K4PagesLocal
 		Name.LocSection = TEXT("UT2K4Tab_PlayerSettings");
 		Name.LocKey = TEXT("PlayerName.Caption");
 		Rows.Insert(Name, 0);
+		// Game tab, "Stats" (UT2K4Tab_GameSettings: Track Stats, UserName, Password); stored in UArenaUserSettings only
+		const struct { const TCHAR* Id; EKind Kind; const TCHAR* LocKey; } StatsRows[] = {
+			{ TEXT("TrackStats"), EKind::Check, TEXT("OnlineTrackStats.Caption") },
+			{ TEXT("StatsUsername"), EKind::StatsName, TEXT("OnlineStatsName.Caption") },
+			{ TEXT("StatsPassword"), EKind::StatsPassword, TEXT("OnlineStatsPW.Caption") } };
+		for (const auto& Sr : StatsRows)
+		{
+			FRow R;
+			R.Id = FName(Sr.Id);
+			R.Tab = TabGame;
+			R.Section = 0;
+			R.Kind = Sr.Kind;
+			R.LocSection = TEXT("UT2K4Tab_GameSettings");
+			R.LocKey = Sr.LocKey;
+			Rows.Add(R);
+		}
 		Rows.StableSort([](const FRow& A, const FRow& B) { return A.Order < B.Order; });
 		return Rows;
 	}
 
 	FString RowLabel(const FRow& R)
 	{
-		const FString Ours = R.Kind == EKind::Name ? FString(TEXT("Player Name")) : UArenaUserSettings::GetSettingLabel(R.Id);
+		const FString S = R.Id.ToString();
+		const FString Ours = R.Kind == EKind::Name ? FString(TEXT("Player Name"))
+			: S == TEXT("TrackStats") ? FString(TEXT("Track Stats"))
+			: S == TEXT("StatsUsername") ? FString(TEXT("UserName"))
+			: S == TEXT("StatsPassword") ? FString(TEXT("Password"))
+			: UArenaUserSettings::GetSettingLabel(R.Id);
 		return R.LocKey ? Loc(TEXT("GUI2K4"), R.LocSection, R.LocKey, Ours) : Ours;
 	}
 
@@ -176,6 +197,12 @@ namespace ArenaGUI2K4PagesLocal
 	{
 		const FString S = R.Id.ToString();
 		if (S == TEXT("PlayerName")) return TEXT("The name other players see in the match");
+		if (S == TEXT("TrackStats")) return Loc(TEXT("GUI2K4"), TEXT("UT2K4Tab_GameSettings"), TEXT("OnlineTrackStats.Hint"),
+			TEXT("Enable this option to join the online ranking system."));
+		if (S == TEXT("StatsUsername")) return Loc(TEXT("GUI2K4"), TEXT("UT2K4Tab_GameSettings"), TEXT("OnlineStatsName.Hint"),
+			TEXT("Please select a name to use for UT Stats!"));
+		if (S == TEXT("StatsPassword")) return Loc(TEXT("GUI2K4"), TEXT("UT2K4Tab_GameSettings"), TEXT("OnlineStatsPW.Hint"),
+			TEXT("Please select a password that will secure your UT Stats!"));
 		if (S == TEXT("Monitor")) return TEXT("Which display the full screen game uses");
 		if (S == TEXT("Brightness")) return TEXT("Overall brightness of the game view");
 		if (S == TEXT("RayTracing")) return TEXT("Hardware ray traced lighting (Lumen); Auto uses it on a capable graphics card");
@@ -247,6 +274,7 @@ namespace ArenaGUI2K4PagesLocal
 		const UArenaUserSettings* U = UArenaUserSettings::Get();
 		const FString S = Id.ToString();
 		if (S == TEXT("InvertY")) return U->bInvertY;
+		if (S == TEXT("TrackStats")) return U->bTrackStats;
 		if (S == TEXT("FullRayTracing")) return U->FullRayTracing != 0;
 		if (S == TEXT("LowLatency")) return U->LowLatency != 0;
 		return false;
@@ -339,8 +367,8 @@ namespace ArenaGUI2K4PagesLocal
 			{ TEXT("UT2K4Tab_PlayerSettings"), TEXT("PlayerBK1.Caption"), TEXT("Character"), 0.004063f, 0.017969f, 0.446758f, 0.963631f },
 			{ TEXT("UT2K4Tab_PlayerSettings"), TEXT("PlayerBK2.Caption"), TEXT("Misc."), 0.463047f, 0.017969f, 0.531719f, 0.573006f } };
 		case TabGame: return {
-			// GameBK1 "Gameplay"
-			{ TEXT("UT2K4Tab_GameSettings"), TEXT("GameBK1.Caption"), TEXT("Gameplay"), 0.014649f, 0.033853f, 0.449609f, 0.748936f } };
+			// GameBK3 "Stats" (the tab's other sections have no settings of ours yet)
+			{ TEXT("UT2K4Tab_GameSettings"), TEXT("GameBK3.Caption"), TEXT("Stats"), 0.014649f, 0.033853f, 0.449609f, 0.36f } };
 		case TabInput: return {
 			// InputBK1 "Options"
 			{ TEXT("UT2K4Tab_IForceSettings"), TEXT("InputBK1.Caption"), TEXT("Options"), 0.021641f, 0.028176f, 0.381328f, 0.655039f } };
@@ -474,7 +502,7 @@ bool FSettingsPage::Draw(FGUI& G)
 		{ TabDisplay, 0, TEXT("Display"), TEXT("Display, lighting and upscaling options") },
 		{ TabAudio, 1, TEXT("Audio"), TEXT("Volume levels") },
 		{ TabPlayer, 2, TEXT("Player"), TEXT("Your name and view") },
-		{ TabGame, 3, TEXT("Game"), TEXT("Gameplay options") },
+		{ TabGame, 3, TEXT("Game"), TEXT("Gameplay and stats options") },
 		{ TabInput, 4, TEXT("Input"), TEXT("Mouse options") },
 		{ TabHUD, 6, TEXT("HUD"), TEXT("Crosshair") },
 	};
@@ -488,6 +516,11 @@ bool FSettingsPage::Draw(FGUI& G)
 			Captions.Add(LocArray(TEXT("GUI2K4"), TEXT("UT2K4SettingsPage"), TEXT("PanelCaption"), T.LocIndex, T.Fallback));
 			Hints.Add(LocArray(TEXT("GUI2K4"), TEXT("UT2K4SettingsPage"), TEXT("PanelHint"), T.LocIndex, T.HintFallback));
 		}
+	}
+	if (bOpenStatsTab)
+	{
+		bOpenStatsTab = false;
+		Tab = FMath::Max(0, TabIds.IndexOfByKey(int32(TabGame)));
 	}
 	Tab = FMath::Clamp(Tab, 0, FMath::Max(0, TabIds.Num() - 1));
 	const FString PageCaption = Loc(TEXT("GUI2K4"), TEXT("UT2K4SettingsPage"), TEXT("SettingHeader.Caption"), TEXT("Settings"));
@@ -551,12 +584,32 @@ bool FSettingsPage::Draw(FGUI& G)
 			}
 			break;
 		}
+		case EKind::StatsName:
+		case EKind::StatsPassword:
+		{
+			const bool bPassword = R.Kind == EKind::StatsPassword;
+			FString Text = bPassword ? U->StatsPassword : U->StatsUsername;
+			if (G.EditBox(Id, Box, Label, Text, HintText, 0.5f, UArenaUserSettings::MaxStatsTextLen, bPassword))
+			{
+				(bPassword ? U->StatsPassword : U->StatsUsername) = UArenaUserSettings::CleanStatsText(Text);
+				U->Save();
+			}
+			break;
+		}
 		case EKind::Check:
 		{
 			bool b = GetCheck(R.Id);
 			if (G.CheckBox(Id, Box, Label, b, HintText, 0.8f, CheckEnabled(R.Id)))
 			{
-				U->ChangeSetting(R.Id, 1);
+				if (R.Id == FName(TEXT("TrackStats")))
+				{
+					U->bTrackStats = !U->bTrackStats;
+					U->Save();
+				}
+				else
+				{
+					U->ChangeSetting(R.Id, 1);
+				}
 			}
 			break;
 		}
@@ -627,6 +680,20 @@ bool FSettingsPage::Draw(FGUI& G)
 				const float V = float(i) / 15.f;
 				G.Draw().Rect(Img.X + Img.W * i / 16.f, Img.Y, Img.W / 16.f + 1.f, Img.H, FLinearColor(V, V, V, 1.f));
 			}
+		}
+	}
+	if (TabId == TabGame && Clients.IsValidIndex(0) && U->bTrackStats && !U->HasValidStatsLogin())
+	{
+		// UT2K4Tab_GameSettings.InvalidWarning under the Stats section
+		const FRect C = Clients[0];
+		const FString Warn = Loc(TEXT("GUI2K4"), TEXT("UT2K4Tab_GameSettings"), TEXT("InvalidWarning.Caption"),
+			TEXT("Your stats username or password is invalid.  Your username must be at least 4 characters long, and your password must be at least 6 characters long."));
+		const FFontRef F = G.Font(TEXT("UT2SmallFont"));
+		float Y = NextY[0] + G.L(4.f);
+		for (const FString& Line : G.Wrap(F, Warn, C.W * 0.9f))
+		{
+			G.TextIn(F, Line, FRect(C.X + C.W * 0.05f, Y, C.W * 0.9f, F.Height), FLinearColor(1.f, 0.35f, 0.3f, 1.f), EAlign::Left);
+			Y += F.Height;
 		}
 	}
 	if (TabId == TabPlayer && Clients.IsValidIndex(0))
@@ -980,6 +1047,10 @@ TArray<TPair<FString, FString>> FAutomation::Tick(FGUI& G, double Now, UWorld* W
 			{
 				G.InjectClick(FCString::Atof(*X), FCString::Atof(*Y));
 			}
+		}
+		else if (C.Name == TEXT("Type"))
+		{
+			FGUI::InjectText(C.Value);
 		}
 		else if (C.Name == TEXT("Wheel"))
 		{

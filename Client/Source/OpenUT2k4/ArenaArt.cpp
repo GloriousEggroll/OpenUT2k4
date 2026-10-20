@@ -2,6 +2,8 @@
 #include "OpenUT2k4.h"
 #include "ArenaContent.h"
 #include "ArenaRuntimeContent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/PackageName.h"
 #include "Sound/SoundBase.h"
@@ -198,7 +200,9 @@ namespace ArenaArtPrivate
 		}
 		TUniquePtr<FDynCharacterModel>& D = Dyn.Add(Key);
 		FString Json;
-		if (!FFileHelper::LoadFileToString(Json, *(ArenaContent::GetCacheDir() / TEXT("skeletalmeshes") / Pkg / Name + TEXT(".json"))))
+		// through the cache index: record names and cache file names can differ in case (ThunderCrash.MercFemale1 / Mercfemale1)
+		const FString File = ArenaRuntimeContent::FindCacheFileByObjectPath(TEXT("skeletalmeshes"), Pkg + TEXT(".") + Name, TEXT(".json"));
+		if (File.IsEmpty() || !FFileHelper::LoadFileToString(Json, *File))
 		{
 			return nullptr;
 		}
@@ -266,6 +270,35 @@ UTexture* ArenaArt::LoadBodySkin(const FString& SkinName)
 	}
 	const FString* Pkg = ArenaArtPrivate::SkinPackages().Find(Base.ToLower());
 	return Pkg ? Load<UTexture>(FString::Printf(TEXT("Textures/%s/%s"), **Pkg, *SkinName)) : nullptr;
+}
+
+void ArenaArt::ApplyFaceSkin(USkeletalMeshComponent* Comp, const FString& UE2FaceSkin, int32 Team)
+{
+	const USkeletalMesh* Mesh = Comp ? Comp->GetSkeletalMeshAsset() : nullptr;
+	const int32 FaceSlot = 1;
+	if (!Mesh || UE2FaceSkin.IsEmpty() || !Mesh->GetMaterials().IsValidIndex(FaceSlot)
+		|| !ArenaRuntimeContent::IsDefaultMaterial(Mesh->GetMaterials()[FaceSlot].MaterialInterface.Get()))
+	{
+		return;
+	}
+	Comp->SetMaterial(FaceSlot, nullptr); // a previous team's face
+	auto InCache = [](const FString& Path)
+	{
+		return !ArenaRuntimeContent::FindCacheFileByObjectPath(TEXT("materials"), Path, TEXT(".json")).IsEmpty()
+			|| !ArenaRuntimeContent::FindCacheFileByObjectPath(TEXT("textures"), Path, TEXT(".json")).IsEmpty();
+	};
+	FString Path = (Team == 0 || Team == 1) ? FString::Printf(TEXT("%s_%d"), *UE2FaceSkin, Team) : FString();
+	if (Path.IsEmpty() || !InCache(Path))
+	{
+		Path = UE2FaceSkin;
+	}
+	if (InCache(Path))
+	{
+		if (UMaterialInterface* Mat = ArenaRuntimeContent::LoadMaterialByObjectPath(Path))
+		{
+			Comp->SetMaterial(FaceSlot, Mat);
+		}
+	}
 }
 
 void ArenaArt::SetCharacterOverride(const FString& PlayerName, const FString& UE2Mesh, const FString& UE2BodySkin)

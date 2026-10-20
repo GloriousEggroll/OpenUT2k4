@@ -64,6 +64,12 @@ namespace UE2NetDownload
 	OPENUT2K4_API void ClearJoinNotice();
 
 	/**
+	 * Why the converter could not make a playable map of MapName (a downloaded or custom map): its plain-language
+	 * problems ("Missing package: ... "). Empty when it has no record of the map or the map converted.
+	 */
+	OPENUT2K4_API FString GetMapProblem(const FString& MapName);
+
+	/**
 	 * Seconds a whole download pass may take before the join is cancelled (default 1800, -UE2NetDownloadTimeLimit=).
 	 * Many servers cap the file channel at 10 to 20 KB/s and some redirects hold stale versions, so a 25 MB map can
 	 * take 20 minutes, as it would in UT2004.
@@ -124,12 +130,19 @@ private:
 	};
 
 	void StartNext(double Now);
+	/**
+	 * Gives the script runtime the net cache's code packages of this server (downloaded now or on an earlier join), so
+	 * imports between them resolve by name: a mod's classes extend another mod's (WS3SPN's player extends WSUTComp's).
+	 */
+	void RegisterScriptPackages();
 	bool StartHttp(FItem& Item);
 	bool StartChannel(FItem& Item);
 	void OnFileData(int32 Channel, const TArray<uint8>& Data, bool bClose);
 	/** Checks and stores the received bytes; false (with the reason logged) when the file is not acceptable. */
 	bool Finish(FItem& Item, TArray<uint8>&& Bytes, bool bCompressed, FString& OutError);
 	void FailCurrent(const FString& Reason, double Now);
+	/** The redirect could not be reached or stalled: like UT2004, the rest of the pass uses the file channel only. */
+	void MarkRedirectDead(const FString& Why);
 	void StartConvert();
 	/** Cancels the join (closes the connection with Reason, shown as the join's error). */
 	void Abort(const FString& Reason);
@@ -142,6 +155,9 @@ private:
 	/** The DLMGR entries: HTTP redirect URL (empty: none), its COMPRESSION, and whether the channel is offered. */
 	FString RedirectURL;
 	bool bRedirectCompressed = true;
+	/** Set by MarkRedirectDead; RedirectNote explains it in the status line. */
+	bool bRedirectDead = false;
+	FString RedirectNote;
 	bool bChannelAllowed = false;
 	bool bChannelCompressed = false;
 

@@ -274,6 +274,30 @@ void FArenaServerBrowserPage::RemoveFavourite(const FString& Address)
 	}
 }
 
+void FArenaServerBrowserPage::JoinOrAsk(const ArenaServerBrowser::FServer& S)
+{
+	// a server whose details name an anti-cheat that never lets us play: ask first (spectate or cancel)
+	FString AntiCheat;
+#if ARENA_HAS_UE2_JOIN
+	for (const TPair<FString, FString>& Rule : S.Rules)
+	{
+		AntiCheat = ArenaNet::FindSpawnBlockingAntiCheat(Rule.Key + TEXT(" ") + Rule.Value);
+		if (!AntiCheat.IsEmpty())
+		{
+			break;
+		}
+	}
+#endif
+	if (AntiCheat.IsEmpty())
+	{
+		Join(S.Address());
+		return;
+	}
+	UE_LOG(LogOpenUT2k4, Log, TEXT("Server browser: %s runs %s, asking to spectate"), *S.Address(), *AntiCheat);
+	AntiCheatPrompt = AntiCheat;
+	AntiCheatAddress = S.Address();
+}
+
 void FArenaServerBrowserPage::Join(const FString& Address)
 {
 	if (Address.IsEmpty())
@@ -370,7 +394,7 @@ const FServer* FArenaServerBrowserPage::SelectedServer(const FBrowser& B) const
 	return B.GetServers().IsValidIndex(Index) ? &B.GetServers()[Index] : nullptr;
 }
 
-void FArenaServerBrowserPage::RebuildRows(const FBrowser& B)
+void FArenaServerBrowserPage::RebuildRows(const FBrowser& B, bool bKeepOrder)
 {
 	const UArenaUserSettings* U = UArenaUserSettings::Get();
 	const bool bHideEmpty = U && U->bBrowserHideEmpty;
@@ -392,7 +416,7 @@ void FArenaServerBrowserPage::RebuildRows(const FBrowser& B)
 	}
 	const ESort SortBy = Sort;
 	const bool bDesc = bSortDescending;
-	RowServers.StableSort([&Servers, SortBy, bDesc](int32 A, int32 B)
+	auto Less = [&Servers, SortBy, bDesc](int32 A, int32 B)
 	{
 		const FServer& SA = Servers[A];
 		const FServer& SB = Servers[B];
@@ -419,8 +443,34 @@ void FArenaServerBrowserPage::RebuildRows(const FBrowser& B)
 		}
 		}
 		return bDesc ? Cmp > 0 : Cmp < 0;
-	});
+	};
+	if (bKeepOrder && RowAddresses.Num() > 0)
+	{
+		// a server was clicked and the mouse is still on the list: servers already listed keep their rows (the click
+		// queries the server again and its new ping must not move the row away before the second click of a double
+		// click); new ones go below, sorted among themselves. The list is sorted again once the mouse leaves it.
+		TMap<FString, int32> OldRow;
+		for (int32 r = 0; r < RowAddresses.Num(); ++r)
+		{
+			OldRow.Add(RowAddresses[r], r);
+		}
+		RowServers.StableSort([&Servers, &OldRow, &Less](int32 A, int32 B)
+		{
+			const int32* RA = OldRow.Find(Servers[A].Address());
+			const int32* RB = OldRow.Find(Servers[B].Address());
+			if (RA && RB) return *RA < *RB;
+			if (RA || RB) return RA != nullptr;
+			return Less(A, B);
+		});
+		bSortDeferred = true;
+	}
+	else
+	{
+		RowServers.StableSort(Less);
+		bSortDeferred = false;
+	}
 	Rows.Reset();
+	RowAddresses.Reset();
 	SelectedRow = -1;
 	for (int32 r = 0; r < RowServers.Num(); ++r)
 	{
@@ -439,6 +489,7 @@ void FArenaServerBrowserPage::RebuildRows(const FBrowser& B)
 		It.Icons = FlagIcons(S.Flags);
 		It.bDim = S.State == EServerState::NoResponse;
 		Rows.Add(MoveTemp(It));
+		RowAddresses.Add(S.Address());
 		if (!SelectedAddress.IsEmpty() && S.Address() == SelectedAddress)
 		{
 			SelectedRow = r;
@@ -475,10 +526,13 @@ void FArenaServerBrowserPage::DrawServerList(FGUI& G, const FRect& R, FBrowser& 
 		Sort = NewSort;
 		RebuildRows(B);
 	}
+	// after a click on a server its rows stay put until the mouse leaves the list (see RebuildRows)
+	bListHeld = bListHeld && ListR.Contains(G.Mouse());
 	int32 Sel = SelectedRow;
 	if (G.List(FGUI::Id(TEXT("BrowserServers")), ListR, Rows, Sel, bOutActivated, TEXT("Double click a server to join it"), ListFont, false,
 		&ServerColumns()))
 	{
+		bListHeld = true;
 		SelectedRow = Sel;
 		if (const FServer* S = SelectedServer(B))
 		{
@@ -710,23 +764,63 @@ void FArenaServerBrowserPage::DrawStatsPrompt(FGUI& G)
 		G.TextIn(F, Line, FRect(P.X + P.W * 0.1f, Y, P.W * 0.8f, F.Height), FLinearColor::White, EAlign::Center);
 		Y += F.Height;
 	}
-	// no stats settings page exists yet: YES retries the join (the client applies what it can), NO closes
+	// UT2K4StatsPrompt: YES opens the stats settings (Settings, Game tab); closing them joins again when the account is set
 	const float BY = Band.B() - 0.08f * H, BH = 0.05f * H, BW = 0.2f * P.W;
-	if (G.Button(FGUI::Id(TEXT("StatsYes")), FRect(P.X + 0.2f * P.W, BY, BW, BH), TEXT("RoundButton"), Yes, TEXT("Try to join again")))
+	if (G.Button(FGUI::Id(TEXT("StatsYes")), FRect(P.X + 0.2f * P.W, BY, BW, BH), TEXT("RoundButton"), Yes,
+		TEXT("Turn on Track Stats and set your stats username and password, then join again")))
 	{
 		bStatsPrompt = false;
+		bStatsSettings = true;
+		StatsSettings.bOpenStatsTab = true;
+		G.ResetInteraction();
 		G.SetFocus(0);
-#if ARENA_HAS_UE2_JOIN
-		if (ArenaNet::RetryLastJoin())
-		{
-			bWatchJoin = true;
-		}
-#endif
 		return;
 	}
 	if (G.Button(FGUI::Id(TEXT("StatsNo")), FRect(P.X + 0.6f * P.W, BY, BW, BH), TEXT("RoundButton"), No, TEXT("Do not join this server")) || G.BackPressed())
 	{
 		bStatsPrompt = false;
+		G.SetFocus(0);
+	}
+}
+
+void FArenaServerBrowserPage::DrawAntiCheatPrompt(FGUI& G)
+{
+	const FRect P = G.Page();
+	const float W = G.ScreenW(), H = G.ScreenH();
+	G.Draw().Rect(0.f, 0.f, W, H, FLinearColor(0.f, 0.f, 0.f, 0.55f));
+	const FRect Band(0.f, 0.3f * H, W, 0.38f * H);
+	if (!G.Image(TEXT("2K4Menus.NewControls.Display2"), Band, EImgStyle::Stretched, FLinearColor::White))
+	{
+		G.FallbackBox(Band, EMenuState::Blurry, false);
+	}
+	G.TextIn(G.Font(TEXT("UT2HeaderFont")), FString::Printf(TEXT("This server runs %s"), *AntiCheatPrompt),
+		FRect(P.X, Band.Y + 0.04f * H, P.W, G.L(32.f)), FArenaDraw::UTColor(FColor(253, 237, 244)), EAlign::Center, true);
+	const FString Desc = FString::Printf(TEXT("%s is an anti-cheat that holds every new player until its own check runs in the player's game. ")
+		TEXT("OpenUT2k4 does not run anti-cheat software, so %s will never let you play on this server.\n\n")
+		TEXT("You can join as a spectator and watch the match."), *AntiCheatPrompt, *AntiCheatPrompt);
+	const FFontRef F = G.Font(TEXT("UT2MenuFont"));
+	float Y = Band.Y + 0.1f * H;
+	for (const FString& Line : G.Wrap(F, Desc, P.W * 0.8f))
+	{
+		G.TextIn(F, Line, FRect(P.X + P.W * 0.1f, Y, P.W * 0.8f, F.Height), FLinearColor::White, EAlign::Center);
+		Y += F.Height;
+	}
+	const float BY = Band.B() - 0.08f * H, BH = 0.05f * H, BW = 0.2f * P.W;
+	if (G.Button(FGUI::Id(TEXT("AntiCheatSpectate")), FRect(P.X + 0.2f * P.W, BY, BW, BH), TEXT("RoundButton"), TEXT("SPECTATE"),
+		TEXT("Join this server as a spectator")))
+	{
+		const FString Address = AntiCheatAddress;
+		AntiCheatPrompt.Reset();
+		AntiCheatAddress.Reset();
+		G.SetFocus(0);
+		Join(Address + TEXT("?SpectatorOnly=1"));
+		return;
+	}
+	if (G.Button(FGUI::Id(TEXT("AntiCheatCancel")), FRect(P.X + 0.6f * P.W, BY, BW, BH), TEXT("RoundButton"), TEXT("CANCEL"),
+		TEXT("Do not join this server")) || G.BackPressed())
+	{
+		AntiCheatPrompt.Reset();
+		AntiCheatAddress.Reset();
 		G.SetFocus(0);
 	}
 }
@@ -755,8 +849,70 @@ void FArenaServerBrowserPage::DrawMessage(FGUI& G)
 	}
 }
 
+bool FArenaServerBrowserPage::DrawJoinProgress(FGUI& G, const FRect& Band)
+{
+#if ARENA_HAS_UE2_JOIN
+	FString JoinText;
+	float JoinFraction = 0.f;
+	if (!ArenaNet::GetJoinProgress(JoinText, JoinFraction))
+	{
+		return false;
+	}
+	G.BeginOverlay(Band);
+	G.Draw().Rect(Band.X, Band.Y, Band.W, Band.H, FLinearColor(0.f, 0.f, 0.f, 0.75f));
+	// the file on the first line; the totals and notes (" | " parts) on the second
+	FString Line1 = JoinText, Line2;
+	JoinText.Split(TEXT(" | "), &Line1, &Line2);
+	Line2.ReplaceInline(TEXT(" | "), TEXT(" - "));
+	G.TextIn(G.Font(TEXT("UT2MenuFont")), Line1, FRect(Band.X + G.L(12.f), Band.Y + G.L(6.f), Band.W - G.L(24.f), G.L(28.f)),
+		FLinearColor(1.f, 0.85f, 0.3f, 1.f), EAlign::Center, true);
+	if (!Line2.IsEmpty())
+	{
+		G.TextIn(G.Font(TEXT("UT2SmallFont")), Line2, FRect(Band.X + G.L(12.f), Band.Y + G.L(32.f), Band.W - G.L(24.f), G.L(24.f)),
+			FLinearColor(0.85f, 0.85f, 0.9f, 1.f), EAlign::Center, true);
+	}
+	const FRect Bar(Band.X + Band.W * 0.1f, Band.Y + G.L(60.f), Band.W * 0.8f, G.L(14.f));
+	G.Draw().Rect(Bar.X, Bar.Y, Bar.W, Bar.H, FLinearColor(0.15f, 0.15f, 0.25f, 1.f));
+	G.Draw().Rect(Bar.X, Bar.Y, Bar.W * FMath::Clamp(JoinFraction, 0.f, 1.f), Bar.H, FLinearColor(0.95f, 0.75f, 0.2f, 1.f));
+	// UT2004's download dialog has a Cancel button: stop downloading and leave the server
+	const float CW = G.L(160.f);
+	if (G.Button(FGUI::Id(TEXT("JoinDownloadCancel")), FRect(Band.X + (Band.W - CW) * 0.5f, Band.Y + G.L(82.f), CW, G.L(34.f)), TEXT("RoundButton"),
+		TEXT("CANCEL"), TEXT("Stop downloading and leave the server"), true))
+	{
+		ArenaNet::LeaveServer();
+	}
+	G.EndOverlay();
+	return true;
+#else
+	return false;
+#endif
+}
+
 bool FArenaServerBrowserPage::Draw(FGUI& G)
 {
+	if (bStatsSettings)
+	{
+		if (StatsSettings.Draw(G))
+		{
+			bStatsSettings = false;
+			G.ResetInteraction();
+			G.SetFocus(0);
+			const UArenaUserSettings* U = UArenaUserSettings::Get();
+#if ARENA_HAS_UE2_JOIN
+			if (U->bTrackStats && U->HasValidStatsLogin() && ArenaNet::RetryLastJoin())
+			{
+				bWatchJoin = true;
+			}
+			else
+#endif
+			{
+				// UT2K4SettingsPage.InvalidStats
+				Message = !U->bTrackStats ? FString(TEXT("Track Stats is off: this server can't be joined."))
+					: Loc(TEXT("GUI2K4"), TEXT("UT2K4SettingsPage"), TEXT("InvalidStats"), TEXT("Invalid Stats Info"));
+			}
+		}
+		return false;
+	}
 	const TArray<FTabDef>& Defs = Tabs();
 	TArray<FString> Captions, Hints;
 	for (int32 i = 0; i < Defs.Num(); ++i)
@@ -781,7 +937,7 @@ bool FArenaServerBrowserPage::Draw(FGUI& G)
 	}
 	const int32 OldTab = Tab;
 	WatchJoin();
-	const bool bModal = bOpenIP || !Message.IsEmpty() || bPasswordBox || bStatsPrompt;
+	const bool bModal = bOpenIP || !Message.IsEmpty() || bPasswordBox || bStatsPrompt || !AntiCheatPrompt.IsEmpty();
 	const FString PageCaption = LocBrowser(TEXT("UT2k4ServerBrowser"), TEXT("ServerBrowserHeader.Caption"), TEXT("Server Browser"));
 	const FTabbedFrame Frame = TabbedPage(G, FGUI::Id(TEXT("BrowserTabs")), PageCaption, Captions, Hints, Tab, TabChangedAt);
 	if (Tab != OldTab)
@@ -809,9 +965,14 @@ bool FArenaServerBrowserPage::Draw(FGUI& G)
 	}
 	FBrowser& B = BrowserFor(Tab);
 	UArenaUserSettings* U = UArenaUserSettings::Get();
-	if (RowsRevision != B.GetRevision() || RowsTab != Tab || bRowsHideEmpty != U->bBrowserHideEmpty || bRowsHideFull != U->bBrowserHideFull)
+	if (RowsTab != Tab || bRowsHideEmpty != U->bBrowserHideEmpty || bRowsHideFull != U->bBrowserHideFull)
 	{
 		RebuildRows(B);
+	}
+	else if (RowsRevision != B.GetRevision() || (bSortDeferred && !bListHeld))
+	{
+		// new answers (pings, details): rows stay put after a click on the list while the mouse is on it
+		RebuildRows(B, bListHeld);
 	}
 
 	const FRect& Panel = Frame.Panel;
@@ -866,23 +1027,8 @@ bool FArenaServerBrowserPage::Draw(FGUI& G)
 	const float DY = ListR.B() + Gap;
 	const float DH = Panel.B() - DY;
 	DrawDetails(G, FRect(Panel.X, DY, Panel.W * 0.5f - Gap * 0.5f, DH), FRect(Panel.X + Panel.W * 0.5f + Gap * 0.5f, DY, Panel.W * 0.5f - Gap * 0.5f, DH), Sel);
-#if ARENA_HAS_UE2_JOIN
 	// joining a server that needs package downloads: their progress over the list (Net/UE2NetDownload.h)
-	{
-		FString JoinText;
-		float JoinFraction = 0.f;
-		if (ArenaNet::GetJoinProgress(JoinText, JoinFraction))
-		{
-			const FRect Band(ListR.X, ListR.Y + ListR.H * 0.35f, ListR.W, G.L(84.f));
-			G.Draw().Rect(Band.X, Band.Y, Band.W, Band.H, FLinearColor(0.f, 0.f, 0.f, 0.75f));
-			G.TextIn(G.Font(TEXT("UT2MenuFont")), JoinText, FRect(Band.X + G.L(12.f), Band.Y + G.L(10.f), Band.W - G.L(24.f), G.L(28.f)),
-				FLinearColor(1.f, 0.85f, 0.3f, 1.f), EAlign::Center, true);
-			const FRect Bar(Band.X + Band.W * 0.1f, Band.Y + G.L(50.f), Band.W * 0.8f, G.L(16.f));
-			G.Draw().Rect(Bar.X, Bar.Y, Bar.W, Bar.H, FLinearColor(0.15f, 0.15f, 0.25f, 1.f));
-			G.Draw().Rect(Bar.X, Bar.Y, Bar.W * FMath::Clamp(JoinFraction, 0.f, 1.f), Bar.H, FLinearColor(0.95f, 0.75f, 0.2f, 1.f));
-		}
-	}
-#endif
+	DrawJoinProgress(G, FRect(ListR.X, ListR.Y + ListR.H * 0.3f, ListR.W, G.L(124.f)));
 
 	// footer: BACK, OPEN IP, ADD / REMOVE FAVORITE, REFRESH, JOIN (UT2k4Browser_Footer)
 	const bool bFavTab = Tab == 0;
@@ -923,6 +1069,11 @@ bool FArenaServerBrowserPage::Draw(FGUI& G)
 		DrawStatsPrompt(G);
 		return false;
 	}
+	if (!AntiCheatPrompt.IsEmpty())
+	{
+		DrawAntiCheatPrompt(G);
+		return false;
+	}
 	if (Clicked == 1)
 	{
 		bOpenIP = true;
@@ -946,7 +1097,7 @@ bool FArenaServerBrowserPage::Draw(FGUI& G)
 	}
 	else if ((Clicked == 4 || bActivated) && Sel && !Sel->Ip.IsEmpty())
 	{
-		Join(Sel->Address());
+		JoinOrAsk(*Sel);
 	}
 	else if (Clicked == 0 || G.BackPressed())
 	{
@@ -1029,5 +1180,17 @@ void FArenaServerBrowserPage::ApplyTestCommand(const FString& Name, const FStrin
 	else if (Name == TEXT("BrowserJoin"))
 	{
 		Join(Value);
+	}
+	else if (Name == TEXT("BrowserJoinSelected"))
+	{
+		// as the JOIN button: the selected server, asking first when it runs an anti-cheat we can only spectate on
+		for (const ArenaServerBrowser::FServer& S : BrowserFor(Tab).GetServers())
+		{
+			if (S.Address() == SelectedAddress)
+			{
+				JoinOrAsk(S);
+				break;
+			}
+		}
 	}
 }

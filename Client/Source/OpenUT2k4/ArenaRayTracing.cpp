@@ -4,6 +4,7 @@
 #include "ArenaImportedLighting.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "Containers/Ticker.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/App.h"
@@ -244,7 +245,15 @@ void ArenaRayTracing::StartTestHooks()
 					const FString Cmd = (*Cmds)[0].Value;
 					Cmds->RemoveAt(0);
 					UE_LOG(LogOpenUT2k4, Log, TEXT("RayTracing: test exec at %.1f s: %s"), World->GetTimeSeconds(), *Cmd);
-					GEngine->Exec(World, *Cmd);
+					// through the local player when there is one, so cheat / viewport commands (BugItGo, HighResShot) work too
+					if (APlayerController* PC = World->GetFirstPlayerController())
+					{
+						PC->ConsoleCommand(Cmd);
+					}
+					else
+					{
+						GEngine->Exec(World, *Cmd);
+					}
 				}
 			}
 			return Cmds->Num() > 0;

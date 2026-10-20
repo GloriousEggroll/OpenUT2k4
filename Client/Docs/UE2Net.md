@@ -23,6 +23,7 @@ Package downloads (custom maps and mod packages: HTTP redirect, file channel, ne
 | File | Contents |
 |---|---|
 | `Net/UE2NetJoin.h/.cpp` | Public API `ArenaNet::JoinServer / LeaveServer / IsConnectedToServer / GetConnectionStatus / GetSpectatorBarText`; join flow, map loading, map changes, test hooks |
+| `Net/UE2NetMapVote.h/.cpp` | Map voting (xVoting's `VotingReplicationInfo`): map list, vote counts, count down, `SendMapVote`; drawn by the mid-game menu's Map Voting tab |
 | `Net/UE2NetConnection.h/.cpp` | `FUE2NetConnection`: socket, packets, acks, bunches, channels, control handshake, actor channel decoding, client to server function calls |
 | `Net/UE2NetDownload.h/.cpp` | `FUE2NetDownloader`: package downloads between WELCOME and JOIN (HTTP redirect, file channel), `.uz2` unpacking, the per-user net cache, conversion of downloaded maps |
 | `Net/UE2NetPackageMap.h/.cpp` | `FUE2PackageMap`: USES list, local package matching (GUID, generations), object / name numbering, per-class replicated field tables (`FUE2ClassNetCache`) |
@@ -86,6 +87,7 @@ Command line (development and test hooks):
 | `-UE2NetDownloadTimeLimit=<s>` | time limit of a join's whole download pass (default 1800 s) |
 | `-UE2NetNoRedirect` | ignores the server's HTTP redirect, so every download uses the file channel (test hook) |
 | `-UE2NetDownloadSelfTest` | at startup, checks the file name rules and `.uz2` unpacking and logs `UE2NetDownloadSelfTest: n passed, m failed` (non-shipping) |
+| `-UE2NetTestMapVote=<map>` | once the server counts a map vote down (and the map list is complete), votes for that map in the current game type (test hook for map voting, non-shipping) |
 | `-UE2NetViewPlayer` | once joined, asks the server every 20 s to let our spectator follow the next player (`ServerViewNextPlayer`); keeps a pawn relevant and tests client to server calls. Local test servers only |
 | `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire; `hunt=tap`: one press per shot, released once the start fire went out) |
 | `-UE2NetPlayProbe` | step 4 test hook, local servers only: `ClientLoc` is sent 500 UU off, so the server answers every move with its own pawn state. Logged (`UE2NetPlayProbe: ...`), never applied. This measured the 3369 server's physics |
@@ -263,7 +265,10 @@ LOGIN RESPONSE=<int> URL=<options>
   Before this change no AUTH was sent without a key, and `bBanByID` servers answer an empty id with `LOCALBAN`.
 - GM: built as above with an all-zero hidden MD5 (`UE2NetCDKey::MakeGM`).
 - Stats: `bTrackStats`, `StatsUsername`, `StatsPassword` on `UArenaUserSettings` (off and blank by default, as in
-  UT2004). Sent only to `STATS=1` servers, with the password encrypted as above, using the key or NetIdentity.
+  UT2004). Sent only to `STATS=1` servers, with the password encrypted as above, using the key or NetIdentity, and
+  only when the account follows the UT2004 rules (username at least 4 characters, password at least 6). They are set
+  in Settings > Game > Stats (UT2K4Tab_GameSettings: Track Stats, UserName, masked Password). On `NEEDSTATS` the
+  server browser shows UT2K4StatsPrompt; YES opens that tab, and closing it joins again when the account is valid.
 - ClientValidate is answered from the key, or from NetIdentity when there is none.
 
 The key, NetIdentity, the hashes and the stats password are never logged: the trace masks the whole AUTH line.
@@ -336,6 +341,15 @@ ever loads, so a rejected join still screenshots and quits (`AutomationFallback`
 Our client never pretends to be the stock client. Every `LOGIN` URL ends with `?OpenUT2k4=<version>` (the project
 version, `0.1.0`); stock servers ignore options they do not know, and the server log shows it in `Login request`. The
 client does not run, answer or imitate any third-party anti-cheat; servers that require one will not admit it.
+
+**AntiTCC** (`MutAntiTCCFinal`) lets the client log in, then holds the new player ("Please wait, Anti TCC is
+initializing...") until its client-side check answers, so `ServerReStartPlayer` never spawns us (reproduced on a local
+3369 server with `AntiTCC_2026r6`; without the mutator the same server spawns us at once). The client says so instead
+of "Press Fire to join the match": the spectator bar reads "The AntiTCC anti-cheat on this server does not let
+OpenUT2k4 play: you can only spectate" while the package map holds an `AntiTCC*` package and we have not spawned
+(`ArenaNet::FindSpawnBlockingAntiCheat`). The server browser asks before joining a server whose details name it
+(rules `Mutator MutAntiTCCFinal`, `Anti TCC version`): SPECTATE joins with `?SpectatorOnly=1` (spectating works),
+CANCEL does nothing. Test hook: `-AutoMenuScript` `BrowserJoinSelected` (the JOIN button's path).
 
 Servers that run the **OpenUT2k4 Validator** (`Server/Docs/Validator.md`: a mutator for stock servers, built into our
 own server) challenge clients that sent the option; the answer proves the player's identity (a key the client made on
@@ -501,14 +515,38 @@ server reads them either way.
    converted copy of the map is loaded through the normal travel path:
    `/Game/Maps/Arena?Mode=<mode of the game class>?Layout=<map>?Bots=0?Time=0?Goal=0?SpectatorOnly=1?UE2Net=1`.
    The local login spectates (UE5's `SpectatorOnly` option). As a player, the local player possesses our pawn when the
-   server gives us one (see "Step 4"). If the map is not in
-   the content cache, the client joins anyway without loading a map (decode only) and reports the map as missing.
+   server gives us one (see "Step 4"). If the map cannot be shown (not in the content cache: it could not be
+   downloaded, or the converter could not make a playable copy), the join fails with the reason (the converter's
+   problems, e.g. "Missing package: ...", or the packages that could not be downloaded) instead of a connection that
+   never shows anything. During a server map change the loading screen shows that reason instead. `-UE2NetDecodeOnly`
+   (not in Shipping) joins anyway without a map (decode only), for protocol tests.
+   Packages a map only takes sounds, textures or meshes from may be missing (servers that do not allow downloading
+   them, or a UT99 sound package a map imports): the map is converted without those parts and listed as playing with
+   limits. Only a missing package the map takes classes from makes it unplayable.
 3. When the map has loaded (`PostLoadMapWithWorld`), the client sends the SKIP and HAVE lines, then `JOIN`. The server
    logs `New Player <name>`, and the actor channels open.
 4. **Map changes**: the server calls `ClientTravel(<map>)` on every client and then closes the connections. The client
    reconnects to the same address (with the same options) after 2 s; the new `WELCOME` loads the next map. Tested
-   through two changes (DM-Rankin, DM-Corrugation, DM-DE-Grendelkeep).
-5. **Leaving**: opening any other map (the menu), `LeaveServer()` or quitting the game sends the control channel close.
+   through two changes (DM-Rankin, DM-Corrugation, DM-DE-Grendelkeep). From `ClientTravel` until the next map's world
+   is up, the HUD covers the old map like UT2004's loading screen (`ArenaNet::GetMapChangeStatus`): "Loading <map>"
+   with what happens meanwhile (the server changing maps, reconnecting, downloading and converting a custom map with a
+   progress bar), or why the next map cannot be shown (the rejoin failed, the map is not in the content cache) with
+   how to leave. Before, the old map stayed on screen with its scoreboard emptied (its actors close with the
+   connection) and nothing said what was happening, which looked like a hang while a custom map downloaded.
+5. **Map voting** (xVoting, `Net/UE2NetMapVote`): every player has a `VotingReplicationInfo`, and all of them reach
+   every client (`ReplicationInfo.bAlwaysRelevant`). Ours is the one whose `PlayerOwner` is our controller (other
+   players' controllers are not replicated to us, so theirs arrive as None), or any one the server calls (it calls
+   only the owner's). The server sends each player's `VotingReplicationInfo` the game
+   types (`ReceiveGameConfig`), the map list (`ReceiveMapInfo`) and the vote counts (`ReceiveMapVoteCount`), one call
+   per tick, each waiting for the client's `ReplicationReply`. The client answers them (decoded from the class
+   metadata; none of xVoting's code runs), and the mid-game menu gets a Map Voting tab (and the Map Voting button in
+   place of Restart Match): the maps of the chosen game type by name, with their votes and play counts. `OpenWindow`
+   at the end of the match opens it, `PlayCountDown` shows the seconds left, a double click or Vote sends
+   `SendMapVote(MapIndex, GameConfigIndex)`, `CloseWindow` closes it. Without our replies the list stopped after the
+   first item and the end of a match was a silent `VoteTimeLimit` wait (70 s by default). Tested on a local 3369
+   server with `[xVoting.xVotingHandler] bMapVote=True`: 46 maps received, a vote made the server switch to that map.
+   Restart Match is not offered on a server (it restarted our local copy of the match).
+6. **Leaving**: opening any other map (the menu), `LeaveServer()` or quitting the game sends the control channel close.
 
 ## Mod servers
 
@@ -745,7 +783,11 @@ keeps ticking: keep-alives and acks go out, and the server waits for `JOIN`.
      channel is tried. ProTheory's redirect holds such a stale `DM-Rankin-NE2` (31.7 MB, another GUID than the
      server's 25.9 MB map).
    - `DLMGR CLASS=Engine.ChannelDownload PARAMS=Enabled COMPRESSION=0`: the file channel. It is used when there is no
-     redirect, or the redirect fails (HTTP error, wrong size or GUID, a 30 s stall).
+     redirect, or the redirect fails (HTTP error, wrong size or GUID, no answer, a stall).
+   - **A dead redirect.** A redirect that sends neither a status line nor data within 10 s, that cannot be reached at
+     all, or that stops sending for 20 s is given up for the rest of the pass, as UT2004 does: every following file
+     goes straight to the file channel instead of waiting on the redirect again. An HTTP error (404) only moves that
+     one file to the channel. The status says so ("redirect not answering: using the server (slower)").
    - **Failing fast.** A file request must get an answer (data or a refusal) within 10 s. After 3 requests in a row
      without any answer, the file channel is given up for this join. A stall during a transfer ends it after 30 s.
      The whole pass has a time limit: 30 min, or `-UE2NetDownloadTimeLimit=<s>`. Live servers cap the file channel
@@ -758,6 +800,13 @@ keeps ticking: keep-alives and acks go out, and the server waits for `JOIN`.
      showed "129 KB/s" when the channel ran at 21 KB/s). During channel downloads the status shows the rate and the
      time left ("21 KB/s, about 17:30 left").
    - A package that cannot be downloaded either way is `SKIP`ped at `JOIN`, as before.
+   - **Progress and Cancel.** The download band shows the file (N of M, MB, speed and time left), the total MB of the
+     pass and any note, a progress bar and a CANCEL button that leaves the server. The menu draws it on every page,
+     not only in the server browser, and the page under it does not take the band's clicks.
+   - **UE1 style packages** (version < 68, UT99-era sounds and textures such as `AmbOutside.uax`) have no GUID in
+     the summary: UE2 takes the last entry of the heritage table (`HeritageCount` at 36, `HeritageOffset` at 40), and
+     so do the package reader (`UE2ReadPackageHeader`, also for the net cache and local matching) and the converter.
+     Before, these read as GUID 0, so a correct redirect copy was rejected as "another version".
 4. **The file channel**, worked out from the 3369 server (stripped binary: confirmed by traffic and results):
    - Request: the client opens a new channel of type 3 with a reliable `bOpen` bunch. Its data is the package GUID
      as four little-endian DWORDs (16 bytes), the same layout as `UChannelDownload::ReceiveFile` in UE1 / UE2.
@@ -792,7 +841,10 @@ keeps ticking: keep-alives and acks go out, and the server waits for `JOIN`.
 8. **Use**:
    - After the downloads the package map matches again: entries found by GUID in the net cache count as local, so
      `HAVE` / `SKIP` and the object numbering include them.
-   - Downloaded `.u` files are added to the UnrealScript runtime (`FUSRuntime::AddPackageFiles`). Mod classes then
+   - Downloaded `.u` files are added to the UnrealScript runtime (`FUSRuntime::AddPackageFiles`), and so are the net
+     cache's `.u` files of this server when nothing had to be downloaded: the runtime resolves imports between mods by
+     package name (WS3SPN's `Misc_Player` extends WSUTComp's `BS_xPlayer`), and a class whose super class does not
+     resolve gets a short replicated field table, so its function calls decode as other functions. Mod classes then
      decode through the existing loader, metadata only: no downloaded script is run, and no native code is ever
      loaded.
    - Maps and resources are converted into the content cache by the custom content converter, on a worker thread:
@@ -832,7 +884,7 @@ Role and RemoteRole are swapped. Actors are classified by their class chain:
 | `PlayerReplicationInfo` | an `AArenaPlayerState` (name, score, deaths, team, bot, spectator, out of lives, ping): the HUD, scoreboard and spectator bar use it. Our own PRI (the PlayerController's `PlayerReplicationInfo`) is the local spectator's player state |
 | `GameReplicationInfo` | `AArenaGameState`: goal score, time limit, remaining time (counted down locally between `RemainingMinute` updates like UE2's `GRI.Timer`), match phase (`bMatchHasBegun`, `Winner`, `ClientGameEnded`), winner |
 | `TeamInfo` | `AArenaGameState::TeamScores`; the team index of PRIs, flags and DOM points |
-| `Pawn` (xPawn) | `AUE2NetPawn`: our character body with the player model and skins of the PRI's `CharacterName` (the install's player lists, `System/*.upl`: mesh, `BodySkin`, `FaceSkin`; team skins `<skin>_0 / _1`; the animation set from the cache's mesh record), `PawnPosition` extrapolated along its velocity and eased in (no lag behind a moving target, snaps above 4 m), yaw smoothed, aim pitch from `ViewPitch`, movement state from `Physics` / `bIsCrouched` / `CollisionHeight` (our native animation reads velocity and movement mode), `AnimAction` weapon switches, hit reactions from `HitFxTicker`, death on `bTearOff` (ragdoll with `TearOffMomentum`, gibs for damage types with `bAlwaysGibs`); the body stays 8 s after the channel closes. Camera: behind the pawn when the server says `ClientSetBehindView(True)` (stock spectating), else first person |
+| `Pawn` (xPawn) | `AUE2NetPawn`: our character body with the player model and skins of the PRI's `CharacterName` (the install's player lists, `System/*.upl`: mesh, `BodySkin`, `FaceSkin`; team skins `<skin>_0 / _1`; the animation set from the cache's mesh record), `PawnPosition` extrapolated along its velocity and eased in (no lag behind a moving target, snaps above 4 m), yaw smoothed, aim pitch from `ViewPitch`, movement state from `bIsCrouched` / `CollisionHeight` and from each `PawnPosition` (`Physics` reaches a simulated pawn in its initial bunch only, so, like the UE2 client, we work it out: a water volume means swimming, a vertical speed of 100 UU/s or more falling, a small one or a fall's end walking once a floor is below; our native animation reads velocity and movement mode), `AnimAction` weapon switches, hit reactions from `HitFxTicker`, death on `bTearOff` (ragdoll with `TearOffMomentum`, gibs for damage types with `bAlwaysGibs`); the body stays 8 s after the channel closes. Camera: behind the pawn when the server says `ClientSetBehindView(True)` (stock spectating), else first person |
 | `WeaponAttachment` | the third-person weapon of its `Instigator` (attachment class -> our weapon art), fire animation and muzzle flash on `FlashCount`, bullet tracers and impacts from `mHitLocation` / `SpawnHitCount` (assault rifle, minigun) |
 | `ShockBeamEffect`, `NewLightningBolt`, `ShockCombo` | our shock / instagib / lightning beams and impacts, the shock combo explosion |
 | `Projectile` | `AUE2NetProjectile` with the art of our projectile table (rocket, flak chunk and shell, shock core, link plasma, bio, grenades; others a glow), flown along the replicated velocity with gravity when falling. **`bNetTemporary` projectiles** (rockets, flak, link plasma...) are sent once and their channel closes at once: the client flies them itself until they hit the world or a pawn (then their explosion / impact) or their `LifeSpan` ends; flak chunks and grenades bounce. Other projectiles explode when their channel closes |
@@ -889,6 +941,10 @@ Values confirmed from captures:
   guns' `FireSoundVolume` 160 / 255 as 627, `LightningGunChargeUp` (pitch 1.1) as 1100; radii are the actors'
   `TransientSoundRadius` (300 by default, 400 .. 600 for weapons and vehicle collisions). The falloff per radius: full
   volume within half the radius, logarithmic over 8 radii (approximated; UE2's audio is not reproduced exactly).
+  Levels follow UE2's gain staging: the whole mix plays at UT2004's default effects volume (`SoundVolume` 0.3,
+  `arena.AudioMixLevel`), so volumes above 1 (up to 1 / 0.3, OpenAL's gain cap) stay louder; ambient loops use
+  `SoundVolume / 255` times ALAudio's `AmbientVolume` (0.5) in place of the effects volume, and map `AmbientSound`
+  actors also their class's `AmbientVolume` (0.25).
 
 Every 30 s and at the end the log has a `UE2NetWorld summary`: live / opened actors per kind, projectiles flown and
 their average distance, pawn updates with the distance between the shown and the received position, pickups matched,
@@ -923,6 +979,12 @@ scripts in the player's install (`Engine.PlayerController`, `UnrealGame.UnrealPl
   body), and the HUD shows "You died. Press Fire to respawn!". Fire sends `ServerReStartPlayer`. The first spawn
   happens the same way: once joined, the client sends `ServerSetReadyToStart` and `ServerReStartPlayer`, as UT2004
   does when its login menu closes. The server starts a new player in `PlayerWaiting` (`bWaitingPlayer`).
+- **Waiting for the next round**: round games (3SPN / Freon, `ArenaMaster.PostLogin`) put a player who joins
+  mid-round out of lives (`PRI.bOutOfLives`) and into `Spectating`, and spawn them only when the next round starts;
+  `ServerReStartPlayer` does nothing until then. Without a pawn the client sends the spectator's `ServerMove`
+  (UE2 `BaseSpectating.PlayerMove` does in `PlayerWaiting` and `Spectating` too), and the server's corrections carry
+  its controller state. While our PRI is out of lives or the state is `Spectating`, Fire / Alt-Fire are the
+  spectator's (`ServerViewNextPlayer` / `ServerViewSelf`) and the bar says the player joins at the next round.
 
 ### Time
 
@@ -1264,8 +1326,8 @@ Open problems:
   rewrites them; the output is the same for the same converter version). The custom content scan does the same.
 - **Map identity**: the converter writes the map package's GUID into `map.json` (`package_guid`). At `WELCOME` the
   client compares it with the server's map GUID (caches from before that field: the GUID of the install's map of
-  that name). Another map with the same name joins without a map (decode only) and says so ("The server's DM-Rankin is
-  another version than the converted one (GUID ..., ours ...)"), instead of showing our map. Checked with a local
+  that name). Another map with the same name is not shown: the join fails and says so ("The server's DM-Rankin is
+  another version than the converted one (GUID ..., ours ...)"; during a map change the loading screen says it). Checked with a local
   server whose `DM-Rankin.ut2` was another map. A server's map is never replaced by another layout either: before,
   a VCTF map (prefix "VCTF", not "CTF") failed our CTF rules' check and the client built CTF-Face3 in its place, so the
   pawn walked in the wrong level (5360 corrections in 180 s on the replica server); VCTF maps now count as CTF maps,

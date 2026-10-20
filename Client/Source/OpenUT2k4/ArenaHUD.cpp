@@ -19,6 +19,7 @@
 #include "ArenaHudFonts.h"
 #include "ArenaLocalMessages.h"
 #include "ArenaMidGameMenu.h"
+#include "Net/UE2NetJoin.h"
 
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
@@ -132,6 +133,41 @@ static TArray<FColourRun> SplitColourRuns(const FString& InText)
 		Runs.Last().Text.AppendChar(InText[i]);
 	}
 	return Runs;
+}
+
+/**
+ * A UT2004 server changing maps (Net/UE2NetJoin.h): the old map's actors are gone, so it is covered like UT2004's
+ * loading screen, with what the client does meanwhile (reconnecting, downloading the next map, converting it) or why
+ * the next map cannot be shown. Returns false when no map change is in progress.
+ */
+static bool DrawMapChange(const FArenaDraw& D, const UWorld* World)
+{
+	FString Title, Detail;
+	float Fraction = -1.f;
+	if (!ArenaNet::GetMapChangeStatus(World, Title, Detail, Fraction))
+	{
+		return false;
+	}
+	D.Rect(0.f, 0.f, D.W(), D.H(), FLinearColor::Black);
+	const int32 TitleFont = ArenaHudFonts::FontSizeIndex(D.UTClipX(), 1);
+	const int32 DetailFont = ArenaHudFonts::FontSizeIndex(D.UTClipX(), -1);
+	float Y = D.H() * 0.42f;
+	D.TextUT(TitleFont, Title, D.W() * 0.5f, Y, FLinearColor::White, EArenaAlign::Center);
+	Y += D.TextSizeUT(TitleFont, Title).Y * 1.5f;
+	if (Fraction >= 0.f)
+	{
+		const float BarW = D.W() * 0.4f, BarH = FMath::Max(4.f, D.S(10.f));
+		D.Bar(D.W() * 0.5f - BarW * 0.5f, Y, BarW, BarH, Fraction, FLinearColor(FColor(255, 210, 0)));
+		Y += BarH * 2.5f;
+	}
+	TArray<FString> Lines;
+	Detail.ParseIntoArray(Lines, TEXT("\n"));
+	for (const FString& Line : Lines)
+	{
+		D.TextUT(DetailFont, Line, D.W() * 0.5f, Y, FLinearColor(0.75f, 0.75f, 0.75f), EArenaAlign::Center);
+		Y += D.TextSizeUT(DetailFont, Line).Y * 1.2f;
+	}
+	return true;
 }
 }
 using namespace ArenaHUDLocal;
@@ -546,6 +582,16 @@ void AArenaHUD::DrawHUD()
 	const bool bScoreboard = (PC && PC->IsScoreboardVisible()) || bTestScoreboard;
 	const bool bPaused = (PC && PC->IsPauseMenuOpen()) || bTestPause || bTestSettings;
 
+	// a UT2004 server's map voting opens and closes the menu's Map Voting tab (Net/UE2NetMapVote.h)
+	if (ArenaNet::ConsumeMapVoteOpenRequest())
+	{
+		ArenaMidGameMenu::OpenMapVote(PC);
+	}
+	if (ArenaNet::ConsumeMapVoteCloseRequest())
+	{
+		ArenaMidGameMenu::CloseMapVote(PC);
+	}
+
 	// Flying a guided warhead: its scope (RedeemerWarhead.DrawHUD) under the rest of the HUD
 	if (const AArenaGuidedWarhead* Warhead = Cast<AArenaGuidedWarhead>(GetOwningPawn()))
 	{
@@ -564,6 +610,7 @@ void AArenaHUD::DrawHUD()
 		{
 			DrawEndBanner();
 		}
+		DrawMapChange(D, GetWorld());
 		if (bPaused)
 		{
 			DrawPauseMenu();
@@ -615,6 +662,8 @@ void AArenaHUD::DrawHUD()
 	{
 		DrawEndBanner();
 	}
+
+	DrawMapChange(D, GetWorld());
 
 	if (bPaused)
 	{

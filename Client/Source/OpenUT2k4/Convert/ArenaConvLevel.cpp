@@ -2049,12 +2049,29 @@ bool FConvMapExporter::Run()
 	Doc.Set(TEXT("map"), MapName);
 	Doc.Set(TEXT("source_file"), FPaths::GetCleanFilename(Pkg->PathOnDisk));
 	Doc.Set(TEXT("package_version"), (int32)Pkg->Version);
+	// the package GUID (UE2 FGuid::String): servers name their map by it, so a joining client can tell this conversion
+	// from another map of the same name. Header offset 36; UE1 style packages (version < 68) keep it as the last entry
+	// of the heritage table (count at 36, offset at 40), as UE2's linker reads it.
+	int64 GuidAt = -1;
 	if (Pkg->Version >= 68 && Pkg->BufSize() >= 52)
 	{
-		// the package GUID (header offset 36, UE2 FGuid::String): servers name their map by it, so a joining client can
-		// tell this conversion from another map of the same name
+		GuidAt = 36;
+	}
+	else if (Pkg->Version < 68 && Pkg->BufSize() >= 44)
+	{
+		int32 HeritageCount = 0, HeritageOffset = 0;
+		FMemory::Memcpy(&HeritageCount, Pkg->Buf() + 36, sizeof(int32));
+		FMemory::Memcpy(&HeritageOffset, Pkg->Buf() + 40, sizeof(int32));
+		const int64 At = int64(HeritageOffset) + (int64(HeritageCount) - 1) * 16;
+		if (HeritageCount > 0 && HeritageOffset > 0 && At + 16 <= int64(Pkg->BufSize()))
+		{
+			GuidAt = At;
+		}
+	}
+	if (GuidAt >= 0)
+	{
 		uint32 G[4];
-		FMemory::Memcpy(G, Pkg->Buf() + 36, sizeof(G));
+		FMemory::Memcpy(G, Pkg->Buf() + GuidAt, sizeof(G));
 		Doc.Set(TEXT("package_guid"), FString::Printf(TEXT("%08X%08X%08X%08X"), G[0], G[1], G[2], G[3]));
 	}
 	Doc.Set(TEXT("licensee_version"), (int32)Pkg->Licensee);

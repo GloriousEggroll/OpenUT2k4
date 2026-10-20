@@ -20,6 +20,7 @@
 #include "UE2NetWorld.h"
 #include "UE2NetPlay.h"
 #include "UE2NetScriptHUD.h"
+#include "UE2NetMapVote.h"
 #include "../UScript/UScriptCore.h"
 #include "UE2NetLog.h"
 #include "HAL/FileManager.h"
@@ -56,15 +57,28 @@ namespace UE2NetJoinLocal
 	FString GCurrentURL;
 	/** Package downloads and their conversion between WELCOME and loading the map (Net/UE2NetDownload.h). */
 	TUniquePtr<FUE2NetDownloader> GDownloader;
+	/** Packages the last download pass of this join could not get (for the error when the map is among them). */
+	TArray<FString> LastDownloadFailed;
 	/** Step 3: the server's actors and game state in our world (created when the map has loaded and JOIN went out). */
 	TUniquePtr<FUE2NetWorld> GNetWorld;
 	/** Step 4: our own pawn, movement and input on the server (Net/UE2NetPlay.h); lives with GNetWorld. */
 	TUniquePtr<FUE2NetPlay> GNetPlay;
 	/** A modded server's own HUD and scoreboard classes run by the script VM (Net/UE2NetScriptHUD.h); lives with GNetWorld. */
 	TUniquePtr<FUE2NetScriptHUD> GNetScriptHUD;
+	/** The server's map voting (Net/UE2NetMapVote.h); lives with GNetWorld. */
+	TUniquePtr<FUE2NetMapVote> GMapVote;
+	/**
+	 * A server map change in progress, from ClientTravel until the next map's world is up: the HUD covers the old map
+	 * (its actors are gone once the server drops the connection) with the progress of the reconnect, downloads and
+	 * conversion, or why the next map cannot be shown. GTravelMap is the map ClientTravel named.
+	 */
+	bool bChangingMap = false;
+	FString GTravelMap;
+	FString GMapChangeError;
 
 	void ResetNetWorld()
 	{
+		GMapVote.Reset();
 		GNetScriptHUD.Reset();
 		GNetPlay.Reset();
 		GNetWorld.Reset();
@@ -83,7 +97,8 @@ namespace UE2NetJoinLocal
 	void ApplyStatsSettings(FUE2NetConnection::FSettings& S)
 	{
 		const UArenaUserSettings* Settings = UArenaUserSettings::Get();
-		S.bTrackStats = Settings->bTrackStats;
+		// an account that breaks the UT2004 rules (too short) is not sent: the server would only reject it
+		S.bTrackStats = Settings->bTrackStats && Settings->HasValidStatsLogin();
 		S.StatsUsername = Settings->StatsUsername;
 		S.StatsPassword = Settings->StatsPassword;
 #if !UE_BUILD_SHIPPING
@@ -262,11 +277,13 @@ namespace UE2NetJoinLocal
 	void OnWelcome()
 	{
 		// missing packages are downloaded (and maps / resources converted) first; JOIN waits for them
+		LastDownloadFailed.Reset();
 		GDownloader = MakeUnique<FUE2NetDownloader>(*GConnection);
 		if (GDownloader->Start())
 		{
 			return; // Tick continues with ContinueWelcome when the downloader is done
 		}
+		LastDownloadFailed = GDownloader->Failed;
 		GDownloader.Reset();
 		ContinueWelcome();
 	}
@@ -333,6 +350,30 @@ namespace UE2NetJoinLocal
 		return false;
 	}
 
+	/**
+	 * The server's map cannot be shown (Error says why). Joining: the join fails with that message (a connection that
+	 * never shows anything looks like a hang). During a map change the loading screen says why and the player leaves from
+	 * there; -UE2NetDecodeOnly (test hook) joins anyway without a world, so the game state still arrives.
+	 */
+	void JoinWithoutMap(FUE2NetConnection& C, const FString& Error)
+	{
+		bool bDecodeOnly = bChangingMap;
+#if !UE_BUILD_SHIPPING
+		bDecodeOnly |= FParse::Param(FCommandLine::Get(), TEXT("UE2NetDecodeOnly"));
+#endif
+		if (!bDecodeOnly)
+		{
+			Fail(Error);
+			return;
+		}
+		GLastError = Error;
+		GMapChangeError = bChangingMap ? GLastError : FString();
+		UE_LOG(LogUE2Net, Warning, TEXT("%s: joining without a map (decode only)"), *Error);
+		bWaitingForMap = false;
+		GJoinedTime = FPlatformTime::Seconds();
+		C.SendJoin();
+	}
+
 	void ContinueWelcome()
 	{
 		FUE2NetConnection& C = *GConnection;
@@ -341,22 +382,18 @@ namespace UE2NetJoinLocal
 		if (AArenaLevelBuilder::FindLayout(C.GetMapName(), Info) && !ConvertedMapMatches(C, Mismatch))
 		{
 			// same name, another map: showing ours would put the player in the wrong level
-			GLastError = Mismatch;
-			UE_LOG(LogUE2Net, Warning, TEXT("%s: joining without a map (decode only)"), *Mismatch);
-			bWaitingForMap = false;
-			GJoinedTime = FPlatformTime::Seconds();
-			C.SendJoin();
+			JoinWithoutMap(C, Mismatch);
 			return;
 		}
 		if (!AArenaLevelBuilder::FindLayout(C.GetMapName(), Info))
 		{
-			// no converted copy of the map (a custom map: it would have to be downloaded and converted first). Join anyway
-			// without a world so the game state still arrives (decode only), and say why nothing is shown.
-			GLastError = FString::Printf(TEXT("The server plays %s, which is not in the content cache"), *C.GetMapName());
-			UE_LOG(LogUE2Net, Warning, TEXT("%s: joining without a map (decode only)"), *GLastError);
-			bWaitingForMap = false;
-			GJoinedTime = FPlatformTime::Seconds();
-			C.SendJoin();
+			// no converted copy of the map: the converter could not make one (it says why), or the map could not be
+			// downloaded
+			const FString Problem = UE2NetDownload::GetMapProblem(C.GetMapName());
+			const FString Why = !Problem.IsEmpty() ? Problem
+				: FString::Printf(TEXT("The map is not in your UT2004 install and could not be downloaded from the server%s."),
+					LastDownloadFailed.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" (%s)"), *FString::Join(LastDownloadFailed, TEXT(", "))));
+			JoinWithoutMap(C, FString::Printf(TEXT("Cannot show the server's map %s: %s"), *C.GetMapName(), *Why));
 			return;
 		}
 		UWorld* World = FindGameWorld();
@@ -394,6 +431,10 @@ namespace UE2NetJoinLocal
 			GNetWorld = MakeUnique<FUE2NetWorld>(*GConnection, World);
 			GNetPlay = MakeUnique<FUE2NetPlay>(*GConnection, World);
 			GNetScriptHUD = MakeUnique<FUE2NetScriptHUD>(*GConnection, World);
+			GMapVote = MakeUnique<FUE2NetMapVote>(*GConnection);
+			bChangingMap = false;
+			GTravelMap.Reset();
+			GMapChangeError.Reset();
 			GConnection->SendJoin();
 		}
 	}
@@ -413,7 +454,11 @@ namespace UE2NetJoinLocal
 		if (GReconnectTime > 0.0 && FPlatformTime::Seconds() >= GReconnectTime)
 		{
 			GReconnectTime = 0.0;
+			// JoinServer starts a fresh join; this one is still the map change
+			const FString TravelMap = GTravelMap;
 			ArenaNet::JoinServer(GReconnectAddress);
+			bChangingMap = true;
+			GTravelMap = TravelMap;
 		}
 		if (GConnection)
 		{
@@ -448,11 +493,28 @@ namespace UE2NetJoinLocal
 					GDownloader->Tick(FPlatformTime::Seconds());
 					if (GDownloader->IsDone())
 					{
+						LastDownloadFailed = GDownloader->Failed;
 						GDownloader.Reset();
 						ContinueWelcome();
 					}
 				}
 			}
+#if !UE_BUILD_SHIPPING
+			// -UE2NetTestMapVote=<map>: once the server counts the map vote down and the map list is complete, vote for
+			// that map in the current game type (test hook for Net/UE2NetMapVote.h)
+			FString VoteFor;
+			static const UObject* VotedIn = nullptr; // one try per map
+			if (GMapVote && GMapVote->IsAvailable() && GNetWorld && VotedIn != GNetWorld->GetWorld() && GMapVote->GetSecondsLeft() >= 0
+				&& GMapVote->GetMaps().Num() >= GMapVote->GetMapCount() && FParse::Value(FCommandLine::Get(), TEXT("UE2NetTestMapVote="), VoteFor))
+			{
+				VotedIn = GNetWorld->GetWorld();
+				const int32 Map = GMapVote->GetMaps().IndexOfByPredicate([&](const FUE2NetMapVote::FMap& M) { return M.Name.Equals(VoteFor, ESearchCase::IgnoreCase); });
+				if (!GMapVote->SendVote(Map, GMapVote->GetCurrentGameConfig()))
+				{
+					UE_LOG(LogUE2Net, Warning, TEXT("UE2NetTestMapVote: cannot vote for %s (%d maps)"), *VoteFor, GMapVote->GetMaps().Num());
+				}
+			}
+#endif
 			// -UE2NetViewPlayer: once joined, ask the server to let our spectator follow a player (test hook; the
 			// followed pawn then stays relevant, and it exercises client -> server function calls)
 			static double LastView = 0.0;
@@ -557,6 +619,9 @@ namespace ArenaNet
 		GLastError.Reset();
 		UE2NetDownload::ClearJoinNotice();
 		bServerTravel = false;
+		bChangingMap = false;
+		GTravelMap.Reset();
+		GMapChangeError.Reset();
 		GCurrentURL = Address;
 		S.bTrace = FParse::Param(FCommandLine::Get(), TEXT("UE2NetTrace"));
 		S.bTraceBits = FParse::Param(FCommandLine::Get(), TEXT("UE2NetTraceBits"));
@@ -586,6 +651,15 @@ namespace ArenaNet
 			if (Function && Function->Name == TEXT("ClientTravel"))
 			{
 				bServerTravel = true;
+				bChangingMap = true;
+				// "DM-RANKIN" or a map vote's "DM-Rankin?Game=XGame.xDeathMatch?Mutator=...": the map name
+				GTravelMap = Params.Num() > 0 ? Params[0].Value.S : FString();
+				GTravelMap.Split(TEXT("?"), &GTravelMap, nullptr);
+				GMapChangeError.Reset();
+			}
+			if (GMapVote && GMapVote->FunctionCall(Actor, Function, Params))
+			{
+				return; // map voting (Net/UE2NetMapVote.h)
 			}
 			if (GNetScriptHUD)
 			{
@@ -615,6 +689,10 @@ namespace ArenaNet
 			{
 				GNetScriptHUD->ActorOpened(Actor);
 			}
+			if (GMapVote)
+			{
+				GMapVote->ActorOpened(Actor);
+			}
 		};
 		GConnection->OnActorUpdated = [](const FUE2NetActor& Actor, const TArray<FString>& Changed)
 		{
@@ -630,6 +708,10 @@ namespace ArenaNet
 			{
 				GNetScriptHUD->ActorUpdated(Actor, Changed);
 			}
+			if (GMapVote)
+			{
+				GMapVote->ActorUpdated(Actor, Changed);
+			}
 		};
 		GConnection->OnActorClosed = [](const FUE2NetActor& Actor)
 		{
@@ -644,6 +726,10 @@ namespace ArenaNet
 			if (GNetScriptHUD)
 			{
 				GNetScriptHUD->ActorClosed(Actor);
+			}
+			if (GMapVote)
+			{
+				GMapVote->ActorClosed(Actor);
 			}
 		};
 		FString Err;
@@ -661,6 +747,9 @@ namespace ArenaNet
 		using namespace UE2NetJoinLocal;
 		bWaitingForMap = false;
 		GReconnectTime = 0.0;
+		bChangingMap = false;
+		GTravelMap.Reset();
+		GMapChangeError.Reset();
 		UE2NetDownload::ClearJoinNotice();
 		GDownloader.Reset();
 		ResetNetWorld();
@@ -679,6 +768,31 @@ namespace ArenaNet
 		return UE2NetJoinLocal::GConnection && UE2NetJoinLocal::GConnection->IsOpen();
 	}
 
+	FString FindSpawnBlockingAntiCheat(const FString& Text)
+	{
+		// AntiTCC keeps a new player waiting ("Anti TCC is initializing...") until its client side check answers, and
+		// names itself in the server details (Mutator MutAntiTCCFinal, "Anti TCC version"). OpenUT2k4 never runs,
+		// answers or imitates anti-cheat, so such a server never spawns us.
+		if (Text.Contains(TEXT("AntiTCC"), ESearchCase::IgnoreCase) || Text.Contains(TEXT("Anti TCC"), ESearchCase::IgnoreCase))
+		{
+			return TEXT("AntiTCC");
+		}
+		return FString();
+	}
+
+	FString FindSpawnBlockingAntiCheat(const FUE2PackageMap& PackageMap)
+	{
+		for (const FUE2PackageInfo& P : PackageMap.GetList())
+		{
+			const FString Name = FindSpawnBlockingAntiCheat(P.Name);
+			if (!Name.IsEmpty())
+			{
+				return Name;
+			}
+		}
+		return FString();
+	}
+
 	FString GetSpectatorBarText(const UWorld* World)
 	{
 		using namespace UE2NetJoinLocal;
@@ -695,8 +809,20 @@ namespace ArenaNet
 		const FString NoticeLine = Notice.IsEmpty() ? FString() : TEXT("\n") + Notice;
 		if (GConnection && GConnection->GetState() == FUE2NetConnection::EState::Joined && GNetPlay && GNetPlay->IsPlaying())
 		{
-			// playing: the HUD's own lines ("You died. Press Fire to respawn!"); before the first spawn, how to join
-			return GNetPlay->HasSpawned() ? FString() : FString(TEXT("Press Fire to join the match")) + NoticeLine;
+			// playing: the HUD's own lines ("You died. Press Fire to respawn!"); before the first spawn, how to join. Round
+			// games (3SPN, Freon) spawn players who join mid-round only when the next round starts.
+			if (GNetPlay->HasSpawned())
+			{
+				return FString();
+			}
+			const FString AntiCheat = ArenaNet::FindSpawnBlockingAntiCheat(GConnection->GetPackageMap());
+			if (!AntiCheat.IsEmpty())
+			{
+				// one line: the bar is a single centred line at 1280 x 720
+				return FString::Printf(TEXT("The %s anti-cheat on this server does not let OpenUT2k4 play: you can only spectate"), *AntiCheat);
+			}
+			return (GNetPlay->IsWaitingForRound() ? FString(TEXT("You join when the next round starts - Fire: view a player, Alt-Fire: free camera"))
+				: FString(TEXT("Press Fire to join the match"))) + NoticeLine;
 		}
 		if (GConnection && GConnection->GetState() == FUE2NetConnection::EState::Joined)
 		{
@@ -767,6 +893,74 @@ namespace ArenaNet
 		OutYes = ArenaGUI2K4::Loc(TEXT("GUI2K4"), TEXT("UT2K4StatsPrompt"), TEXT("YesButton.Caption"), TEXT("YES"));
 		OutNo = ArenaGUI2K4::Loc(TEXT("GUI2K4"), TEXT("UT2K4StatsPrompt"), TEXT("NoButton.Caption"), TEXT("NO"));
 		return true;
+	}
+
+	bool GetMapChangeStatus(const UWorld* World, FString& OutTitle, FString& OutDetail, float& OutFraction)
+	{
+		using namespace UE2NetJoinLocal;
+		if (!bChangingMap || !World || !World->URL.HasOption(TEXT("UE2Net")))
+		{
+			return false;
+		}
+		// the server names the map upper case (ClientTravel); its WELCOME has the file's own spelling
+		FString Map = GTravelMap;
+		if (GConnection && GConnection->GetMapName().Equals(Map, ESearchCase::IgnoreCase))
+		{
+			Map = GConnection->GetMapName();
+		}
+		OutTitle = Map.IsEmpty() ? FString(TEXT("Changing maps")) : FString::Printf(TEXT("Loading %s"), *Map);
+		OutFraction = -1.f;
+		const TCHAR* Leave = TEXT("Press Esc and choose Disconnect to leave the server.");
+		if (!GMapChangeError.IsEmpty())
+		{
+			OutTitle = Map.IsEmpty() ? FString(TEXT("The next map cannot be shown")) : FString::Printf(TEXT("%s cannot be shown"), *Map);
+			OutDetail = GMapChangeError + TEXT("\n") + Leave;
+		}
+		else if (GReconnectTime > 0.0)
+		{
+			OutDetail = FString::Printf(TEXT("The server is changing maps, reconnecting to %s..."), *GReconnectAddress);
+		}
+		else if (GConnection && GConnection->IsOpen() && GDownloader)
+		{
+			OutDetail = GDownloader->DescribeStatus();
+			OutFraction = FMath::Clamp(GDownloader->GetProgress(), 0.f, 1.f);
+		}
+		else if (GConnection && GConnection->IsOpen())
+		{
+			OutDetail = bServerTravel ? FString(TEXT("The server is changing maps...")) : GConnection->DescribeStatus();
+		}
+		else
+		{
+			OutTitle = TEXT("Could not rejoin the server");
+			FString Why = GLastError.IsEmpty() ? FString(TEXT("The connection was closed.")) : GLastError;
+			Why[0] = FChar::ToUpper(Why[0]);
+			OutDetail = Why + TEXT("\n") + Leave;
+		}
+		return true;
+	}
+
+	const FUE2NetMapVote* GetMapVote()
+	{
+		using namespace UE2NetJoinLocal;
+		return GMapVote.IsValid() && GMapVote->IsAvailable() ? GMapVote.Get() : nullptr;
+	}
+
+	bool SendMapVote(int32 MapIndex, int32 GameIndex)
+	{
+		using namespace UE2NetJoinLocal;
+		return GMapVote.IsValid() && GMapVote->SendVote(MapIndex, GameIndex);
+	}
+
+	bool ConsumeMapVoteOpenRequest()
+	{
+		using namespace UE2NetJoinLocal;
+		return GMapVote.IsValid() && GMapVote->ConsumeOpenRequest();
+	}
+
+	bool ConsumeMapVoteCloseRequest()
+	{
+		using namespace UE2NetJoinLocal;
+		return GMapVote.IsValid() && GMapVote->ConsumeCloseRequest();
 	}
 
 	bool RetryLastJoin()

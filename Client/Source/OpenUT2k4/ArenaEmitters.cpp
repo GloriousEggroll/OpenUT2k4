@@ -22,6 +22,7 @@
 #include "SceneView.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
+#include "UObject/StrongObjectPtr.h"
 
 namespace ArenaEmittersLocal
 {
@@ -43,15 +44,17 @@ namespace ArenaEmittersLocal
 
 	UMaterialInterface* ParticleParent(FArenaParticleParams::EStyle Style)
 	{
-		static TWeakObjectPtr<UMaterialInterface> Cache[3];
-		static bool bTried[3] = { false, false, false };
+		// strong: once a map's emitters are gone nothing else references the parents, and a garbage-collected parent
+		// left every later map's particles on the texture's opaque surface material (black squares)
+		static TStrongObjectPtr<UMaterialInterface> Cache[4];
+		static bool bTried[4] = { false, false, false, false };
 		const int32 I = int32(Style);
 		if (!bTried[I])
 		{
 			bTried[I] = true;
-			const TCHAR* Names[3] = { TEXT("/Game/Materials/M_ArenaParticleAdd.M_ArenaParticleAdd"), TEXT("/Game/Materials/M_ArenaParticleAlpha.M_ArenaParticleAlpha"),
-				TEXT("/Game/Materials/M_ArenaParticleMod.M_ArenaParticleMod") };
-			Cache[I] = LoadObject<UMaterialInterface>(nullptr, Names[I], nullptr, LOAD_NoWarn | LOAD_Quiet);
+			const TCHAR* Names[4] = { TEXT("/Game/Materials/M_ArenaParticleAdd.M_ArenaParticleAdd"), TEXT("/Game/Materials/M_ArenaParticleAlpha.M_ArenaParticleAlpha"),
+				TEXT("/Game/Materials/M_ArenaParticleMod.M_ArenaParticleMod"), TEXT("/Game/Materials/M_ArenaParticleDarken.M_ArenaParticleDarken") };
+			Cache[I].Reset(LoadObject<UMaterialInterface>(nullptr, Names[I], nullptr, LOAD_NoWarn | LOAD_Quiet));
 		}
 		return Cache[I].Get();
 	}
@@ -108,7 +111,8 @@ void FArenaParticleParams::Load(const FString& UE2Class, const TArray<FString>& 
 	// UE2 EParticleDrawStyle: Regular, AlphaBlend, Modulated, Translucent, AlphaModulate, Darken, Brighten
 	switch (int32(P.Num(TEXT("DrawStyle"), 3)))
 	{
-	case 2: case 5: Style = EStyle::Modulate; break;
+	case 2: Style = EStyle::Modulate; break;
+	case 5: Style = EStyle::Darken; break; // dest * (1 - src): black texels leave the scene unchanged
 	case 3: case 6: Style = EStyle::Additive; break;
 	default: Style = EStyle::Alpha; break;
 	}
@@ -636,8 +640,9 @@ void AArenaEmitter::BeginPlay()
 			MID->SetTextureParameterValue(TEXT("Base"), Tex);
 			Mat = MID;
 		}
-		else if (!E.P.TexturePath.IsEmpty())
+		else if (Parent && !E.P.TexturePath.IsEmpty())
 		{
+			// no particle material without a parent: a surface material would draw the particles opaque
 			Mat = ArenaRuntimeContent::LoadMaterialByObjectPath(E.P.TexturePath);
 		}
 		if (!Mat)
@@ -1162,10 +1167,10 @@ void AArenaAmbientSound::InitFromUE2(const FArenaUE2ActorDesc& Desc)
 	const FString Path = Desc.Props.Str(TEXT("AmbientSound"));
 	USoundBase* Snd = Path.IsEmpty() ? nullptr : ArenaRuntimeContent::LoadSoundByObjectPath(Path);
 	Setup(Snd, float(Desc.Props.Num(TEXT("SoundRadius"), 64.0)), uint8(FMath::Clamp(Desc.Props.Num(TEXT("SoundVolume"), 128.0), 0.0, 255.0)),
-		uint8(FMath::Clamp(Desc.Props.Num(TEXT("SoundPitch"), 64.0), 1.0, 255.0)));
+		uint8(FMath::Clamp(Desc.Props.Num(TEXT("SoundPitch"), 64.0), 1.0, 255.0)), Desc.IsA(TEXT("AmbientSound")) ? 0.25f : 1.f);
 }
 
-void AArenaAmbientSound::Setup(USoundBase* Sound, float InRadius, uint8 InVolume, uint8 InPitch)
+void AArenaAmbientSound::Setup(USoundBase* Sound, float InRadius, uint8 InVolume, uint8 InPitch, float ClassVolume)
 {
 	AmbientSound = Sound;
 	SoundRadius = InRadius;
@@ -1175,8 +1180,9 @@ void AArenaAmbientSound::Setup(USoundBase* Sound, float InRadius, uint8 InVolume
 	{
 		return;
 	}
-	// UE2 ambient sounds: audible within 25 * (SoundRadius + 1) units, linear falloff; volume SoundVolume / 255 * 2
-	// relative to the AmbientSound default (0.3 AmbientVolume, i.e. quieter than one-shot sounds)
+	// UE2 ambient sounds: audible within 25 * (SoundRadius + 1) units, linear falloff. Volume: SoundVolume / 255 times
+	// the class volume (AmbientSound.AmbientVolume, Default.ini 0.25) and ALAudio's AmbientVolume (0.5), which takes the
+	// place of the effects volume (0.3, the output stage's mix level) for ambient loops
 	const float Radius = 25.f * (SoundRadius + 1.f) * ArenaUE2World::Scale;
 	FSoundAttenuationSettings& Att = Audio->AttenuationOverrides;
 	Att.bAttenuate = true;
@@ -1186,7 +1192,7 @@ void AArenaAmbientSound::Setup(USoundBase* Sound, float InRadius, uint8 InVolume
 	Att.AttenuationShapeExtents = FVector(Radius * 0.1f, 0.f, 0.f);
 	Att.FalloffDistance = Radius * 0.9f;
 	Audio->SetSound(Sound);
-	Audio->SetVolumeMultiplier(FMath::Clamp(SoundVolume / 255.f * 1.2f, 0.f, 1.5f));
+	Audio->SetVolumeMultiplier(SoundVolume / 255.f * ClassVolume * (0.5f / 0.3f));
 	Audio->SetPitchMultiplier(FMath::Clamp(SoundPitch / 64.f, 0.25f, 4.f));
 	Audio->bIsUISound = false;
 	Audio->Play(FMath::FRand() * 2.f);

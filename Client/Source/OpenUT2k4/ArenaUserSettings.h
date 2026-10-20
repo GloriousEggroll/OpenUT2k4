@@ -44,6 +44,18 @@ public:
 	/** Next mouse sensitivity: 0.1 .. 10, step 0.1 below 2 and 0.25 above. */
 	static float StepSensitivity(float Current, int32 Dir);
 
+	/**
+	 * UT2004 stats account rules (UT2K4Tab_GameSettings.InvalidWarning): the username has at least 4 characters and the
+	 * password at least 6. CleanStatsText makes a typed value usable in the AUTH login: spaces become underscores
+	 * (GUIEditBox.bConvertSpaces), quotes and control characters are dropped, at most MaxStatsTextLen characters.
+	 */
+	static constexpr int32 MinStatsUsernameLen = 4;
+	static constexpr int32 MinStatsPasswordLen = 6;
+	static constexpr int32 MaxStatsTextLen = 32;
+	static FString CleanStatsText(const FString& In);
+	/** Username and password follow the UT2004 rules. */
+	bool HasValidStatsLogin() const;
+
 	static constexpr float MinSensitivity = 0.1f;
 	static constexpr float MaxSensitivity = 10.f;
 	static constexpr float MinFOV = 80.f;

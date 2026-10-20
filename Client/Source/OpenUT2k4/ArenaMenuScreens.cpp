@@ -460,6 +460,12 @@ void FArenaMenuScreens::Draw(UCanvas* Canvas)
 		DrawMainPage();
 		break;
 	}
+	if (Page != EPage::ServerBrowser)
+	{
+		// a join's package download goes on away from the server browser: keep its progress and CANCEL on screen
+		const FRect S = G.Screen();
+		FArenaServerBrowserPage::DrawJoinProgress(G, FRect(S.X + S.W * 0.2f, S.Y + S.H - G.L(150.f), S.W * 0.6f, G.L(124.f)));
+	}
 	G.End();
 }
 

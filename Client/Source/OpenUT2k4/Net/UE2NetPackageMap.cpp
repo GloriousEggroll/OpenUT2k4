@@ -56,11 +56,28 @@ bool UE2ParsePackageHeader(const uint8* Data, int64 Size, FUE2PackageHeader& Out
 	Out.NameCount = int32(U32(12));
 	Out.ExportCount = int32(U32(20));
 	Out.Generations.Reset();
+	Out.GuidOffset = -1;
 	if (Out.Version < 68)
 	{
-		// UE1 style header (heritage table instead of GUID + generations): one generation, no GUID
+		// UE1 style header (UT99-era packages): a heritage table instead of GUID + generations, and one generation. UE2's
+		// linker takes the package GUID from the heritage table's last entry (it may lie past this buffer: GuidOffset).
 		Out.Guid = FGuid();
 		Out.Generations.Add(TPair<int32, int32>(Out.ExportCount, Out.NameCount));
+		if (Size < 44)
+		{
+			return Fail(TEXT("truncated package header"));
+		}
+		const int64 HeritageCount = int64(U32(36));
+		const int64 HeritageOffset = int64(U32(40));
+		if (HeritageCount > 0)
+		{
+			Out.GuidOffset = HeritageOffset + (HeritageCount - 1) * 16;
+			if (Out.GuidOffset + 16 <= Size)
+			{
+				Out.Guid = FGuid(U32(Out.GuidOffset), U32(Out.GuidOffset + 4), U32(Out.GuidOffset + 8), U32(Out.GuidOffset + 12));
+				Out.GuidOffset = -1;
+			}
+		}
 		return true;
 	}
 	if (Size < 56)
@@ -104,7 +121,36 @@ bool UE2ReadPackageHeader(const FString& Path, FUE2PackageHeader& Out, FString* 
 		}
 		return false;
 	}
-	return UE2ParsePackageHeader(Bytes.GetData(), Size, Out, OutError);
+	if (!UE2ParsePackageHeader(Bytes.GetData(), Size, Out, OutError))
+	{
+		return false;
+	}
+	if (Out.GuidOffset >= 0)
+	{
+		// UE1 style package: the heritage GUID lies past the bytes read
+		uint32 G[4];
+		if (Out.GuidOffset + int64(sizeof(G)) > Ar->TotalSize())
+		{
+			if (OutError)
+			{
+				*OutError = TEXT("bad heritage table");
+			}
+			return false;
+		}
+		Ar->Seek(Out.GuidOffset);
+		Ar->Serialize(G, sizeof(G));
+		if (Ar->IsError())
+		{
+			if (OutError)
+			{
+				*OutError = TEXT("read error");
+			}
+			return false;
+		}
+		Out.Guid = FGuid(INTEL_ORDER32(G[0]), INTEL_ORDER32(G[1]), INTEL_ORDER32(G[2]), INTEL_ORDER32(G[3]));
+		Out.GuidOffset = -1;
+	}
+	return true;
 }
 
 FString UE2GuidToString(const FGuid& Guid)

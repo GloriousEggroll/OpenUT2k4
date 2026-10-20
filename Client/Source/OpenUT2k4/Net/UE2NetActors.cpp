@@ -1,4 +1,5 @@
 #include "UE2NetActors.h"
+#include "../ArenaHitchLog.h"
 
 #include "../ArenaArt.h"
 #include "../ArenaArtFX.h"
@@ -14,6 +15,7 @@
 #include "../ArenaUE2World.h"
 #include "../ArenaWeapons.h"
 #include "../ArenaWeaponsExtra.h"
+#include "../ArenaWorldZones.h"
 #include "../ArenaBR_BallLauncher.h"
 #include "../ArenaTranslocator.h"
 #include "../UScript/UScriptCore.h"
@@ -505,6 +507,10 @@ void AUE2NetPawn::SetNetPosition(const FVector& LocationUU, const FVector& Veloc
 	}
 	NetLocation = LocationUU * S;
 	NetVelocity = VelocityUU * S;
+	const uint8 OldPhysics = SimPhysics;
+	SimPhysics = DeriveSimPhysics(VelocityUU);
+	UE_CLOG(SimPhysics != OldPhysics, LogUE2Net, Verbose, TEXT("UE2NetWorld: %s physics %d -> %d (velocity %.0f %.0f %.0f, replicated %d)"),
+		*GetName(), OldPhysics, SimPhysics, VelocityUU.X, VelocityUU.Y, VelocityUU.Z, NetPhysics);
 	if (bHasNetPosition && !bTeleport)
 	{
 		const float Err = float(FVector::Dist(GetActorLocation(), NetLocation));
@@ -545,7 +551,43 @@ void AUE2NetPawn::SetNetVehicle(AActor* Vehicle)
 
 void AUE2NetPawn::SetNetPhysics(uint8 InPhysics)
 {
-	NetPhysics = InPhysics;
+	NetPhysics = SimPhysics = InPhysics;
+}
+
+uint8 AUE2NetPawn::DeriveSimPhysics(const FVector& VelocityUU) const
+{
+	// UE2 replicates Physics to simulated proxies in the initial bunch only (Actor: bNetInitial): the server never
+	// says when the pawn lands, jumps or enters water. Work it out like the UE2 client: in a water volume it swims;
+	// a clear vertical speed means falling (UE2 physWalking and our movement keep a walking pawn's Velocity.Z at 0;
+	// jumps leave the floor at 300+ UU/s, falls pass 100 within 0.1 s). A small one (the apex of a jump, a pawn
+	// stepping down an edge), or none after a fall, means falling only while there is no floor below.
+	if (NetPhysics == 4)
+	{
+		return 4; // flying (ghost / fly cheats): nothing else turns it on or off
+	}
+	if (const UArenaWorldZoneSubsystem* Zones = UArenaWorldZoneSubsystem::Get(this))
+	{
+		const AArenaPhysicsVolume* Volume = Zones->HasVolumes() ? Zones->GetPhysicsVolumeAt(NetLocation) : nullptr;
+		if (Volume && Volume->bWaterVolume)
+		{
+			return 3;
+		}
+	}
+	const float SpeedZ = FMath::Abs(VelocityUU.Z);
+	if (SpeedZ >= 100.f)
+	{
+		return 2;
+	}
+	if (SpeedZ > 1.f || SimPhysics == 2 || SimPhysics == 3)
+	{
+		FCollisionQueryParams Q(SCENE_QUERY_STAT(UE2NetPawnFloor), false, this);
+		const FVector Down(0.f, 0.f, CollisionHalfHeight + 30.f);
+		if (!GetWorld()->SweepTestByChannel(NetLocation, NetLocation - Down, FQuat::Identity, ECC_Pawn, FCollisionShape::MakeSphere(15.f), Q))
+		{
+			return 2;
+		}
+	}
+	return 1;
 }
 
 void AUE2NetPawn::SetNetCrouched(bool bCrouched, float CollisionHeightUU)
@@ -656,6 +698,7 @@ void AUE2NetPawn::NetHit(FName Bone)
 
 void AUE2NetPawn::NetDie(const FVector& MomentumUU, const FVector& HitLocationUU, bool bGib)
 {
+	ArenaHitchLog::FScopedNote HitchNote(TEXT("player pawn died"));
 	using namespace UE2NetActorsLocal;
 	if (bNetDead)
 	{
@@ -818,7 +861,7 @@ void AUE2NetPawn::Tick(float DeltaSeconds)
 	const float Age = float(FMath::Min(FPlatformTime::Seconds() - NetTime, 0.3));
 	FVector Target = NetLocation + NetVelocity * Age;
 	FVector Vel = NetVelocity;
-	if (NetPhysics == 2)
+	if (SimPhysics == 2)
 	{
 		Target.Z += 0.5f * Gravity * Age * Age;
 		Vel.Z += Gravity * Age;
@@ -841,7 +884,7 @@ void AUE2NetPawn::Tick(float DeltaSeconds)
 	{
 		Move->Velocity = Vel;
 		// UE2 EPhysics: 1 walking, 2 falling, 3 swimming, 4 flying, 11 ladder
-		Move->MovementMode = NetPhysics == 2 ? MOVE_Falling : (NetPhysics == 3 ? MOVE_Swimming : (NetPhysics == 4 || NetPhysics == 11 ? MOVE_Flying : MOVE_Walking));
+		Move->MovementMode = SimPhysics == 2 ? MOVE_Falling : (SimPhysics == 3 ? MOVE_Swimming : (SimPhysics == 4 || SimPhysics == 11 ? MOVE_Flying : MOVE_Walking));
 	}
 }
 

@@ -2032,6 +2032,18 @@ void AArenaCharacter::ApplyBodySkin()
 	SkelMesh->SetOverlayMaterial(nullptr);
 	BodySkinMaterial = nullptr;
 
+	// xPawn Skins[1]: the character record's face skin on meshes without a face material of their own (UE2 None)
+	{
+		const APlayerState* OwnerPS = GetPlayerState();
+		const AArenaPlayerState* OwnerAPS = Cast<AArenaPlayerState>(OwnerPS);
+		const ArenaSP::FPlayerRecord* Rec = OwnerAPS && !OwnerAPS->CharacterName.IsEmpty() ? ArenaSP::FindPlayer(OwnerAPS->CharacterName)
+			: (OwnerPS && ArenaArt::FindCharacterOverride(OwnerPS->GetPlayerName()) ? ArenaSP::FindPlayer(OwnerPS->GetPlayerName()) : nullptr);
+		if (Rec)
+		{
+			ArenaArt::ApplyFaceSkin(SkelMesh, Rec->FaceSkin, Team);
+		}
+	}
+
 	if (Team != ArenaTeam::Red && Team != ArenaTeam::Blue)
 	{
 		// free for all: the character's own body skin when it is another one than the mesh's (named characters), else

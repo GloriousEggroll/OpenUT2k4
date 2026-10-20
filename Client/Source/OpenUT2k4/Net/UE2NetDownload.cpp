@@ -30,6 +30,10 @@ namespace UE2NetDownloadLocal
 	constexpr uint32 PKG_AllowDownload = 0x0001;
 	/** Seconds without any data before a download is given up. */
 	constexpr double StallTimeout = 30.0;
+	/** Seconds the redirect has to answer at all (status line or data): a dead redirect host is given up quickly. */
+	constexpr double RedirectConnectTimeout = 10.0;
+	/** Seconds without data from a redirect that already answered before the request is given up. */
+	constexpr double RedirectStallTimeout = 20.0;
 	/** Seconds the server has to answer a file request at all (data or a refusal: normally one round trip). */
 	constexpr double ReplyTimeout = 10.0;
 	/** File requests in a row without any answer before the file channel is given up for this join. */
@@ -189,6 +193,36 @@ namespace UE2NetDownload
 	void ClearJoinNotice()
 	{
 		JoinNotice().Reset();
+	}
+
+	FString GetMapProblem(const FString& MapName)
+	{
+		// the converter's state of downloaded maps, then of the custom content folder
+		for (const TCHAR* StateDir : { TEXT("netcache"), TEXT("usercontent") })
+		{
+			FConvJson State;
+			if (!FConvJson::LoadFile(ArenaContent::GetCacheDir() / StateDir / TEXT("state.json"), State) || State.Type != FConvJson::EType::Object)
+			{
+				continue;
+			}
+			for (const TPair<FString, FConvJson>& KV : State.Get(TEXT("maps")).O)
+			{
+				if (!KV.Key.Equals(MapName, ESearchCase::IgnoreCase) || KV.Value.GetString(TEXT("status")) == TEXT("ok"))
+				{
+					continue;
+				}
+				TArray<FString> Problems;
+				for (const FConvJson& P : KV.Value.Get(TEXT("problems")).A)
+				{
+					if (P.Type == FConvJson::EType::String && !P.S.IsEmpty())
+					{
+						Problems.Add(P.S);
+					}
+				}
+				return Problems.Num() ? FString::Join(Problems, TEXT(" ")) : FString(TEXT("The map could not be converted."));
+			}
+		}
+		return FString();
 	}
 
 	TSet<FString> ReadManifestPackages(const FString& ManifestPath)
@@ -441,6 +475,8 @@ struct FUE2NetDownloader::FHttpState
 	bool bDone = false;
 	bool bOk = false;
 	int32 Status = 0;
+	/** The redirect answered (a status line or data). */
+	bool bResponded = false;
 	int64 Received = 0;
 	bool bTooBig = false;
 	TArray<uint8> Content;
@@ -607,9 +643,40 @@ bool FUE2NetDownloader::Start()
 		StartNext(PassStart);
 		return true;
 	}
-	// nothing to download; packages that came from the net cache earlier may still need their conversion
+	// nothing to download; packages that came from the net cache earlier may still need their conversion, and their
+	// code the script runtime
+	RegisterScriptPackages();
 	StartConvert();
 	return Phase != EPhase::Done && Phase != EPhase::Idle;
+}
+
+void FUE2NetDownloader::RegisterScriptPackages()
+{
+	// code packages: the script runtime resolves imports between packages by name
+	TArray<FString> Scripts;
+	for (const FUE2PackageInfo& Info : Connection.GetPackageMap().GetList())
+	{
+		if (Info.bGuidMatch && IsScriptFile(Info.LocalPath) && IsUnder(Info.LocalPath, UE2NetDownload::GetNetCacheDir()))
+		{
+			Scripts.Add(Info.LocalPath);
+		}
+	}
+	if (Scripts.Num() && ArenaUScript::EnsureRuntime())
+	{
+		FUSRuntime& RT = FUSRuntime::Get();
+		RT.AddPackageFiles(Scripts);
+		// open them now, so a package of the same name in the UT2004 folder (a mod of another version) is not
+		// the one the runtime finds by name
+		for (const FString& Path : Scripts)
+		{
+			FUSLinker* L = RT.LoadPackageFile(Path);
+			if (L && L->Pkg && !FPaths::IsSamePath(L->Pkg->PathOnDisk, Path))
+			{
+				UE_LOG(LogUE2Net, Warning, TEXT("Script package %s was already loaded from %s: the downloaded version is not used until a restart"),
+					*FPaths::GetBaseFilename(Path), *L->Pkg->PathOnDisk);
+			}
+		}
+	}
 }
 
 void FUE2NetDownloader::StartNext(double Now)
@@ -632,38 +699,14 @@ void FUE2NetDownloader::StartNext(double Now)
 			Connection.OnFileData = nullptr;
 			// the package map finds the new files by GUID
 			Connection.GetPackageMap().MatchLocalPackages();
-			// code packages: the script runtime resolves imports between packages by name
-			TArray<FString> Scripts;
-			for (const FUE2PackageInfo& Info : Connection.GetPackageMap().GetList())
-			{
-				if (Info.bGuidMatch && IsScriptFile(Info.LocalPath) && IsUnder(Info.LocalPath, UE2NetDownload::GetNetCacheDir()))
-				{
-					Scripts.Add(Info.LocalPath);
-				}
-			}
-			if (Scripts.Num() && ArenaUScript::EnsureRuntime())
-			{
-				FUSRuntime& RT = FUSRuntime::Get();
-				RT.AddPackageFiles(Scripts);
-				// open them now, so a package of the same name in the UT2004 folder (a mod of another version) is not
-				// the one the runtime finds by name
-				for (const FString& Path : Scripts)
-				{
-					FUSLinker* L = RT.LoadPackageFile(Path);
-					if (L && L->Pkg && !FPaths::IsSamePath(L->Pkg->PathOnDisk, Path))
-					{
-						UE_LOG(LogUE2Net, Warning, TEXT("Script package %s was already loaded from %s: the downloaded version is not used until a restart"),
-							*FPaths::GetBaseFilename(Path), *L->Pkg->PathOnDisk);
-					}
-				}
-			}
+			RegisterScriptPackages();
 			StartConvert();
 			return;
 		}
 		FItem& Item = Queue[Current];
 		ItemStart = Now;
 		LastData = Now;
-		if (!Item.bTriedHttp && !RedirectURL.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("UE2NetNoRedirect")))
+		if (!Item.bTriedHttp && !RedirectURL.IsEmpty() && !bRedirectDead && !FParse::Param(FCommandLine::Get(), TEXT("UE2NetNoRedirect")))
 		{
 			Item.bTriedHttp = true;
 			if (StartHttp(Item))
@@ -704,7 +747,7 @@ bool FUE2NetDownloader::StartHttp(FItem& Item)
 	Req->SetURL(Url);
 	Req->SetVerb(TEXT("GET"));
 	Req->SetHeader(TEXT("User-Agent"), TEXT("OpenUT2k4"));
-	Req->SetActivityTimeout(StallTimeout);
+	Req->SetActivityTimeout(RedirectStallTimeout);
 	const TWeakPtr<FHttpState, ESPMode::ThreadSafe> Weak = Http;
 	// a redirect may hold another build of the package (its GUID decides below): only the sanity cap applies here
 	const int64 Cap = UE2NetDownload::MaxPackageBytes;
@@ -713,6 +756,7 @@ bool FUE2NetDownloader::StartHttp(FItem& Item)
 		if (const TSharedPtr<FHttpState, ESPMode::ThreadSafe> S = Weak.Pin())
 		{
 			S->Received = int64(Received);
+			S->bResponded |= Received > 0;
 			if (S->Received > Cap && !S->bTooBig)
 			{
 				S->bTooBig = true;
@@ -723,12 +767,20 @@ bool FUE2NetDownloader::StartHttp(FItem& Item)
 			}
 		}
 	});
+	Req->OnStatusCodeReceived().BindLambda([Weak](FHttpRequestPtr, int32)
+	{
+		if (const TSharedPtr<FHttpState, ESPMode::ThreadSafe> S = Weak.Pin())
+		{
+			S->bResponded = true;
+		}
+	});
 	Req->OnProcessRequestComplete().BindLambda([Weak](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
 	{
 		if (const TSharedPtr<FHttpState, ESPMode::ThreadSafe> S = Weak.Pin())
 		{
 			S->bDone = true;
 			S->Status = Response ? Response->GetResponseCode() : 0;
+			S->bResponded |= S->Status != 0;
 			S->bOk = bConnected && Response && S->Status == 200 && !S->bTooBig;
 			if (S->bOk)
 			{
@@ -863,6 +915,19 @@ bool FUE2NetDownloader::Finish(FItem& Item, TArray<uint8>&& Bytes, bool bCompres
 	return true;
 }
 
+void FUE2NetDownloader::MarkRedirectDead(const FString& Why)
+{
+	if (bRedirectDead)
+	{
+		return;
+	}
+	bRedirectDead = true;
+	RedirectNote = bChannelAllowed ? TEXT("redirect not answering: using the server (slower)")
+		: TEXT("redirect not answering, and the server allows no downloads");
+	UE_LOG(LogUE2Net, Warning, TEXT("Download redirect %s: %s; the rest of this pass %s"), *RedirectURL, *Why,
+		bChannelAllowed ? TEXT("uses the server's file channel") : TEXT("cannot be downloaded (the server does not allow downloads)"));
+}
+
 void FUE2NetDownloader::FailCurrent(const FString& Reason, double Now)
 {
 	FItem& Item = Queue[Current];
@@ -909,7 +974,7 @@ void FUE2NetDownloader::Tick(double Now)
 			ReceiveSeconds += FMath::Clamp(Now - LastTick, 0.0, 1.0);
 		}
 		LastTick = Now;
-		const bool bRedirectUsable = !RedirectURL.IsEmpty() && !FParse::Param(FCommandLine::Get(), TEXT("UE2NetNoRedirect"));
+		const bool bRedirectUsable = !RedirectURL.IsEmpty() && !bRedirectDead && !FParse::Param(FCommandLine::Get(), TEXT("UE2NetNoRedirect"));
 		int64 Left = FMath::Max<int64>(0, Queue[Current].Size - CurrentBytes);
 		if (!bRedirectUsable)
 		{
@@ -943,6 +1008,11 @@ void FUE2NetDownloader::Tick(double Now)
 				FString Err;
 				if (!S->bOk)
 				{
+					if (!S->bTooBig && S->Status == 0)
+					{
+						// no HTTP answer at all (host down, refused, reset): the redirect is not tried again this pass
+						MarkRedirectDead(TEXT("it could not be reached"));
+					}
 					FailCurrent(S->bTooBig ? FString(TEXT("larger than announced")) : FString::Printf(TEXT("HTTP status %d from %s"), S->Status, *S->Url), Now);
 					return;
 				}
@@ -994,14 +1064,28 @@ void FUE2NetDownloader::Tick(double Now)
 			FailCurrent(FString::Printf(TEXT("no answer from the server in %.0f s"), ReplyTimeout), Now);
 			return;
 		}
-		if (Phase == EPhase::Downloading && Method != EMethod::None && Now - LastData > StallTimeout)
+		if (Phase == EPhase::Downloading && Method == EMethod::Http && Http && !Http->bResponded && Now - ItemStart > RedirectConnectTimeout)
 		{
+			// UT2004 gives a redirect that does not answer up and uses the server itself for the rest of the pass
+			Http->Request->OnProcessRequestComplete().Unbind();
+			Http->Request->CancelRequest();
+			MarkRedirectDead(FString::Printf(TEXT("it did not answer in %.0f s"), RedirectConnectTimeout));
+			FailCurrent(FString::Printf(TEXT("no answer from the redirect in %.0f s"), RedirectConnectTimeout), Now);
+			return;
+		}
+		const double Stall = Method == EMethod::Http ? RedirectStallTimeout : StallTimeout;
+		if (Phase == EPhase::Downloading && Method != EMethod::None && Now - LastData > Stall)
+		{
+			if (Method == EMethod::Http)
+			{
+				MarkRedirectDead(FString::Printf(TEXT("it sent no data for %.0f s"), Stall));
+			}
 			if (Http && Http->Request)
 			{
 				Http->Request->OnProcessRequestComplete().Unbind();
 				Http->Request->CancelRequest();
 			}
-			FailCurrent(FString::Printf(TEXT("no data for %.0f s"), StallTimeout), Now);
+			FailCurrent(FString::Printf(TEXT("no data for %.0f s"), Stall), Now);
 		}
 		return;
 	}
@@ -1129,8 +1213,23 @@ FString FUE2NetDownloader::DescribeStatus() const
 			const int32 Secs = FMath::RoundToInt(double(FMath::Max<int64>(0, Item.Size - CurrentBytes)) / Rate);
 			Speed = FString::Printf(TEXT(", %.0f KB/s, about %d:%02d left"), Rate / 1024.0, Secs / 60, Secs % 60);
 		}
-		return FString::Printf(TEXT("Downloading %s (%d of %d): %s / %s MB%s%s"), *Item.FileName, Current + 1, Queue.Num(), *FormatMB(CurrentBytes),
-			*FormatMB(Item.Size), Method == EMethod::Http ? TEXT(" (redirect)") : TEXT(""), *Speed);
+		FString Waiting;
+		if (Method == EMethod::Http)
+		{
+			const double Elapsed = FPlatformTime::Seconds() - ItemStart;
+			if (CurrentBytes == 0 && Elapsed > 2.0)
+			{
+				Waiting = FString::Printf(TEXT(" | waiting for the redirect (%.0f s)"), Elapsed);
+			}
+			else if (Elapsed > 1.0 && CurrentBytes > 0)
+			{
+				Speed = FString::Printf(TEXT(", %.0f KB/s"), double(CurrentBytes) / Elapsed / 1024.0);
+			}
+		}
+		// " | " parts: the download band shows them on a second line
+		const FString Total = Queue.Num() > 1 ? FString::Printf(TEXT(" | %s of %s MB in all"), *FormatMB(BytesDone + CurrentBytes), *FormatMB(BytesTotal)) : FString();
+		return FString::Printf(TEXT("Downloading %s (%d of %d): %s / %s MB%s%s%s%s%s"), *Item.FileName, Current + 1, Queue.Num(), *FormatMB(CurrentBytes),
+			*FormatMB(Item.Size), *Speed, *Total, *Waiting, RedirectNote.IsEmpty() ? TEXT("") : TEXT(" | "), *RedirectNote);
 	}
 	if (Phase == EPhase::Converting && Convert)
 	{

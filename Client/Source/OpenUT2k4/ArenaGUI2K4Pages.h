@@ -42,6 +42,8 @@ namespace ArenaGUI2K4Pages
 	{
 		int32 Tab = 0;
 		double TabChangedAt = 0.0;
+		/** Set to open the page on the Game tab (its Stats section) on the next Draw (the server browser's stats prompt). */
+		bool bOpenStatsTab = false;
 		/** Draws the page; returns true when the player chose BACK / Esc (settings are saved). */
 		OPENUT2K4_API bool Draw(FGUI& G);
 	};
@@ -83,7 +85,8 @@ namespace ArenaGUI2K4Pages
 	/**
 	 * -AutoMenuScript="<sec>:<cmd>;<sec>:<cmd>..." runs GUI commands at those real-time seconds (since the first menu
 	 * frame): Key=<UE key name> (e.g. Down, Enter, Escape, Gamepad_RightShoulder), Click=<x>,<y> (0..1 of the 4:3 page),
-	 * Wheel=<n>, Shot=<name> (Saved/Screenshots/menu_<name>.png), Quit, and page commands handled by the caller
+	 * Type=<text> (characters into the focused edit box), Wheel=<n>, Shot=<name> (Saved/Screenshots/menu_<name>.png), Quit,
+	 * and page commands handled by the caller
 	 * (Page=<name>, Tab=<n>, any other Name=Value). Injected input goes straight into the GUI's queue; the real desktop
 	 * is never touched.
 	 */

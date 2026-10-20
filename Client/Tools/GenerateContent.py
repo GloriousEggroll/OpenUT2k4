@@ -7,7 +7,7 @@ Creates the small set of generated assets the game expects (see Source/OpenUT2k4
   /Game/Materials/M_ArenaGlow      unlit, additive, two-sided, soft fresnel falloff
   /Game/Materials/M_ArenaSprite    unlit, additive, two-sided, textured (flipbook / tiling / panning) for effects
   /Game/Materials/M_ArenaSpriteAlpha  same, translucent
-  /Game/Materials/M_ArenaParticle{Add,Alpha,Mod}  UE2 emitter particles (texture x vertex colour)
+  /Game/Materials/M_ArenaParticle{Add,Alpha,Mod,Darken}  UE2 emitter particles (texture x vertex colour)
   /Game/Materials/M_ArenaSkyFace   unlit face of the 3D sky box cube
   /Game/Materials/UT2004/M_Imported*  masters for UT2004 content built at runtime (Source/OpenUT2k4/ArenaRuntimeContent.h)
   /Game/Audio/S_*                  procedurally synthesised sound effects (original)
@@ -965,11 +965,13 @@ def build_particle_material(name, blend):
 
     Unlit, two-sided; texture "Base" (UV 0) times the vertex colour, scalar "Intensity". blend "add": additive,
     Base.rgb * VertexColor.rgb * VertexColor.a; "alpha": translucent, opacity Base.a * VertexColor.a;
-    "mod": modulate, lerp(1, Base.rgb * VertexColor.rgb, VertexColor.a).
+    "mod": modulate, lerp(1, Base.rgb * VertexColor.rgb, VertexColor.a); "darken": modulate by
+    1 - Base.rgb * VertexColor.rgb * VertexColor.a (UE2 PTDS_Darken: dest * (1 - src), so black texels leave the
+    scene unchanged).
     """
     mat = get_or_create_material(name)
     modes = {"add": unreal.BlendMode.BLEND_ADDITIVE, "alpha": unreal.BlendMode.BLEND_TRANSLUCENT,
-             "mod": unreal.BlendMode.BLEND_MODULATE}
+             "mod": unreal.BlendMode.BLEND_MODULATE, "darken": unreal.BlendMode.BLEND_MODULATE}
     mat.set_editor_property("blend_mode", modes[blend])
     mat.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
     mat.set_editor_property("two_sided", True)
@@ -1004,6 +1006,13 @@ def build_particle_material(name, blend):
         link(base, alpha, "A", "A")
         link(vc, alpha, "B", "A")
         to_prop(alpha, unreal.MaterialProperty.MP_OPACITY)
+    elif blend == "darken":
+        faded = expr(mat, unreal.MaterialExpressionMultiply, -950, 50)
+        link(rgb, faded, "A")
+        link(vc, faded, "B", "A")
+        inv = expr(mat, unreal.MaterialExpressionOneMinus, -800, 50)
+        link(faded, inv, "")
+        to_prop(inv, unreal.MaterialProperty.MP_EMISSIVE_COLOR)
     else:
         mix = expr(mat, unreal.MaterialExpressionLinearInterpolate, -800, 50, const_a=1.0)
         link(rgb, mix, "B")
@@ -1198,6 +1207,7 @@ def main():
         ("sprite alpha material", lambda: build_sprite_material("M_ArenaSpriteAlpha", True)),
         ("particle materials", lambda: [build_particle_material("M_ArenaParticle" + n, b)
                                         for n, b in (("Add", "add"), ("Alpha", "alpha"), ("Mod", "mod"))]),
+        ("darken particle material", lambda: build_particle_material("M_ArenaParticleDarken", "darken")),
         ("sky face material", build_sky_face_material),
         ("ut2004 masters", build_ut2004_masters),
         ("audio", build_audio),

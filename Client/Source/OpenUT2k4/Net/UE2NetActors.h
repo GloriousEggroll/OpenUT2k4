@@ -92,6 +92,8 @@ protected:
 
 	void ApplyModel();
 	void ApplyCharacterSkin();
+	/** Movement state (UE2 EPhysics) from the replicated position: see SimPhysics. */
+	uint8 DeriveSimPhysics(const FVector& VelocityUU) const;
 
 	const ArenaArt::FCharacterModel* Model = nullptr;
 	const ArenaArt::FCharacterModel* AppliedModel = nullptr;
@@ -111,7 +113,14 @@ protected:
 	double NetTime = 0.0;
 	float NetYaw = 0.f;
 	bool bHasNetPosition = false;
+	/** Physics as replicated: UE2 sends it to simulated pawns in the initial bunch only. */
 	uint8 NetPhysics = 1;
+	/**
+	 * Physics shown (extrapolation, animation): NetPhysics at first, then worked out from each PawnPosition, as the
+	 * UE2 client simulates its pawns itself. Without it a pawn first seen falling (every freshly spawned one) runs
+	 * in the falling pose until its channel closes.
+	 */
+	uint8 SimPhysics = 1;
 	uint8 ViewPitchByte = 0;
 	float SmoothYaw = 0.f;
 	bool bNetDead = false;

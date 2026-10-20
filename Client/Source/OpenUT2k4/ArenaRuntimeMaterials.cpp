@@ -1070,6 +1070,11 @@ UMaterialInterface* ArenaRuntimePrivate::DefaultMaterial()
 	return Default.Get();
 }
 
+bool ArenaRuntimeContent::IsDefaultMaterial(const UMaterialInterface* Material)
+{
+	return Material && Material == ArenaRuntimePrivate::DefaultMaterial();
+}
+
 UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath, ArenaRuntimeContent::EMaterialVariant Variant)
 {
 	using namespace ArenaRuntimeMaterials;

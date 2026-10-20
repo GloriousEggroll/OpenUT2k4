@@ -165,7 +165,8 @@ namespace UE2NetScriptHUDLocal
 	/** A material as the canvas draws it: its texture and how it is blended, turned or scaled. */
 	struct FMatInfo
 	{
-		UTexture2D* Texture = nullptr;
+		/** Weak: the content cache owns it (a freed texture is resolved again rather than drawn from freed memory) */
+		TWeakObjectPtr<UTexture2D> Texture;
 		/** UE2 size (texels of TextureCoords / U V) */
 		float W = 0.f, H = 0.f;
 		/** FinalBlend FrameBufferBlending (-1: none, the canvas Style decides) */
@@ -287,11 +288,12 @@ public:
 	virtual void DrawTile(FUSObject* Material, float X, float Y, float XL, float YL, float U, float V, float UL, float VL, const FColor& Color, uint8 Style) override
 	{
 		const FMatInfo& M = Resolve(Material);
-		if (!Canvas || !M.Texture || M.W <= 0.f || M.H <= 0.f || XL == 0.f || YL == 0.f || Color.A == 0)
+		UTexture2D* Tex = M.Texture.Get();
+		if (!Canvas || !Tex || M.W <= 0.f || M.H <= 0.f || XL == 0.f || YL == 0.f || Color.A == 0)
 		{
 			return;
 		}
-		const FTexture* Res = M.Texture->GetResource();
+		const FTexture* Res = Tex->GetResource();
 		if (!Res)
 		{
 			return;
@@ -478,14 +480,15 @@ public:
 		int32 Ok = 0;
 		for (const TPair<FUSObject*, FMatInfo>& KV : Materials)
 		{
-			Ok += KV.Value.Texture ? 1 : 0;
+			Ok += KV.Value.Texture.IsValid() ? 1 : 0;
 		}
 		return FString::Printf(TEXT("%d of %d materials, %d of %d fonts"), Ok, Materials.Num(), Fonts.Num() - MissingFonts, Fonts.Num());
 	}
 
 private:
 	TMap<FUSObject*, FMatInfo> Materials;
-	TMap<FUSObject*, TPair<UFont*, int32>> Fonts;
+	/** Weak: the fonts belong to the content cache (a freed one is looked up again). */
+	TMap<FUSObject*, TPair<TWeakObjectPtr<UFont>, int32>> Fonts;
 	int32 MissingFonts = 0;
 
 	static ESimpleElementBlendMode BlendFor(const FMatInfo& M, uint8 Style)
@@ -531,7 +534,7 @@ private:
 			return None;
 		}
 		FMatInfo& M = Materials.FindOrAdd(Mat);
-		if (M.bResolved && (M.Texture || FPlatformTime::Seconds() < M.RetryAt))
+		if (M.bResolved && (M.Texture.IsValid() || (M.Texture.IsExplicitlyNull() && FPlatformTime::Seconds() < M.RetryAt)))
 		{
 			return M;
 		}
@@ -636,7 +639,7 @@ private:
 			}
 		}
 		M.Texture = ArenaRuntimeContent::LoadTextureByObjectPath(TexPath);
-		if (M.Texture && M.W > 0.f)
+		if (M.Texture.IsValid() && M.W > 0.f)
 		{
 			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: material %s (%s): %s %.0f x %.0f%s"), *Path, *ClassName, *TexPath, M.W, M.H,
 				M.FrameBlend >= 0 ? *FString::Printf(TEXT(", blending %d"), M.FrameBlend) : TEXT(""));
@@ -656,9 +659,13 @@ private:
 			// UE2 logs "DrawText: No font" and draws nothing; the HUD always sets one
 			return ArenaHudFonts::Get(7);
 		}
-		if (const TPair<UFont*, int32>* Hit = Fonts.Find(Font))
+		if (const TPair<TWeakObjectPtr<UFont>, int32>* Hit = Fonts.Find(Font))
 		{
-			return Hit->Key;
+			if (UFont* Cached = Hit->Key.Get())
+			{
+				return Cached;
+			}
+			Fonts.Remove(Font);
 		}
 		const FString Path = Font->GetPathName();
 		UFont* F = ArenaRuntimeContent::LoadFontByObjectPath(Path);
@@ -674,13 +681,13 @@ private:
 			F = ArenaHudFonts::Get(6);
 			Height = ArenaHudFonts::NominalHeight(6);
 		}
-		Fonts.Add(Font, TPair<UFont*, int32>(F, Height));
+		Fonts.Add(Font, TPair<TWeakObjectPtr<UFont>, int32>(F, Height));
 		return F;
 	}
 
 	int32 FontHeight(FUSObject* Font, UFont* F)
 	{
-		const TPair<UFont*, int32>* Hit = Font ? Fonts.Find(Font) : nullptr;
+		const TPair<TWeakObjectPtr<UFont>, int32>* Hit = Font ? Fonts.Find(Font) : nullptr;
 		if (Hit && Hit->Value > 0)
 		{
 			return Hit->Value;

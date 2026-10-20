@@ -1,4 +1,6 @@
 #include "OpenUT2k4.h"
+#include "ArenaAudioOutput.h"
+#include "ArenaHitchLog.h"
 #include "Server/ArenaDedicatedServer.h"
 #include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
@@ -93,10 +95,16 @@ public:
 #endif
 		// the dedicated server (OpenUT2k4Server binary or -OpenUT2k4Server): configuration, headless engine
 		ArenaDedicatedServer::OnModuleStartup();
+		// game audio: stereo fold and limiter on the main output (ArenaAudioOutput.h)
+		ArenaAudioOutput::OnModuleStartup();
+		// frame hitches and frame time summaries in the log (ArenaHitchLog.h)
+		ArenaHitchLog::OnModuleStartup();
 	}
 
 	virtual void ShutdownModule() override
 	{
+		ArenaHitchLog::OnModuleShutdown();
+		ArenaAudioOutput::OnModuleShutdown();
 		ArenaDedicatedServer::OnModuleShutdown();
 	}
 };

@@ -31,6 +31,11 @@ struct FUE2PackageHeader
 	int32 NameCount = 0;
 	int32 ExportCount = 0;
 	FGuid Guid;
+	/**
+	 * UE1 style packages (version < 68) keep their GUID as the last heritage table entry, usually at the end of the
+	 * file: UE2ParsePackageHeader sets this file offset when that entry lies past the bytes it was given (-1: Guid is set).
+	 */
+	int64 GuidOffset = -1;
 	/** (ExportCount, NameCount) of each generation, oldest first. */
 	TArray<TPair<int32, int32>> Generations;
 };

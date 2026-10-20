@@ -31,7 +31,7 @@ class UTexture;
 struct OPENUT2K4_API FArenaParticleParams
 {
 	enum class EKind : uint8 { Sprite, Spark, Beam, Mesh };
-	enum class EStyle : uint8 { Additive, Alpha, Modulate };
+	enum class EStyle : uint8 { Additive, Alpha, Modulate, Darken };
 	EKind Kind = EKind::Sprite;
 	EStyle Style = EStyle::Alpha;
 	FString TexturePath;
@@ -245,8 +245,11 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = UE2) uint8 SoundPitch = 64;
 	UPROPERTY(VisibleAnywhere, Category = UE2) FName Tag;
 
-	/** Configure and start (Sound may be null: nothing plays). */
-	void Setup(USoundBase* Sound, float InRadius, uint8 InVolume, uint8 InPitch);
+	/**
+	 * Configure and start (Sound may be null: nothing plays). ClassVolume: UE2 AmbientSound actors play at their
+	 * class's AmbientVolume (0.25), the ambient sound of any other actor at full volume.
+	 */
+	void Setup(USoundBase* Sound, float InRadius, uint8 InVolume, uint8 InPitch, float ClassVolume = 1.f);
 	virtual void InitFromUE2(const FArenaUE2ActorDesc& Desc) override;
 	virtual FName GetUE2Tag() const override { return Tag; }
 };

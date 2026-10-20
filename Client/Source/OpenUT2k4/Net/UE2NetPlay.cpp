@@ -1,4 +1,5 @@
 #include "UE2NetPlay.h"
+#include "../ArenaHitchLog.h"
 
 #include "../ArenaCharacterMovement.h"
 #include "../ArenaFlag.h"
@@ -474,6 +475,20 @@ bool FUE2NetPlay::IsPlaying() const
 	return !Connection->GetSettings().bSpectator;
 }
 
+bool FUE2NetPlay::IsWaitingForRound() const
+{
+	if (!IsPlaying() || LocalPawn.IsValid() || DrivingChannel)
+	{
+		return false;
+	}
+	if (ServerState == TEXT("Spectating"))
+	{
+		return true;
+	}
+	const FUE2NetActor* PRI = OwnPRIChannel ? Connection->GetActors().Find(OwnPRIChannel) : nullptr;
+	return PRI && UE2NetPlayLocal::GetInt(*PRI, TEXT("bOutOfLives"), 0) != 0;
+}
+
 int32 FUE2NetPlay::ViewInt(const FRotator& View) const
 {
 	using namespace UE2NetPlayLocal;
@@ -670,6 +685,7 @@ void FUE2NetPlay::SetOwnPawnChannel(int32 Channel, const TCHAR* Why)
 void FUE2NetPlay::TrySpawnLocalPawn()
 {
 	using namespace UE2NetPlayLocal;
+	ArenaHitchLog::FScopedNote HitchNote(TEXT("our pawn spawned"));
 	UWorld* W = World.Get();
 	AArenaPlayerController* PC = GetPC();
 	const FUE2NetActor* A = OwnPawnChannel ? Connection->GetActors().Find(OwnPawnChannel) : nullptr;
@@ -737,6 +753,7 @@ void FUE2NetPlay::TrySpawnLocalPawn()
 
 void FUE2NetPlay::DestroyLocalPawn(bool bDied)
 {
+	ArenaHitchLog::FScopedNote HitchNote(bDied ? TEXT("our pawn died (death camera body)") : TEXT("our pawn removed"));
 	using namespace UE2NetPlayLocal;
 	AUE2NetLocalPawn* Pawn = LocalPawn.Get();
 	LocalPawn.Reset();
@@ -1423,9 +1440,11 @@ void FUE2NetPlay::PostActorTick(UWorld* InWorld, ELevelTick TickType, float Delt
 		TickNewNetFire();
 		TickFireEffects();
 	}
-	else if (!IsPlaying() || ServerState == TEXT("Spectating"))
+	else if (!IsPlaying() || (!LocalPawn.IsValid() && ServerState != TEXT("Dead") && ServerState != TEXT("GameEnded") && ServerState != TEXT("RoundEnded")))
 	{
-		// spectators only: dead or waiting players stay where the server put them
+		// spectators, and players without a pawn that the server lets look around (PlayerWaiting, Spectating), move the
+		// server's controller like UE2 BaseSpectating.PlayerMove does; its adjustments tell us its state. Dead players
+		// stay where the server put them.
 		SendSpectatorMove(DeltaSeconds);
 	}
 }
@@ -2062,6 +2081,12 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 	case EInput::AltFire:
 	{
 		const uint8 Mode = Input == EInput::Fire ? 0 : 1;
+		if (!Pawn && IsWaitingForRound())
+		{
+			// the server only spawns us at the next round: its Spectating controls (Fire: next player, Alt-Fire: free camera)
+			FUE2NetWorld* NW = FUE2NetWorld::Get();
+			return NW && NW->SpectatorFire(PC, Mode == 1);
+		}
 		if (!Pawn)
 		{
 			// dead or waiting: fire restarts (UE2 Dead.Fire / PlayerWaiting.Fire -> ServerReStartPlayer)

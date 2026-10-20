@@ -264,6 +264,7 @@ namespace ArenaPlayerSettingsTabLocal
 			const ArenaArt::FCharacterModel* Model = ArenaArt::FindCharacterModelForMesh(R->Mesh, R->BodySkin);
 			USkeletalMesh* Mesh = Model ? ArenaArt::Load<USkeletalMesh>(Model->Mesh) : nullptr;
 			Comp->SetSkeletalMeshAsset(Mesh);
+			Comp->EmptyOverrideMaterials(); // the previous character's skins
 			UE_LOG(LogOpenUT2k4, Log, TEXT("Settings: 3D view of %s: model %s, mesh %s, bounds %s"), *R->DefaultName, Model ? Model->Mesh : TEXT("none"),
 				Mesh ? *Mesh->GetName() : TEXT("none"), Mesh ? *Mesh->GetBounds().ToString() : TEXT(""));
 			if (!Mesh)
@@ -308,6 +309,7 @@ namespace ArenaPlayerSettingsTabLocal
 					MI->SetTextureParameterValue(TEXT("Base"), Skin);
 				}
 			}
+			ArenaArt::ApplyFaceSkin(Comp, R->FaceSkin, SkinMode == 1 ? 0 : (SkinMode == 2 ? 1 : -1));
 			// stand the model in the middle of the view (its bounds), facing the camera
 			const FBoxSphereBounds B = Mesh->GetBounds();
 			Actor->SetActorLocation(Origin() - FVector(0.f, 0.f, B.Origin.Z));

@@ -7,6 +7,8 @@
 #include "ArenaPlayerController.h"
 #include "ArenaPlayerState.h"
 #include "Net/UE2Server.h"
+#include "Net/UE2NetJoin.h"
+#include "Net/UE2NetMapVote.h"
 
 #include "Containers/Ticker.h"
 #include "Engine/Canvas.h"
@@ -30,6 +32,12 @@ namespace ArenaMidGameMenuLocal
 		/** Admin tab (hosting for UT2004 clients): selected player / ban rows. */
 		int32 AdminSel = -1;
 		int32 BanSel = -1;
+		/** Map voting tab (a UT2004 server's xVoting): the game type shown, the selected row, open it with the menu. */
+		int32 VoteGame = -1;
+		int32 VoteSel = -1;
+		bool bShowVoteTab = false;
+		/** The Map Voting tab's index when the menu was last drawn (INDEX_NONE: none). */
+		int32 VoteTabIndex = INDEX_NONE;
 		bool bWasOpen = false;
 		bool bWasSettings = false;
 	};
@@ -153,6 +161,109 @@ namespace ArenaMidGameMenuLocal
 	}
 }
 
+namespace ArenaMidGameMenuLocal
+{
+	/**
+	 * The Map Voting tab (xVoting's MapVotingPage): the game types the server offers, the maps of the chosen one with
+	 * their votes and play counts, and the vote button (double click / Enter votes too). The server tallies the votes
+	 * and counts down (VoteTimeLimit); without votes it picks a map itself when the time is up.
+	 */
+	void DrawMapVoteTab(FGUI& G, const FRect& Panel, const FUE2NetMapVote& MV)
+	{
+		FState& S = State();
+		const TArray<FUE2NetMapVote::FGameConfig>& Games = MV.GetGameConfigs();
+		const TArray<FUE2NetMapVote::FMap>& Maps = MV.GetMaps();
+		if (!Games.IsValidIndex(S.VoteGame))
+		{
+			S.VoteGame = Games.IsValidIndex(MV.GetCurrentGameConfig()) ? MV.GetCurrentGameConfig() : 0;
+		}
+
+		// status line: the count down, our vote, or the lists still arriving (one item per server tick)
+		FString Status;
+		if (Maps.Num() < MV.GetMapCount() || Games.Num() == 0)
+		{
+			Status = FString::Printf(TEXT("Receiving the map list (%d of %d maps)..."), Maps.Num(), MV.GetMapCount());
+		}
+		else if (Maps.IsValidIndex(MV.GetMyMap()) && Games.IsValidIndex(MV.GetMyGame()))
+		{
+			Status = FString::Printf(TEXT("You voted for %s (%s)"), *Maps[MV.GetMyMap()].Name, *Games[MV.GetMyGame()].GameName);
+		}
+		else
+		{
+			Status = TEXT("Choose the next map: double click a map or select it and press Vote");
+		}
+		if (MV.GetSecondsLeft() >= 0)
+		{
+			Status += FString::Printf(TEXT("  -  voting ends in %d s"), MV.GetSecondsLeft());
+		}
+		G.Label(Panel.Sub(0.037154f, 0.01f, 0.919753f, 0.05f), Status, TEXT("TextLabel"), EAlign::Center, EFontScale::Small);
+
+		FRect MapsArea = Panel.Sub(0.037154f, 0.07f, 0.919753f, 0.66f);
+		if (Games.Num() > 1)
+		{
+			// MapVotingPage co_GameType: one row per game type
+			const FRect GamesR = G.Section(Panel.Sub(0.037154f, 0.07f, 0.28f, 0.66f), TEXT("Game Type"), true);
+			TArray<FListItem> Rows;
+			for (const FUE2NetMapVote::FGameConfig& Game : Games)
+			{
+				Rows.Add({ Game.GameName.IsEmpty() ? Game.GameClass : Game.GameName, FString() });
+			}
+			bool bAct = false;
+			if (G.List(FGUI::Id(TEXT("VoteGames")), GamesR, Rows, S.VoteGame, bAct, TEXT("The game type of the next match"), TEXT("UT2SmallHeaderFont")))
+			{
+				S.VoteSel = -1;
+			}
+			MapsArea = Panel.Sub(0.33f, 0.07f, 0.626907f, 0.66f);
+		}
+
+		// the maps of the game type (its map name prefix), with the votes for them in that game type
+		const FString Prefix = Games.IsValidIndex(S.VoteGame) ? Games[S.VoteGame].Prefix : FString();
+		// by name, like MapVotingPage's list
+		TArray<int32> Order;
+		for (int32 i = 0; i < Maps.Num(); ++i)
+		{
+			Order.Add(i);
+		}
+		Order.Sort([&Maps](int32 A, int32 B) { return Maps[A].Name < Maps[B].Name; });
+		TArray<int32> RowMap;
+		TArray<FListItem> Rows;
+		for (const int32 i : Order)
+		{
+			const FUE2NetMapVote::FMap& M = Maps[i];
+			if (!M.bEnabled || (!Prefix.IsEmpty() && !M.Name.StartsWith(Prefix, ESearchCase::IgnoreCase)))
+			{
+				continue;
+			}
+			int32 Votes = 0;
+			for (const FUE2NetMapVote::FVote& V : MV.GetVotes())
+			{
+				if (V.MapIndex == i && V.GameConfigIndex == S.VoteGame)
+				{
+					Votes += V.VoteCount;
+				}
+			}
+			FListItem Row;
+			Row.Cells = { M.Name, Votes > 0 ? FString::FromInt(Votes) : FString(), FString::FromInt(M.PlayCount) };
+			Rows.Add(Row);
+			RowMap.Add(i);
+		}
+		const FRect MapsR = G.Section(MapsArea, TEXT("Maps  (votes, times played)"), true);
+		static const TArray<FListColumn> Columns = { { 0.70f, EAlign::Left }, { 0.15f, EAlign::Center }, { 0.15f, EAlign::Center } };
+		bool bVote = false;
+		G.List(FGUI::Id(TEXT("VoteMaps")), MapsR, Rows, S.VoteSel, bVote, TEXT("Double click a map to vote for it"), TEXT("UT2SmallHeaderFont"), false, &Columns);
+		const bool bHasSel = RowMap.IsValidIndex(S.VoteSel);
+		if (G.Button(FGUI::Id(TEXT("VoteSubmit")), Panel.Sub(0.375f, 0.765f, 0.25f, 0.06f), TEXT("SquareMenuButton"), TEXT("Vote"),
+			TEXT("Vote for the selected map"), bHasSel))
+		{
+			bVote = true;
+		}
+		if (bVote && bHasSel)
+		{
+			ArenaNet::SendMapVote(RowMap[S.VoteSel], S.VoteGame);
+		}
+	}
+}
+
 using namespace ArenaMidGameMenuLocal;
 
 void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerController* PC, bool bForceSettings)
@@ -244,10 +355,30 @@ void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerCon
 	(void)GameTab;
 	TArray<FString> Hints = { TEXT("Match controls"), TEXT("The rules of this match") };
 	// hosting (Net/UE2Server.h): UT2004's in-game admin, a player list with kick / ban
+	int32 AdminTab = INDEX_NONE;
 	if (ArenaHost::IsUE2Hosting())
 	{
-		Tabs.Add(TEXT("Admin"));
+		AdminTab = Tabs.Add(TEXT("Admin"));
 		Hints.Add(TEXT("Players on your server: kick or ban"));
+	}
+	// a UT2004 server's map voting (Net/UE2NetMapVote.h): UT2K4Tab_PlayerLoginControls' Map Voting button opens MapVotingPage
+	const FUE2NetMapVote* MapVote = ArenaNet::GetMapVote();
+	const FString MapVotingCaption = Loc(TEXT("GUI2K4"), TEXT("UT2K4Tab_PlayerLoginControls"), TEXT("MapVotingButton.Caption"), TEXT("Map Voting"));
+	int32 VoteTab = INDEX_NONE;
+	if (MapVote)
+	{
+		VoteTab = Tabs.Add(MapVotingCaption);
+		Hints.Add(TEXT("Vote for the next map"));
+	}
+	S.VoteTabIndex = VoteTab;
+	if (S.bShowVoteTab)
+	{
+		S.bShowVoteTab = false;
+		if (VoteTab != INDEX_NONE)
+		{
+			S.Tab = VoteTab;
+			S.VoteSel = -1;
+		}
 	}
 	if (S.Tab >= Tabs.Num())
 	{
@@ -287,6 +418,14 @@ void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerCon
 		}
 		// buttons on the UT2K4Tab_PlayerLoginControls grid (X 0.025 / 0.375 / 0.725, Y 0.675 / 0.75, 0.2 x 0.05)
 		struct FBtn { int32 Item; const TCHAR* LocKey; const TCHAR* Fallback; const TCHAR* Hint; float X, Y; };
+		// on a UT2004 server there is no match of ours to restart: the middle button is Map Voting when the server runs it
+		const bool bOnServer = HUD->GetWorld() && HUD->GetWorld()->URL.HasOption(TEXT("UE2Net"));
+		if (bOnServer && VoteTab != INDEX_NONE
+			&& G.Button(FGUI::Id(TEXT("MidVoteBtn")), Panel.Sub(0.375f, 0.765f, 0.25f, 0.06f), TEXT("SquareMenuButton"), MapVotingCaption, TEXT("Vote for the next map")))
+		{
+			S.Tab = VoteTab;
+			S.VoteSel = -1;
+		}
 		const FBtn Btns[] = {
 			{ 0, nullptr, TEXT("Resume"), TEXT("Back to the match"), 0.025f, 0.765f },
 			{ 2, nullptr, TEXT("Restart Match"), TEXT("Start this match again from the beginning"), 0.375f, 0.765f },
@@ -296,6 +435,10 @@ void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerCon
 		};
 		for (const FBtn& B : Btns)
 		{
+			if (bOnServer && B.Item == 2)
+			{
+				continue;
+			}
 			const FString Cap = B.LocKey ? Loc(TEXT("GUI2K4"), Sec, B.LocKey, B.Fallback) : FString(B.Fallback);
 			if (G.Button(FGUI::Id(TEXT("MidBtn"), B.Item), Panel.Sub(B.X, B.Y, 0.25f, 0.06f), TEXT("SquareMenuButton"), Cap, B.Hint) && PC)
 			{
@@ -303,7 +446,11 @@ void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerCon
 			}
 		}
 	}
-	else if (S.Tab == 2)
+	else if (S.Tab == VoteTab && MapVote)
+	{
+		DrawMapVoteTab(G, Panel, *MapVote);
+	}
+	else if (S.Tab == AdminTab)
 	{
 		// the host's admin page (UT2K4Tab_AdminPlayerList): remote players with kick / ban, and the ban list
 		const TArray<ArenaHost::FUE2HostPlayer> Players = ArenaHost::GetUE2Players();
@@ -386,4 +533,24 @@ void ArenaMidGameMenu::DrawEndOfMatch(AHUD* HUD, UCanvas* Canvas, const AArenaGa
 	// under the scoreboard rows, just above the HUD's own "you won / lost" line at the bottom
 	G.Text(Big, Winner, W * 0.5f, H * 0.87f - Big.Height, FArenaDraw::UTColor(Color), EAlign::Center, true);
 	G.End();
+}
+
+void ArenaMidGameMenu::OpenMapVote(AArenaPlayerController* PC)
+{
+	if (PC)
+	{
+		State().bShowVoteTab = true;
+		PC->SetPauseMenuOpen(true);
+	}
+}
+
+void ArenaMidGameMenu::CloseMapVote(AArenaPlayerController* PC)
+{
+	// the server chose the map (CloseWindow): close the menu if it shows the vote
+	FState& S = State();
+	S.bShowVoteTab = false;
+	if (PC && PC->IsPauseMenuOpen() && !PC->IsPauseSettingsOpen() && S.VoteTabIndex != INDEX_NONE && S.Tab == S.VoteTabIndex)
+	{
+		PC->SetPauseMenuOpen(false);
+	}
 }

@@ -1,4 +1,5 @@
 #include "ArenaRuntimeContent.h"
+#include "ArenaHitchLog.h"
 #include "ArenaRuntimeContentPrivate.h"
 #include "ArenaContent.h"
 #include "OpenUT2k4.h"
@@ -18,6 +19,7 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Sound/SoundBase.h"
+#include "UObject/ObjectKey.h"
 #include "UObject/StrongObjectPtr.h"
 
 // =================================================================================================
@@ -48,6 +50,13 @@ namespace ArenaRuntimePrivate
 		TMap<FString, FString> ByObjectKey;
 		/** lower("<AssetName(PkgFolder)>/<AssetName(FileStem)>") -> same */
 		TMap<FString, FString> ByAssetName;
+		/**
+		 * Grouped objects ("<Group>.<Name>" file stems) by package and name alone: UE2 finds "Pkg.Name" whatever group
+		 * the object is in (character records name e.g. UT2004ECEPlayerSkins.MSkaarj_Body, which is in group
+		 * MechSkaarjSkins). Keys as ByObjectKey / ByAssetName; the first object of a name wins.
+		 */
+		TMap<FString, FString> ByObjectKeyNoGroup;
+		TMap<FString, FString> ByAssetNameNoGroup;
 	};
 
 	FCriticalSection IndexLock;
@@ -76,6 +85,12 @@ namespace ArenaRuntimePrivate
 					const FString PkgKey = Pkg.IsEmpty() ? Stem : Pkg;
 					Index.ByObjectKey.Add((PkgKey + TEXT(".") + Stem).ToLower(), Base);
 					Index.ByAssetName.Add((AssetName(PkgKey) + TEXT("/") + AssetName(Stem)).ToLower(), Base);
+					FString Group, Short;
+					if (!Pkg.IsEmpty() && Stem.Split(TEXT("."), &Group, &Short, ESearchCase::IgnoreCase, ESearchDir::FromEnd) && !Short.IsEmpty())
+					{
+						Index.ByObjectKeyNoGroup.FindOrAdd((PkgKey + TEXT(".") + Short).ToLower(), Base);
+						Index.ByAssetNameNoGroup.FindOrAdd((AssetName(PkgKey) + TEXT("/") + AssetName(Short)).ToLower(), Base);
+					}
 				}
 				return true;
 			});
@@ -101,6 +116,9 @@ namespace ArenaRuntimePrivate
 		TSet<FString> Misses;
 		TArray<TStrongObjectPtr<UObject>> Session;
 		TArray<TStrongObjectPtr<UObject>> Permanent;
+		/** What Session / Permanent hold (an object is kept once). */
+		TSet<FObjectKey> SessionKeys;
+		TSet<FObjectKey> PermanentKeys;
 		TMap<FString, ArenaRuntimeContent::FLoader> Loaders;
 		/** Replacement package checks: package path -> exists */
 		TMap<FString, bool> Replacements;
@@ -128,6 +146,10 @@ namespace ArenaRuntimePrivate
 		{
 			if (UObject* O = Found->Get())
 			{
+				// built before the last TrimCache and still alive (something else references it): it is used again, so
+				// keep it for this session too. Callers may hold the pointer without a reference of their own (the
+				// script HUD's material cache), and the next garbage collection would free it otherwise.
+				Keep(O, false);
 				return Cast<T>(O);
 			}
 		}
@@ -135,7 +157,13 @@ namespace ArenaRuntimePrivate
 		{
 			return nullptr;
 		}
+		const double BuildStart = FPlatformTime::Seconds();
 		T* Result = Make();
+		const double BuildMs = (FPlatformTime::Seconds() - BuildStart) * 1000.0;
+		if (BuildMs >= 2.0)
+		{
+			ArenaHitchLog::Note(FString::Printf(TEXT("built %s (%.0f ms)"), *Key, BuildMs));
+		}
 		if (Result)
 		{
 			C.Objects.Add(Key, Result);
@@ -218,7 +246,12 @@ FString ArenaRuntimePrivate::FindByObjectPath(const TCHAR* Kind, const FString& 
 	}
 	const FString Key = (CacheSafe(Pkg) + TEXT(".") + CacheSafe(Rest)).ToLower();
 	FScopeLock Lock(&IndexLock);
-	const FString* Found = GetIndex(Kind).ByObjectKey.Find(Key);
+	const FKindIndex& Index = GetIndex(Kind);
+	const FString* Found = Index.ByObjectKey.Find(Key);
+	if (!Found && !Rest.Contains(TEXT(".")))
+	{
+		Found = Index.ByObjectKeyNoGroup.Find(Key);
+	}
 	return Found ? *Found : FString();
 }
 
@@ -226,7 +259,12 @@ FString ArenaRuntimePrivate::FindByAssetName(const TCHAR* Kind, const FString& P
 {
 	FScopeLock Lock(&IndexLock);
 	const FString Key = ((PackageFolder.IsEmpty() ? Name : PackageFolder) + TEXT("/") + Name).ToLower();
-	const FString* Found = GetIndex(Kind).ByAssetName.Find(Key);
+	const FKindIndex& Index = GetIndex(Kind);
+	const FString* Found = Index.ByAssetName.Find(Key);
+	if (!Found)
+	{
+		Found = Index.ByAssetNameNoGroup.Find(Key);
+	}
 	return Found ? *Found : FString();
 }
 
@@ -287,9 +325,25 @@ UObject* ArenaRuntimePrivate::AssetOuter()
 
 void ArenaRuntimePrivate::Keep(UObject* Object, bool bPermanent)
 {
-	if (Object)
+	if (!Object)
 	{
-		(bPermanent ? Objects().Permanent : Objects().Session).Emplace(Object);
+		return;
+	}
+	FObjectCache& C = Objects();
+	const FObjectKey Key(Object);
+	if (C.PermanentKeys.Contains(Key))
+	{
+		return;
+	}
+	if (bPermanent)
+	{
+		C.PermanentKeys.Add(Key);
+		C.Permanent.Emplace(Object);
+	}
+	else if (!C.SessionKeys.Contains(Key))
+	{
+		C.SessionKeys.Add(Key);
+		C.Session.Emplace(Object);
 	}
 }
 
@@ -686,6 +740,7 @@ void ArenaRuntimeContent::TrimCache()
 	FObjectCache& C = Objects();
 	const int32 Released = C.Session.Num();
 	C.Session.Reset();
+	C.SessionKeys.Reset();
 	C.Misses.Reset();
 	for (auto It = C.Objects.CreateIterator(); It; ++It)
 	{

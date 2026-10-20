@@ -679,6 +679,8 @@ namespace ArenaConvUserContent
 		struct FPkgInfo
 		{
 			TArray<FString> Imports;  // lower top-level packages
+			/** Lower top-level packages this package imports classes from (actor / object classes it needs to work). */
+			TSet<FString> ClassImports;
 			FString Error;
 			bool bScript = false;
 			TMap<FString, int32> ScriptClasses; // maps only
@@ -718,11 +720,20 @@ namespace ArenaConvUserContent
 				}
 				return FString();
 			};
-			for (const FConvImport& Im : Pkg->Imports)
+			for (int32 Ii = 0; Ii < Pkg->Imports.Num(); ++Ii)
 			{
+				const FConvImport& Im = Pkg->Imports[Ii];
 				if (Im.PackageIndex == 0 && !Im.Name.IsEmpty())
 				{
 					Info.Imports.AddUnique(Im.Name.ToLower());
+				}
+				else if (Im.ClassName == TEXT("Class"))
+				{
+					const FString Top = TopOf(Ii);
+					if (!Top.IsEmpty())
+					{
+						Info.ClassImports.Add(Top.ToLower());
+					}
 				}
 			}
 			if (U.Ext == TEXT(".ut2"))
@@ -920,7 +931,40 @@ namespace ArenaConvUserContent
 			{
 				continue; // reported above; the UT2004 map of that name is the one in the cache
 			}
-			if (Missing.Num() || Unreadable.Num())
+			// A missing package the map (or a custom package it uses) takes classes from: those objects cannot exist, so
+			// the map cannot be played. Packages it only takes sounds, textures or meshes from are left out instead: UT2004
+			// itself plays such a map on a server that has the package and just lacks those parts on clients without it
+			// (e.g. a map with a few UT99 AmbOutside sounds).
+			TArray<FString> MissingParts;
+			bool bMissingCode = false;
+			for (int32 i = 0; i < Missing.Num(); ++i)
+			{
+				bool bCode = Info.ClassImports.Contains(Missing[i]);
+				for (const FString& D : UserDeps)
+				{
+					const FPkgInfo* DI = Infos.Find(D);
+					bCode |= DI && DI->ClassImports.Contains(Missing[i]);
+				}
+				bMissingCode |= bCode;
+				MissingParts.Add(MissingNames[i]);
+			}
+			if (!bMissingCode && !Unreadable.Num() && MissingParts.Num())
+			{
+				FConvJson M = FConvJson::Array();
+				for (const FString& N : MissingNames)
+				{
+					M.Add(N);
+				}
+				Rec.Set(TEXT("missing"), M);
+				FConvJson Pr = FConvJson::Array();
+				Pr.Add(FString::Printf(TEXT("Missing %s: %s. The sounds, textures or meshes the map uses from %s are left out."),
+					MissingParts.Num() == 1 ? TEXT("package") : TEXT("packages"), *JoinNames(MissingParts), MissingParts.Num() == 1 ? TEXT("it") : TEXT("them")));
+				Rec.Set(TEXT("problems"), Pr);
+				// converted again once the package turns up
+				Signature += TEXT("|missing=") + FString::Join(Missing, TEXT(","));
+				Rec.Set(TEXT("signature"), Signature);
+			}
+			else if (Missing.Num() || Unreadable.Num())
 			{
 				FConvJson M = FConvJson::Array();
 				for (const FString& N : MissingNames)
@@ -1151,7 +1195,8 @@ namespace ArenaConvUserContent
 			Rec.Set(TEXT("errors"), Errors.Num());
 			const FString MapJson = Out / TEXT("maps") / FConvExporter::Safe(T.Name) / TEXT("map.json");
 			FConvJson Doc;
-			FConvJson Pr = FConvJson::Array();
+			// notes from the scan (missing packages whose parts are left out) stay with the map
+			FConvJson Pr = Rec.Get(TEXT("problems")).Type == FConvJson::EType::Array ? Rec.Get(TEXT("problems")) : FConvJson::Array();
 			if (!bExported || !FConvJson::LoadFile(MapJson, Doc))
 			{
 				Rec.Set(TEXT("status"), TEXT("unplayable"));

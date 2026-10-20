@@ -5,6 +5,7 @@
 #include "ArenaContent.h"
 #include "OpenUT2k4.h"
 
+#include "Containers/Ticker.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Engine/Font.h"
@@ -20,6 +21,23 @@
 
 namespace ArenaRuntimeFontsLocal
 {
+	/**
+	 * Applies a changed sampler setting of a texture that may already be drawn this frame. UpdateResource deletes the
+	 * old resource on the render thread at once, ahead of the canvas items queued with it this frame (fonts are built
+	 * while the HUD draws), which would then draw a freed resource: the update waits for the next frame.
+	 */
+	void UpdateResourceNextFrame(UTexture2D* Tex)
+	{
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak = TWeakObjectPtr<UTexture2D>(Tex)](float)
+		{
+			if (UTexture2D* T = Weak.Get())
+			{
+				T->UpdateResource();
+			}
+			return false;
+		}));
+	}
+
 	struct FFontCache
 	{
 		TMap<FString, TStrongObjectPtr<UFont>> Fonts;
@@ -107,7 +125,7 @@ namespace ArenaRuntimeFontsLocal
 			if (Tex->Filter != TF_Nearest)
 			{
 				Tex->Filter = TF_Nearest;
-				Tex->UpdateResource();
+				UpdateResourceNextFrame(Tex);
 			}
 			Textures.Add(Tex);
 		}

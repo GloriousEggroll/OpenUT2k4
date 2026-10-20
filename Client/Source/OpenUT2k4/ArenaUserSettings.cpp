@@ -171,6 +171,29 @@ float UArenaUserSettings::StepSensitivity(float Current, int32 Dir)
 	return FMath::Clamp(Result, MinSensitivity, MaxSensitivity);
 }
 
+FString UArenaUserSettings::CleanStatsText(const FString& In)
+{
+	FString Out;
+	for (const TCHAR C : In.TrimStartAndEnd())
+	{
+		if (FChar::IsWhitespace(C))
+		{
+			Out.AppendChar(TEXT('_'));
+		}
+		else if (C >= 32 && C != 127 && C != TEXT('"'))
+		{
+			Out.AppendChar(C);
+		}
+	}
+	return Out.Left(MaxStatsTextLen);
+}
+
+bool UArenaUserSettings::HasValidStatsLogin() const
+{
+	return StatsUsername.Len() >= MinStatsUsernameLen && StatsPassword.Len() >= MinStatsPasswordLen
+		&& CleanStatsText(StatsUsername) == StatsUsername && CleanStatsText(StatsPassword) == StatsPassword;
+}
+
 bool UArenaUserSettings::ChangeSetting(FName Id, int32 Dir)
 {
 	const int32 D = Dir >= 0 ? 1 : -1;

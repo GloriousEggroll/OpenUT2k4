@@ -1502,6 +1502,10 @@ void AArenaPlayerController::ActivatePauseItem(int32 Index)
 		break;
 
 	case 2: // Restart match
+		if (GetWorld()->URL.HasOption(TEXT("UE2Net")))
+		{
+			break; // a UT2004 server's match: not ours to restart (the menu shows Map Voting there instead)
+		}
 		SetPauseMenuOpen(false);
 		if (GM)
 		{

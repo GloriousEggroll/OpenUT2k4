@@ -84,6 +84,13 @@ namespace ArenaArt
 	 */
 	OPENUT2K4_API UTexture* LoadBodySkin(const FString& SkinName);
 
+	/**
+	 * xPawn Skins[1] = the character record's FaceSkin (UE2 object path, team variant <name>_<Team> first for red / blue)
+	 * on meshes whose face slot has no material of its own (UE2 None: the ECE Skaarj, Hellions, Xan robots ...); meshes
+	 * with their own face material keep it.
+	 */
+	OPENUT2K4_API void ApplyFaceSkin(class USkeletalMeshComponent* Comp, const FString& UE2FaceSkin, int32 Team);
+
 	// ---------------------------------------------------------------------------------------------
 	// Weapons
 	// ---------------------------------------------------------------------------------------------

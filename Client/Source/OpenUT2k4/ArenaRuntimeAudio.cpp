@@ -120,21 +120,24 @@ namespace ArenaRuntimeAudio
 			const int32 End = bLooping ? LoopEnd : Frames;
 			const float Scale = Gain / 32768.f;
 			int32 Written = 0;
+			const bool bLoop = bLooping && End - Data->LoopStart >= 2;
 			while (Written + Ch <= NumSamples)
 			{
-				if (Pos >= End - 1)
+				// a loop wraps at its end and interpolates its last frame towards its first; a one-shot ends on its
+				// last frame
+				if (bLoop ? Pos >= End : Pos >= End - 1)
 				{
-					if (!bLooping || End - Data->LoopStart < 2)
+					if (!bLoop)
 					{
 						bFinished = true;
 						break;
 					}
-					Pos = Data->LoopStart + FMath::Fmod(Pos - Data->LoopStart, double(End - Data->LoopStart - 1));
+					Pos = Data->LoopStart + FMath::Fmod(Pos - Data->LoopStart, double(End - Data->LoopStart));
 				}
 				const int32 I = int32(Pos);
 				const float T = float(Pos - I);
 				const int16* A = Data->Pcm.GetData() + int64(I) * Ch;
-				const int16* B = A + Ch;
+				const int16* B = I + 1 < End ? A + Ch : Data->Pcm.GetData() + int64(Data->LoopStart) * Ch;
 				for (int32 c = 0; c < Ch; ++c)
 				{
 					Out[Written + c] = FMath::Clamp((A[c] + (B[c] - A[c]) * T) * Scale, -1.f, 1.f);

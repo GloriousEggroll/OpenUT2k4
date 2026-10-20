@@ -16,6 +16,13 @@ public class OpenUT2k4 : ModuleRules
 		bool bServerBinary = Target.Type == TargetType.Server;
 		PrivateDefinitions.Add("OPENUT2K4_SERVER_BINARY=" + (bServerBinary ? "1" : "0"));
 
+		// Shipping: the installed engine is precompiled without logging (NO_LOGGING), so UE_LOG writes nothing. This module's
+		// UE_LOG / UE_CLOG go to our own log file instead (ArenaShippingLog.h, <Saved>/Logs/OpenUT2k4.log) so players can send one.
+		if (Target.Configuration == UnrealTargetConfiguration.Shipping)
+		{
+			ForceIncludeFiles.Add(System.IO.Path.Combine(ModuleDirectory, "ArenaShippingLog.h"));
+		}
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "AIModule", "Slate", "SlateCore", "Json"
@@ -28,6 +35,8 @@ public class OpenUT2k4 : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] { "RenderCore", "RHI" });
 		// Runtime content provider (ArenaRuntimeContent): static meshes from mesh descriptions, ogg music.
 		PrivateDependencyModuleNames.AddRange(new string[] { "MeshDescription", "StaticMeshDescription", "VorbisAudioDecoder", "AudioExtensions" });
+		// ArenaAudioOutput: stereo fold and peak limiter on the main submix (audio mixer device, submix effect buffers)
+		PrivateDependencyModuleNames.AddRange(new string[] { "AudioMixer", "AudioMixerCore", "SignalProcessing" });
 		// FSoundQualityInfo (a plain struct used by the engine's runtime decoders) lives in a TargetPlatform header: include path only.
 		PrivateIncludePathModuleNames.Add("TargetPlatform");
 
