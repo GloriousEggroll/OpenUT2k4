@@ -1130,7 +1130,11 @@ void FGUI::Begin(UCanvas* Canvas, APlayerController* InPC, bool bCaptureInput)
 			InjectedRelease = 1;
 		}
 	}
-	In.Queue.Reset();
+	// a draw-only pass (e.g. the end of match banner, drawn before the menu) leaves the input to the menu of this frame
+	if (bCapture || !In.IsActive())
+	{
+		In.Queue.Reset();
+	}
 
 	if (!bCapture)
 	{
