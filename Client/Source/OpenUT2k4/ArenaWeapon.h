@@ -37,6 +37,12 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon") int32 AmmoPickupAmount = 20;
 	/** Weapon never runs out (melee) */
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon") bool bInfiniteAmmo = false;
+	/** Net play: our instant hit shots draw their own tracer (UE2 bullet attachments trace the owner's tracer along its
+	 *  own view; the hit effects come from the server's mHitLocation, beam weapons replicate a beam actor instead) */
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon") bool bNetOwnerTracers = false;
+	/** Both modes are one UE2 fire mode object (Weapon.InitWeaponFires: FireModeClass[0] == FireModeClass[1]) with one
+	 *  refire time; net play times our shot effects by it */
+	UPROPERTY(EditDefaultsOnly, Category = "Weapon") bool bSharedFireMode = false;
 	/** Base desirability for auto-switch and bots, 0..1 */
 	UPROPERTY(EditDefaultsOnly, Category = "Weapon") float Priority = 0.5f;
 	/** Primary colour used for the view model and HUD icon */
@@ -110,8 +116,20 @@ public:
 	virtual uint8 GetBotFireMode(float DistanceToEnemy) const;
 	/** Projectile speed for aim leading (0 = instant hit). */
 	float GetProjectileSpeed(uint8 Mode) const;
-	/** Net play (Net/UE2NetPlay.h): a shot's sound, muzzle flash and view animation only; the UT2004 server fires it. */
-	void PlayNetFireEffects(uint8 Mode) { if (Mode < 2) { PlayFireEffects(Mode, 0.f); } }
+	/** Net play (Net/UE2NetPlay.h): a shot's sound, muzzle flash, view animation and bullet tracer; the UT2004 server
+	 *  fires it. */
+	void PlayNetFireEffects(uint8 Mode);
+	/** Net play: the fire button of a mode went down / up (UE2 WeaponFire.ModeHoldFire / bFireOnRelease): the hold
+	 *  animation, the shield, the link beam and laser sights while held, a charged shot's effects on release when bReady.
+	 *  True when a released shot played its effects. */
+	bool SetNetFireHeld(uint8 Mode, bool bHeld, bool bReady);
+	/** Net play: the mode plays a shot at its fire rate while held (instant hit and projectile modes that don't charge). */
+	virtual bool IsNetAutoFire(uint8 Mode) const;
+	bool IsNetFireHeld(uint8 Mode) const { return Mode < 2 && bNetFireHeld[Mode]; }
+	/** UE2 Weapon.GetEffectStart: where our shot effects leave the weapon (the first-person muzzle). */
+	FVector GetEffectStart() const { return GetMuzzleLocation(); }
+	/** Fire on release for charge modes. */
+	bool IsChargeMode(uint8 Mode) const;
 
 	AArenaCharacter* GetArenaOwner() const { return ArenaOwner; }
 
@@ -180,6 +198,10 @@ protected:
 
 	bool bEquipped = false;
 	bool bFireHeld[2] = { false, false };
+	/** Net play: the fire button is held while the server fires (SetNetFireHeld); effects only, never a local shot. */
+	bool bNetFireHeld[2] = { false, false };
+	/** Net play: a mode's button went down / up (SetNetFireHeld), for weapon specific hold effects. */
+	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) {}
 	/** The fire mode being fired (FireShot); SpawnProjectiles uses its ProjSpawnOffset. */
 	uint8 SpawnMode = 0;
 	float ChargeStart[2] = { 0.f, 0.f };
@@ -223,8 +245,6 @@ protected:
 	void HideLiveBeam();
 	/** Sound, muzzle flash and recoil for a shot. */
 	void PlayFireEffects(uint8 Mode, float ChargeAlpha);
-	/** Fire on release for charge modes. */
-	bool IsChargeMode(uint8 Mode) const;
 	/** If completely out of ammo, ask the owner to switch. Returns true if a switch was requested. */
 	bool CheckOutOfAmmo();
 	AController* GetOwnerController() const;

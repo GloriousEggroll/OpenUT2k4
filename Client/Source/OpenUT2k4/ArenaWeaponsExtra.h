@@ -41,6 +41,8 @@ public:
 	virtual float GetBotRating(float DistanceToEnemy) const override;
 	virtual uint8 GetBotFireMode(float DistanceToEnemy) const override { return 0; }
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Net play: painting is a hold, not shots at the fire rate. */
+	virtual bool IsNetAutoFire(uint8 Mode) const override { return Mode != 0 && AArenaWeapon::IsNetAutoFire(Mode); }
 	bool IsPainting() const { return bPainting; }
 	bool HasValidMark() const { return bValidMark; }
 	FVector GetMarkLocation() const { return MarkLocation; }
@@ -48,6 +50,7 @@ protected:
 	virtual void BuildViewModel() override;
 	/** PainterFire.Paint.ModeTick */
 	void PaintTick(float DeltaSeconds);
+	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	void StopPainting();
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> PaintBeam;
 	bool bPainting = false;
@@ -148,6 +151,7 @@ public:
 protected:
 	virtual void BuildViewModel() override;
 	virtual void FireProjectile(uint8 Mode, float ChargeAlpha) override;
+	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> TargetBeam;
 	TArray<TWeakObjectPtr<AArenaCrawlerMine>> Mines;
 	bool bTargeting = false;

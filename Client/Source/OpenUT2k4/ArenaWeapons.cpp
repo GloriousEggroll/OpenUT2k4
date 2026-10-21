@@ -178,7 +178,7 @@ void AWeap_Gauntlet::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 
 	const bool bAlive = ArenaOwner && !ArenaOwner->IsDead();
-	const bool bShieldOn = bEquipped && bAlive && bFireHeld[1] && Ammo > 0;
+	const bool bShieldOn = bEquipped && bAlive && (bFireHeld[1] || bNetFireHeld[1]) && Ammo > 0; // bNetFireHeld: net play
 	if (ShieldVisual && ShieldVisual->IsVisible() != bShieldOn)
 	{
 		ShieldVisual->SetVisibility(bShieldOn);
@@ -316,6 +316,7 @@ AWeap_Carbine::AWeap_Carbine()
 {
 	WeaponName = TEXT("Carbine");
 	Slot = 2;
+	bNetOwnerTracers = true;
 	MaxAmmo = 150;
 	InitialAmmo = 100;
 	AmmoPickupAmount = 50;
@@ -1002,6 +1003,7 @@ AWeap_RotaryGun::AWeap_RotaryGun()
 {
 	WeaponName = TEXT("Rotary Gun");
 	Slot = 6;
+	bNetOwnerTracers = true;
 	MaxAmmo = 300;
 	InitialAmmo = 100;
 	AmmoPickupAmount = 50;
@@ -1705,6 +1707,7 @@ AWeap_InstaRifle::AWeap_InstaRifle()
 {
 	WeaponName = TEXT("Insta Rifle");
 	Slot = 0;
+	bSharedFireMode = true; // SuperShockRifle: FireModeClass(0) = FireModeClass(1) = SuperShockBeamFire
 	MaxAmmo = 1;
 	InitialAmmo = 1;
 	AmmoPickupAmount = 0;

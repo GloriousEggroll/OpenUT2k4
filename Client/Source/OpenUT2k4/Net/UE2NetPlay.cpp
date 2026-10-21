@@ -679,6 +679,13 @@ void FUE2NetPlay::SetOwnPawnChannel(int32 Channel, const TCHAR* Why)
 		DestroyLocalPawn(false);
 	}
 	OwnPawnChannel = Channel;
+	// the body the world layer showed for this pawn while it was not ours (a guided Redeemer warhead was): we are it again
+	FUE2NetWorld* NW = FUE2NetWorld::Get();
+	const FUE2NetActor* A = Connection->GetActors().Find(Channel);
+	if (NW && A && !DrivingChannel && NW->GetNativeActor(Channel))
+	{
+		NW->ActorClosed(*A);
+	}
 	TrySpawnLocalPawn();
 }
 
@@ -1661,21 +1668,46 @@ void FUE2NetPlay::ClassifyFloor(FMove& M) const
 void FUE2NetPlay::TickFireEffects()
 {
 	// UE2 clients play their own shots (Weapon.ClientStartFire -> the fire mode's ModeDoFire effects) while the server
-	// fires them: sound, muzzle flash and the view animation at the fire rate while the button is held
+	// fires them: sound, muzzle flash and the view animation at the fire rate while the button is held; charged modes
+	// on release (bFireOnRelease), the shield, beams and laser sights while held (AArenaWeapon::SetNetFireHeld)
 	AUE2NetLocalPawn* Pawn = LocalPawn.Get();
 	AArenaWeapon* W = Pawn ? Pawn->GetCurrentWeapon() : nullptr;
 	const FWeaponInfo* Info = Weapons.Find(CurrentWeaponChannel);
-	if (!W || !Info || Info->Native != W->GetClass())
+	if (!Info || (W && Info->Native != W->GetClass()))
+	{
+		W = nullptr;
+	}
+	if (AArenaWeapon* Old = NetFireWeapon.Get(); Old && Old != W)
+	{
+		// switched away (or died): no release shot
+		Old->SetNetFireHeld(0, false, false);
+		Old->SetNetFireHeld(1, false, false);
+	}
+	NetFireWeapon = W;
+	if (!W)
 	{
 		return;
 	}
 	const float Now = float(World->GetTimeSeconds());
+	const bool bAmmo = Info->Ammo > 0 || W->bInfiniteAmmo;
 	for (uint8 Mode = 0; Mode < 2; ++Mode)
 	{
-		if (bFireHeld[Mode] && Now >= NextFireEffect[Mode] && (Info->Ammo > 0 || W->bInfiniteAmmo))
+		const float Refire = FMath::Max(0.05f, W->FireModes[Mode].RefireTime);
+		// a charge keeps going when it took the last ammo (bio alt), the release fires it
+		const bool bHold = bFireHeld[Mode] && (bAmmo || (W->IsNetFireHeld(Mode) && W->IsChargeMode(Mode)));
+		bool bShot = W->SetNetFireHeld(Mode, bHold, Now >= NextFireEffect[Mode]);
+		if (!bShot && bFireHeld[Mode] && bAmmo && W->IsNetAutoFire(Mode) && Now >= NextFireEffect[Mode])
 		{
 			W->PlayNetFireEffects(Mode);
-			NextFireEffect[Mode] = Now + FMath::Max(0.05f, W->FireModes[Mode].RefireTime);
+			bShot = true;
+		}
+		if (bShot)
+		{
+			NextFireEffect[Mode] = Now + Refire;
+			if (W->bSharedFireMode)
+			{
+				NextFireEffect[1 - Mode] = NextFireEffect[Mode];
+			}
 		}
 	}
 }

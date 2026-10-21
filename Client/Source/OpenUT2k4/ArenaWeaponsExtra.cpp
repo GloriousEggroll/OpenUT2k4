@@ -104,11 +104,19 @@ namespace ArenaWeaponsExtraLocal
 		if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
 		{
 			S->SetBeam(Start, End);
+			S->SetComponentTickEnabled(true);
 		}
 		else
 		{
 			ArenaFX::OrientBeamMesh(Beam, Start, End, MeshWidth);
 		}
+	}
+
+	/** Hides a beam made by MakeBeam (a sprite beam without a lifetime would show itself again on its next tick). */
+	void HideBeam(UStaticMeshComponent* Beam)
+	{
+		Beam->SetVisibility(false);
+		Beam->SetComponentTickEnabled(false);
 	}
 
 	AArenaBotController* BotOf(const AArenaCharacter* C)
@@ -317,7 +325,7 @@ void AWeap_OrbitalDesignator::StopPainting()
 	bValidMark = false;
 	if (PaintBeam)
 	{
-		PaintBeam->SetVisibility(false);
+		HideBeam(PaintBeam);
 	}
 }
 
@@ -353,6 +361,38 @@ void AWeap_OrbitalDesignator::Tick(float DeltaSeconds)
 			return;
 		}
 		PaintTick(DeltaSeconds);
+	}
+	else if (bNetFireHeld[0] && PaintBeam && bEquipped && ArenaOwner)
+	{
+		// net play: the beam from our weapon to where our view hits (as PaintTick, EndEffect); the server paints
+		FVector Eye, Dir;
+		GetAim(Eye, Dir);
+		const FVector Start = Eye + Dir * ArenaOwner->GetSimpleCollisionRadius();
+		const FVector End = Start + Dir * FireModes[0].Range;
+		FHitResult Hit;
+		PaintBeam->SetVisibility(true);
+		PlaceBeam(PaintBeam, GetMuzzleLocation(), WeaponTrace(Start, End, Hit) ? FVector(Hit.ImpactPoint) : End, 1.5f);
+	}
+}
+
+void AWeap_OrbitalDesignator::NetFireHeldChanged(uint8 Mode, bool bHeld)
+{
+	// net play: PainterBeamEffect of a first-person shooter while primary is held, and PainterFire's start sound
+	if (Mode != 0)
+	{
+		return;
+	}
+	if (bHeld)
+	{
+		if (!PaintBeam)
+		{
+			PaintBeam = MakeBeam(this, FireModes[0].Color, TEXT("XWeapons.PainterBeamEffect"));
+		}
+		PlayFireSound(0, GetMuzzleLocation(), 0.5f, 1.f);
+	}
+	else if (PaintBeam)
+	{
+		HideBeam(PaintBeam);
 	}
 }
 
@@ -1041,10 +1081,29 @@ void AWeap_CrawlerLayer::StopFire(uint8 Mode)
 		bTargeting = false;
 		if (TargetBeam)
 		{
-			TargetBeam->SetVisibility(false);
+			HideBeam(TargetBeam);
 		}
 	}
 	Super::StopFire(Mode);
+}
+
+void AWeap_CrawlerLayer::NetFireHeldChanged(uint8 Mode, bool bHeld)
+{
+	// net play: the target laser while alt fire is held (ONSMineLayerTargetBeamEffect of a first-person shooter, from our
+	// weapon along our view); the server moves the mines
+	if (Mode != 1)
+	{
+		return;
+	}
+	bTargeting = bHeld && bEquipped;
+	if (bTargeting && !TargetBeam)
+	{
+		TargetBeam = MakeBeam(this, FireModes[1].Color, TEXT("Onslaught.ONSMineLayerTargetBeamEffect"));
+	}
+	if (!bTargeting && TargetBeam)
+	{
+		HideBeam(TargetBeam);
+	}
 }
 
 void AWeap_CrawlerLayer::Unequip()
@@ -1052,7 +1111,7 @@ void AWeap_CrawlerLayer::Unequip()
 	bTargeting = false;
 	if (TargetBeam)
 	{
-		TargetBeam->SetVisibility(false);
+		HideBeam(TargetBeam);
 	}
 	Super::Unequip();
 }

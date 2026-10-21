@@ -19,6 +19,8 @@
 #include "../ArenaRuntimeContent.h"
 #include "../ArenaTypes.h"
 #include "../ArenaUE2World.h"
+#include "../ArenaWeapon.h"
+#include "../ArenaWeaponActors.h"
 #include "../UScript/UScriptCore.h"
 #include "../UScript/UScriptRuntime.h"
 #include "../UScript/UScriptWorld.h"
@@ -514,9 +516,10 @@ FUE2NetWorld::EKind FUE2NetWorld::Classify(const FEntity& E) const
 	{
 		return EKind::Objective;
 	}
-	if (Has(E, TEXT("shockbeameffect")) || Has(E, TEXT("newlightningbolt")) || Has(E, TEXT("shockcombo")))
+	if (Has(E, TEXT("shockbeameffect")) || Has(E, TEXT("newlightningbolt")) || Has(E, TEXT("shockcombo")) || Has(E, TEXT("sniperwallhiteffect"))
+		|| Has(E, TEXT("redeemerexplosion")) || Has(E, TEXT("smallredeemerexplosion")))
 	{
-		return EKind::Beam;
+		return EKind::Beam; // shot effects (beams, hit effects, blasts) spawned once by the server
 	}
 	// known engine / game infrastructure without anything to show (inventory is replicated to its owner only)
 	static const TCHAR* Known[] = { TEXT("levelinfo"), TEXT("inventory"), TEXT("voicechatreplicationinfo"), TEXT("playerchatmanager"),
@@ -1082,21 +1085,28 @@ void FUE2NetWorld::ApplyAttachment(FEntity& E, const FUE2NetActor& A, const TArr
 		E.PawnChannel = PawnChannel;
 	}
 	AUE2NetPawn* Pawn = PawnForChannel(E.PawnChannel);
-	if (!Pawn)
+	// our own weapon's attachment: the server sends it no FlashCount (WeaponAttachment replicates it !bNetOwner, the
+	// owner plays its shots itself) but the bullet hits below
+	const FUE2NetPlay* Play = FUE2NetPlay::Get();
+	AActor* OwnPawn = Play && Play->IsOwnPawnChannel(E.PawnChannel) ? Play->GetLocalPawn() : nullptr;
+	if (!Pawn && !OwnPawn)
 	{
 		return; // the pawn may open later: Tick retries
 	}
-	Pawn->SetNetWeapon(E.ClassPath);
 	auto Changes = [&](const TCHAR* Key) { return bInitial || Changed.Contains(Key); };
-	const uint8 Mode = uint8(GetInt(A, TEXT("FiringMode")));
-	if (Changes(TEXT("FlashCount")))
+	if (Pawn)
 	{
-		const int32 Flash = GetInt(A, TEXT("FlashCount"));
-		if (E.LastFlashCount != INDEX_NONE && Flash != E.LastFlashCount && Flash != 0)
+		Pawn->SetNetWeapon(E.ClassPath);
+		const uint8 Mode = uint8(GetInt(A, TEXT("FiringMode")));
+		if (Changes(TEXT("FlashCount")))
 		{
-			Pawn->NetFired(Mode);
+			const int32 Flash = GetInt(A, TEXT("FlashCount"));
+			if (E.LastFlashCount != INDEX_NONE && Flash != E.LastFlashCount && Flash != 0)
+			{
+				Pawn->NetFired(Mode);
+			}
+			E.LastFlashCount = Flash;
 		}
-		E.LastFlashCount = Flash;
 	}
 	// instant hits of the bullet weapons (xWeaponAttachment.mHitLocation / SpawnHitCount); beam weapons replicate
 	// their own beam effect actors (Beam kind)
@@ -1111,9 +1121,14 @@ void FUE2NetWorld::ApplyAttachment(FEntity& E, const FUE2NetActor& A, const TArr
 			const FVector End = GetVec(A, TEXT("mHitLocation")) * S;
 			if (W && !End.IsNearlyZero())
 			{
-				const FVector Start = Pawn->GetMuzzleLocation();
+				const FVector Start = Pawn ? Pawn->GetMuzzleLocation() : OwnPawn->GetActorLocation();
 				const FVector Normal = (Start - End).GetSafeNormal();
-				ArenaFX::SpawnBeam(W, Start, End, FLinearColor(1.f, 0.85f, 0.5f), 1.5f, 0.06f, TEXT("Tracer.Bullet"));
+				if (Pawn)
+				{
+					ArenaFX::SpawnBeam(W, Start, End, FLinearColor(1.f, 0.85f, 0.5f), 1.5f, 0.06f, TEXT("Tracer.Bullet"));
+				}
+				// our own shots: the hit effect only, the local weapon drew the tracer along our view when it fired
+				// (AArenaWeapon::PlayNetFireEffects)
 				ArenaFX::SpawnImpact(W, End, Normal, FLinearColor(1.f, 0.8f, 0.4f), 8.f, TEXT("Impact.Bullet"));
 			}
 		}
@@ -1131,24 +1146,57 @@ void FUE2NetWorld::SpawnBeam(FEntity& E, const FUE2NetActor& A)
 		ArenaFX::SpawnExplosion(W, Start, FLinearColor(0.6f, 0.3f, 1.f), 250.f, TEXT("Explosion.ShockCombo"));
 		return;
 	}
+	if (W && Has(E, TEXT("smallredeemerexplosion")))
+	{
+		// RedeemerProjectile / RedeemerWarhead shot down or blown up at the launcher: SmallRedeemerExplosion
+		ArenaFX::SpawnExplosion(W, Start, FLinearColor(1.f, 0.5f, 0.2f), 600.f, TEXT("Explosion.Rocket"));
+		return;
+	}
+	if (W && Has(E, TEXT("redeemerexplosion")))
+	{
+		// RedeemerProjectile.BlowUp: ExplosionEffectClass; the nuke our own warhead shell shows (stock emitter, else a
+		// procedural blast)
+		if (!AArenaWarheadShell::SpawnNukeEffects(W, Start, FVector::ZeroVector))
+		{
+			ArenaFX::SpawnExplosion(W, Start, FLinearColor(1.f, 0.55f, 0.2f), 1200.f, TEXT("Explosion.Rocket"));
+		}
+		return;
+	}
+	if (W && Has(E, TEXT("sniperwallhiteffect")))
+	{
+		// ClassicSniperFire.DoTrace: SniperWallHitEffect at the hit, turned along -X of the shot
+		const FRotator Rot(A.SpawnRotation.X * 360.f / 65536.f, A.SpawnRotation.Y * 360.f / 65536.f, 0.f);
+		ArenaFX::SpawnImpact(W, Start, Rot.Vector(), FLinearColor(1.f, 0.8f, 0.4f), 12.f, TEXT("Impact.Bullet"));
+		return;
+	}
 	if (!W || End.IsNearlyZero())
 	{
 		return;
 	}
 	const FVector Normal = GetVec(A, TEXT("HitNormal"), (Start - End).GetSafeNormal());
+	// our own shock beams leave our first-person weapon (ShockBeamEffect of a first-person Instigator starts at its
+	// weapon's GetEffectStart); the server starts them at our eye. NewLightningBolt already starts at the server's
+	// first-person effect location (SniperFire ArcEnd)
+	FVector From = Start;
+	const FUE2NetPlay* Play = FUE2NetPlay::Get();
+	const AUE2NetLocalPawn* Own = Play && Play->IsOwnPawnChannel(GetRef(A, TEXT("Instigator"))) ? Play->GetLocalPawn() : nullptr;
+	if (AArenaWeapon* Weapon = Own ? Own->GetCurrentWeapon() : nullptr)
+	{
+		From = Weapon->GetEffectStart();
+	}
 	if (Has(E, TEXT("newlightningbolt")))
 	{
-		ArenaFX::SpawnBeam(W, Start, End, FLinearColor(0.5f, 0.6f, 1.f), 3.f, 0.4f, TEXT("Beam.Lightning"));
+		ArenaFX::SpawnBeam(W, From, End, FLinearColor(0.5f, 0.6f, 1.f), 3.f, 0.4f, TEXT("Beam.Lightning"));
 		ArenaFX::SpawnImpact(W, End, Normal, FLinearColor(0.5f, 0.6f, 1.f), 20.f, TEXT("Impact.Lightning"));
 	}
 	else if (E.ClassName.Contains(TEXT("SuperShock")) || E.ClassName.Contains(TEXT("Insta")))
 	{
-		ArenaFX::SpawnBeam(W, Start, End, FLinearColor(1.f, 0.2f, 0.2f), 4.f, 0.3f, TEXT("Beam.Insta"));
+		ArenaFX::SpawnBeam(W, From, End, FLinearColor(1.f, 0.2f, 0.2f), 4.f, 0.3f, TEXT("Beam.Insta"));
 		ArenaFX::SpawnImpact(W, End, Normal, FLinearColor(1.f, 0.2f, 0.2f), 25.f, TEXT("Impact.Insta"));
 	}
 	else
 	{
-		ArenaFX::SpawnBeam(W, Start, End, FLinearColor(0.6f, 0.3f, 1.f), 4.f, 0.3f, TEXT("Beam.Shock"));
+		ArenaFX::SpawnBeam(W, From, End, FLinearColor(0.6f, 0.3f, 1.f), 4.f, 0.3f, TEXT("Beam.Shock"));
 		ArenaFX::SpawnImpact(W, End, Normal, FLinearColor(0.6f, 0.3f, 1.f), 25.f, TEXT("Impact.ShockBeam"));
 	}
 }

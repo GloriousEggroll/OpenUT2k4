@@ -562,6 +562,22 @@ void AArenaWeapon::Tick(float DeltaSeconds)
 		}
 	}
 
+	// net play: the beam while the server fires it (LinkBeamEffect.Tick of a first-person shooter: from our weapon along
+	// our view)
+	for (uint8 M = 0; M < 2; ++M)
+	{
+		if (bNetFireHeld[M] && FireModes[M].FireType == EArenaFireType::Beam)
+		{
+			bAnyBeam = true;
+			UpdateLiveBeam(M);
+			if (Now - LastBeamSoundTime > 0.45f)
+			{
+				LastBeamSoundTime = Now;
+				PlayFireSound(M, GetMuzzleLocation(), 0.7f, FMath::FRandRange(0.95f, 1.05f));
+			}
+		}
+	}
+
 	if (!bAnyBeam && bBeamActive)
 	{
 		HideLiveBeam();
@@ -627,6 +643,89 @@ void AArenaWeapon::PlayFireEffects(uint8 Mode, float ChargeAlpha)
 
 	const float ShotDamage = (FM.FireType == EArenaFireType::Projectile ? FM.Projectile.Damage : FM.Damage) * FMath::Max(1, FM.NumShots);
 	AddRecoil(FMath::Clamp(ShotDamage / 18.f, 0.6f, 7.f) * (0.7f + 0.3f * ChargeAlpha));
+}
+
+void AArenaWeapon::PlayNetFireEffects(uint8 Mode)
+{
+	if (Mode > 1)
+	{
+		return;
+	}
+	PlayFireEffects(Mode, 0.f);
+	const FArenaFireMode& FM = FireModes[Mode];
+	UWorld* World = GetWorld();
+	if (!bNetOwnerTracers || FM.FireType != EArenaFireType::Hitscan || !World)
+	{
+		return;
+	}
+	// AssaultAttachment / MinigunAttachment.UpdateTracer of a first-person shooter: the tracer leaves along our own view
+	// (cosmetic only, the server's trace decides the hit); its hit effect comes from the server's mHitLocation
+	// (Net/UE2NetWorld.cpp, ApplyAttachment)
+	FVector Start, Dir;
+	GetAim(Start, Dir);
+	const float Spread = GetHitscanSpread(Mode);
+	if (Spread > 0.f)
+	{
+		Dir = (Dir + FMath::VRand() * FMath::FRand() * Spread).GetSafeNormal();
+	}
+	else if (FM.Spread > 0.f)
+	{
+		Dir = FMath::VRandCone(Dir, FMath::DegreesToRadians(FM.Spread));
+	}
+	const FVector End = Start + Dir * FM.Range;
+	FHitResult Hit;
+	const bool bHit = WeaponTrace(Start, End, Hit);
+	ArenaFX::SpawnBeam(World, GetMuzzleLocation(), bHit ? FVector(Hit.ImpactPoint) : End, FM.Color, FM.BeamWidth,
+		FMath::Clamp(FM.BeamWidth * 0.06f, 0.05f, 0.6f), GetArtBeamStyle(Mode));
+}
+
+bool AArenaWeapon::IsNetAutoFire(uint8 Mode) const
+{
+	return Mode < 2 && (FireModes[Mode].FireType == EArenaFireType::Hitscan || FireModes[Mode].FireType == EArenaFireType::Projectile)
+		&& !IsChargeMode(Mode);
+}
+
+bool AArenaWeapon::SetNetFireHeld(uint8 Mode, bool bHeld, bool bReady)
+{
+	if (Mode > 1 || bNetFireHeld[Mode] == bHeld)
+	{
+		return false;
+	}
+	bNetFireHeld[Mode] = bHeld;
+	const FArenaFireMode& FM = FireModes[Mode];
+	NetFireHeldChanged(Mode, bHeld);
+	if (FM.FireType == EArenaFireType::Zoom)
+	{
+		return false; // a zoom or a laser sight: no shot (UE2 SniperZoom / ONSMineLayerAltFire)
+	}
+	if (bHeld)
+	{
+		// as StartFire: WeaponFire.PlayStartHold (the charge / hold animation), the shield's start sound
+		ChargeStart[Mode] = GetWorldTime();
+		if (ViewMesh && Art && Art->HoldAnim[Mode] && bViewShown && PlayViewAnim(Art->HoldAnim[Mode], Art->bLoopHold[Mode]))
+		{
+			HoldAnimMode = Mode;
+			ViewAnimEndTime = TNumericLimits<float>::Max();
+		}
+		if (FM.FireType == EArenaFireType::Shield)
+		{
+			PlayFireSound(Mode, GetMuzzleLocation(), 0.6f, 1.3f);
+		}
+		return false;
+	}
+	if (HoldAnimMode == Mode)
+	{
+		HoldAnimMode = 255;
+		ViewAnimEndTime = GetWorldTime();
+	}
+	if (!IsChargeMode(Mode) || !bReady || !bEquipped)
+	{
+		return false;
+	}
+	// bFireOnRelease (shield gun, bio and assault rifle alt, rocket load): the shot's effects when the button comes up
+	const float Alpha = FM.MaxChargeTime > 0.f ? FMath::Clamp((GetWorldTime() - ChargeStart[Mode]) / FM.MaxChargeTime, 0.f, 1.f) : 1.f;
+	PlayFireEffects(Mode, Alpha);
+	return true;
 }
 
 void AArenaWeapon::AddRecoil(float Amount)
@@ -1075,6 +1174,7 @@ void AArenaWeapon::UpdateLiveBeam(uint8 Mode)
 				C->SetIntensityScale(0.85f + 0.15f * FMath::Sin(Now * 40.f));
 				C->SetBeam(Muzzle, HitPoint);
 				C->SetVisibility(true);
+				C->SetComponentTickEnabled(true);
 			}
 		}
 		if (Now >= NextLiveBeamFlash)
@@ -1136,7 +1236,9 @@ void AArenaWeapon::HideLiveBeam()
 	{
 		if (C)
 		{
+			// a sprite without a lifetime shows itself again on its next tick (UArenaSpriteComponent::UpdateSprite)
 			C->SetVisibility(false);
+			C->SetComponentTickEnabled(false);
 		}
 	}
 	bBeamActive = false;

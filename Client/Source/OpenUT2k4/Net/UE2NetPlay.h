@@ -285,6 +285,8 @@ private:
 	double LastRestartRequest = 0.0;
 	bool bFireHeld[2] = { false, false };
 	float NextFireEffect[2] = { 0.f, 0.f };
+	/** The weapon whose hold effects TickFireEffects drives (AArenaWeapon::SetNetFireHeld). */
+	TWeakObjectPtr<class AArenaWeapon> NetFireWeapon;
 	/** NewNet (Net/UE2NetNewNet.h): a held fire whose NewNet start fire is not sent yet (the weapon is not ready). */
 	bool bNewNetFirePending[2] = { false, false };
 	TUniquePtr<class FUE2NetNewNet> NewNet;
