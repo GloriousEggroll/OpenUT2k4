@@ -18,11 +18,14 @@ namespace UE2NetPackageMapLocal
 {
 	constexpr uint32 PackageTag = 0x9E2A83C1;
 
-	/** Value of KEY=VALUE in a control message parameter list (case-insensitive key; empty if missing). */
+	/**
+	 * Value of KEY=VALUE in a control message parameter list (case-insensitive key; empty if missing). Up to the next
+	 * space only, as UE2's Parse: package and map names may hold ',' and ')' (FR-(00)_It'sAlive!!!_B9).
+	 */
 	FString ParseValue(const FString& Params, const TCHAR* Key)
 	{
 		FString Value;
-		FParse::Value(*Params, Key, Value);
+		FParse::Value(*Params, Key, Value, false);
 		return Value;
 	}
 
@@ -30,7 +33,7 @@ namespace UE2NetPackageMapLocal
 	FString ParseValueQuoted(const FString& Params, const TCHAR* Key, bool& bPresent)
 	{
 		FString Value;
-		bPresent = FParse::Value(*Params, Key, Value);
+		bPresent = FParse::Value(*Params, Key, Value, false);
 		return Value.TrimQuotes();
 	}
 }

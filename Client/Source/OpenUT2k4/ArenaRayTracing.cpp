@@ -64,6 +64,11 @@ namespace
 		// Hit lighting for GI too (1) looked the same on our test maps at up to 1.6x the GPU time (DM-Deck17
 		// 11.5 ms against 7.3 ms at 1080p on an RX 9070 XT), so GI keeps the surface cache.
 		{ TEXT("r.Lumen.HardwareRayTracing.LightingMode"), TEXT("2") },
+		// Direct light at those hits comes from the surface cache. Evaluated per hit, every map light in range traced
+		// its own shadow ray there (all of them cast shadows here), without MegaLights' fixed cost: where many lights
+		// overlap, e.g. FR-Structured at 4K FSR Quality, a spot the players fight in took 40 ms GPU (26 ms of it
+		// reflection hit lighting) against 15.6 ms (1.6 ms) with the surface cache.
+		{ TEXT("r.Lumen.HardwareRayTracing.HitLighting.DirectLighting"), TEXT("0") },
 		// Reflections: trace rougher surfaces, two bounces between mirrors.
 		{ TEXT("r.Lumen.Reflections.MaxRoughnessToTrace"), TEXT("0.6") },
 		{ TEXT("r.Lumen.Reflections.MaxBounces"), TEXT("2") },

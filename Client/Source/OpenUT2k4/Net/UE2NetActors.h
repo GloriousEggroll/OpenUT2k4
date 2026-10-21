@@ -122,6 +122,7 @@ protected:
 	 */
 	uint8 SimPhysics = 1;
 	uint8 ViewPitchByte = 0;
+	float SmoothPitch = 0.f;
 	float SmoothYaw = 0.f;
 	bool bNetDead = false;
 	double DeadTime = 0.0;

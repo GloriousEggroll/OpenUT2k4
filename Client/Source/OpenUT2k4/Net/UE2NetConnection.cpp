@@ -835,8 +835,9 @@ void FUE2NetConnection::ReceivedText(const FString& Text)
 	}
 	else if (FParse::Command(&Str, TEXT("WELCOME")))
 	{
-		FParse::Value(Str, TEXT("LEVEL="), MapName);
-		FParse::Value(Str, TEXT("GAME="), GameClass);
+		// map names may hold ',' and ')' (see UE2NetPackageMap.cpp ParseValue)
+		FParse::Value(Str, TEXT("LEVEL="), MapName, false);
+		FParse::Value(Str, TEXT("GAME="), GameClass, false);
 		PackageMap.MatchLocalPackages();
 		const TArray<FString> Missing = PackageMap.GetMissing();
 		const TArray<FString> GenDiff = PackageMap.GetGenerationDifferences();

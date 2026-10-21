@@ -754,8 +754,9 @@ implements `IArenaUE2Actor` (`InitFromUE2`, `PostInitUE2`, `Trigger` / `UnTrigge
   are slowed by FluidFriction in water and have no other speed cap; rockets and other PHYS_Projectile shots have
   neither. GroundFriction applies when walking, FluidFriction
   when swimming (and falling in water). ZoneVelocity is added to a pawn's move, not its velocity (walking: the
-  horizontal part), as in UE2 physWalking / physFalling / physSwimming. bMoveProjectiles adds it once to projectiles
-  entering (PhysicsVolume.Touch) and moves thrown flags / balls. bBounceVelocity makes a landing pawn bounce off
+  horizontal part), as in UE2 physWalking / physFalling. Swimming (UE2 physSwimming) adds ZoneVelocity * 25 * dt
+  to a player's velocity each move (a bot's only in a current over 300 UU/s). bMoveProjectiles adds it once to
+  projectiles entering (PhysicsVolume.Touch) and moves thrown flags / balls. bBounceVelocity makes a landing pawn bounce off
   with ZoneVelocity. Vehicles (Karma bodies) fall with the full Gravity vector of their volume times their
   KActorGravScale, sideways and upward parts included (a flown craft's lift cancels only the vertical part), and
   ZoneVelocity carries them like pawns. KExtraLinearDamping / KExtraAngularDamping slow them inside a volume (water

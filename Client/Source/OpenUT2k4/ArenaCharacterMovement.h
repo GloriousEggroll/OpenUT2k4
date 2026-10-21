@@ -18,8 +18,9 @@
  *    speed like UE2 Pawn.DoJump;
  *  - UE2 PhysicsVolume (AArenaPhysicsVolume): the full Gravity vector while falling (sideways / upward tubes),
  *    TerminalVelocity (falling speed limit), FluidFriction (swimming, and falling in water), GroundFriction
- *    (walking), ZoneVelocity added to the move (not to Velocity; walking: its horizontal part) and bBounceVelocity
- *    (landing inside bounces off with ZoneVelocity). A pawn can not stand in a volume whose Gravity.Z points up.
+ *    (walking), ZoneVelocity added to the move (not to Velocity; walking: its horizontal part; swimming: UE2's
+ *    ZoneVelocity * 25 * dt, to Velocity) and bBounceVelocity (landing inside bounces off with ZoneVelocity). A pawn
+ *    can not stand in a volume whose Gravity.Z points up.
  * Before each physics step the owner gets AArenaCharacter::PreMovementUpdate (UE2 PlayerController.PlayerMove /
  * ProcessMove: double-click dodges, jumps, crouch).
  */

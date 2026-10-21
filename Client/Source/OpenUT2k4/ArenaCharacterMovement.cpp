@@ -352,12 +352,12 @@ void UArenaCharacterMovement::ApplyZoneVelocity(float DeltaTime)
 {
 	const AArenaPhysicsVolume* V = Cast<AArenaPhysicsVolume>(GetPhysicsVolume());
 	if (!V || V->ZoneVelocity.IsNearlyZero() || V->bBounceVelocity || DeltaTime <= 0.f || !HasValidData()
-		|| !(IsMovingOnGround() || IsFalling() || IsSwimming()) || (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy))
+		|| !(IsMovingOnGround() || IsFalling()) || (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy))
 	{
 		return;
 	}
-	// UE2 physWalking / physFalling / physSwimming move by (Velocity + ZoneVelocity) * dt; Velocity itself is
-	// unchanged (so no friction, speed clamp or air control acts on the zone's part)
+	// UE2 physWalking / physFalling move by (Velocity + ZoneVelocity) * dt; Velocity itself is unchanged (so no
+	// friction, speed clamp or air control acts on the zone's part). Swimming: CalcVelocity.
 	FVector Delta = V->ZoneVelocity * DeltaTime;
 	if (IsMovingOnGround())
 	{
@@ -474,6 +474,14 @@ float UArenaCharacterMovement::GetMaxSpeed() const
 
 bool UArenaCharacterMovement::StepUp(const FVector& GravDir, const FVector& Delta, const FHitResult& InHit, FStepDownResult* OutStepDownResult)
 {
+	// UE2 APawn::stepUp steps only against a vertical barrier (|Hit.Normal.Z| < 0.08); a steep face that is not a floor
+	// is slid along as a wall. The surface's own normal: a capsule against a step's edge gets a slanted Normal where
+	// UE2's cylinder got a level one. Stepping up such a face here put us a full step above a 3369 server's pawn.
+	const float SurfaceZ = FVector::DotProduct(InHit.ImpactNormal, -GravDir);
+	if (IsMovingOnGround() && SurfaceZ >= 0.08f && !IsWalkable(InHit))
+	{
+		return false;
+	}
 	if (Super::StepUp(GravDir, Delta, InHit, OutStepDownResult))
 	{
 		return true;
@@ -529,6 +537,14 @@ bool UArenaCharacterMovement::StepUp(const FVector& GravDir, const FVector& Delt
 	const FVector DropStart = UpdatedComponent->GetComponentLocation();
 	FHitResult DownHit(1.f);
 	MoveUpdatedComponent(GravDir * (MaxStepHeight + 2.f * MAX_FLOOR_DIST), Rot, true, &DownHit);
+	if (DownHit.IsValidBlockingHit() && !IsWalkable(DownHit)
+		&& FVector::DotProduct(UpdatedComponent->GetComponentLocation() - OldLocation, -GravDir) < MAX_FLOOR_DIST)
+	{
+		// a wall beside a steep face (a corner): the drop lands on the face back at the start's height, where a 3369
+		// server's pawn stays on its floor; undoing the drop here put us a full step above it
+		ScopedStep.RevertMove();
+		return false;
+	}
 	++NumUE2StepUps;
 	if (!DownHit.IsValidBlockingHit() || !IsWalkable(DownHit))
 	{
@@ -589,10 +605,11 @@ void UArenaCharacterMovement::CalcVelocity(float DeltaTime, float Friction, bool
 		return;
 	}
 
-	// UE2 APawn::calcVelocity (walking: bBrake; swimming: bFluid with the volume's FluidFriction).
+	// UE2 APawn::calcVelocity (walking: bBrake; swimming: bFluid with half the volume's FluidFriction, which physSwimming
+	// passes for both the turn and the fluid drag; the full value turned the pawn twice as fast as a 3369 server's).
 	if (IsSwimming())
 	{
-		Friction = GetPhysicsVolume() ? GetPhysicsVolume()->FluidFriction : Friction;
+		Friction = GetPhysicsVolume() ? 0.5f * GetPhysicsVolume()->FluidFriction : Friction;
 	}
 	else
 	{
@@ -656,6 +673,17 @@ void UArenaCharacterMovement::CalcVelocity(float DeltaTime, float Friction, bool
 	}
 	Velocity += Acceleration * DeltaTime;
 	Velocity = Velocity.GetClampedToMaxSize(MaxSpeed);
+
+	// UE2 physSwimming (read from the 3369 Engine.dll): a player's pawn (any pawn in a current over 300 UU/s) moves by
+	// (Velocity + ZoneVelocity * 25 * dt) * dt and Velocity becomes that move, so the current builds up in Velocity
+	// until fluid friction holds it (DM-Konosus-2k4's 35 UU/s water: a correction every move while swimming). The
+	// engine's PhysSwimming moves by Velocity * dt and also sets Velocity from the move, so the current goes in here.
+	const AArenaPhysicsVolume* Vol = bFluid ? Cast<AArenaPhysicsVolume>(GetPhysicsVolume()) : nullptr;
+	if (Vol && Vol->bWaterVolume && !Vol->ZoneVelocity.IsNearlyZero()
+		&& (CharacterOwner->IsPlayerControlled() || Vol->ZoneVelocity.SizeSquared() > FMath::Square(300.f * ArenaUE2World::Scale)))
+	{
+		Velocity += Vol->ZoneVelocity * (25.f * DeltaTime);
+	}
 }
 
 bool UArenaCharacterMovement::CanCrouchInCurrentState() const

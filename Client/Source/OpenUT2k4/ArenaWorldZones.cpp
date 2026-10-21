@@ -2,6 +2,7 @@
 #include "OpenUT2k4.h"
 #include "ArenaCharacter.h"
 #include "ArenaCharacterMovement.h"
+#include "ArenaArtVehicles.h"
 #include "ArenaDamage.h"
 #include "ArenaMover.h"
 #include "ArenaProjectile.h"
@@ -9,6 +10,7 @@
 #include "Camera/CameraActor.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Misc/CommandLine.h"
+#include "Components/AudioComponent.h"
 #include "Components/BrushComponent.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -45,6 +47,61 @@ namespace ArenaWorldZonesLocal
 			return C->GetCharacterMovement();
 		}
 		return A ? A->FindComponentByClass<UProjectileMovementComponent>() : nullptr;
+	}
+
+	/** Per actor: its last water splash (UE2 Pawn.SplashTime, and the sound in its SLOT_Interact). */
+	struct FSplash
+	{
+		double Time = -1.0;
+		TWeakObjectPtr<UAudioComponent> Audio;
+	};
+	TMap<TWeakObjectPtr<AActor>, FSplash> Splashes;
+
+	/**
+	 * UE2 PhysicsVolume.PlayEntrySplash / PlayExitSplash: Other.PlaySound(Sound, SLOT_Interact, Other.TransientSoundVolume)
+	 * if Other.CanSplash(). Pawns splash only when moving up or down faster than 100 UU/s, at most every 0.15 s
+	 * (Pawn.CanSplash; it also wants PHYS_Falling, but our movement is already swimming when the entry is reported):
+	 * a pawn swimming at the surface, or moved there by a correction, crosses it again and again, and every crossing
+	 * started another splash on top of the others. Projectiles always splash (bReadyToSplash). The sound plays at
+	 * Actor.TransientSoundVolume 0.3 with a distance falloff (not at full volume map wide), and replaces the actor's
+	 * last splash still playing (one sound per slot).
+	 */
+	void PlaySplash(AActor* Other, USoundBase* Sound)
+	{
+		UWorld* World = Other ? Other->GetWorld() : nullptr;
+		if (!World || !Sound)
+		{
+			return;
+		}
+		if (Splashes.Num() > 64)
+		{
+			for (auto It = Splashes.CreateIterator(); It; ++It)
+			{
+				if (!It->Key.IsValid())
+				{
+					It.RemoveCurrent();
+				}
+			}
+		}
+		FSplash& Last = Splashes.FindOrAdd(Other);
+		const double Now = World->GetTimeSeconds();
+		if (Cast<APawn>(Other))
+		{
+			const ACharacter* C = Cast<ACharacter>(Other);
+			const UCharacterMovementComponent* CM = C ? C->GetCharacterMovement() : nullptr;
+			if ((CM && CM->IsMovingOnGround()) || FMath::Abs(Other->GetVelocity().Z) <= 100.f * ArenaUE2World::Scale
+				|| (Last.Time >= 0.0 && Now >= Last.Time && Now - Last.Time <= 0.15))
+			{
+				return;
+			}
+		}
+		Last.Time = Now;
+		if (UAudioComponent* Playing = Last.Audio.Get())
+		{
+			Playing->Stop();
+		}
+		Last.Audio = UGameplayStatics::SpawnSoundAtLocation(Other, Sound, Other->GetActorLocation(), FRotator::ZeroRotator, 0.3f, 1.f, 0.f,
+			ArenaArtVehicles::GetAttenuation());
 	}
 }
 
@@ -372,7 +429,7 @@ void AArenaPhysicsVolume::ActorEnteredVolume(AActor* Other)
 	APawn* Pawn = Cast<APawn>(Other);
 	if (EntrySound && (Pawn || Other->IsA<AArenaProjectile>()))
 	{
-		UGameplayStatics::PlaySoundAtLocation(this, EntrySound, Other->GetActorLocation());
+		ArenaWorldZonesLocal::PlaySplash(Other, EntrySound);
 	}
 	if (bDestructive && Other->IsA<AArenaProjectile>())
 	{
@@ -409,7 +466,7 @@ void AArenaPhysicsVolume::ActorLeavingVolume(AActor* Other)
 	Super::ActorLeavingVolume(Other);
 	if (Other && ExitSound && Cast<APawn>(Other) && GetWorld() && GetWorld()->HasBegunPlay())
 	{
-		UGameplayStatics::PlaySoundAtLocation(this, ExitSound, Other->GetActorLocation());
+		ArenaWorldZonesLocal::PlaySplash(Other, ExitSound);
 	}
 }
 

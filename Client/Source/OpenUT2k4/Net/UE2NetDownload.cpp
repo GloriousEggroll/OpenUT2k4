@@ -528,7 +528,8 @@ bool FUE2NetDownloader::Start()
 		FString Class, Params;
 		int32 Compression = 0;
 		FParse::Value(*Line, TEXT("CLASS="), Class);
-		FParse::Value(*Line, TEXT("PARAMS="), Params);
+		// up to the next space, as UE2's Parse: a redirect URL may hold ',' and ')'
+		FParse::Value(*Line, TEXT("PARAMS="), Params, false);
 		FParse::Value(*Line, TEXT("COMPRESSION="), Compression);
 		if (Class.Equals(TEXT("IpDrv.HTTPDownload"), ESearchCase::IgnoreCase) && RedirectURL.IsEmpty())
 		{
@@ -1283,6 +1284,7 @@ namespace UE2NetDownloadLocal
 		Check(IsSafePackageFileName(TEXT("AS-Gasoline(v4Fix).ut2"), TEXT("AS-Gasoline(v4Fix)")), TEXT("parentheses"));
 		Check(IsSafePackageFileName(TEXT("VCTF4-R!P-Castle.ut2"), TEXT("VCTF4-R!P-Castle")), TEXT("exclamation"));
 		Check(IsSafePackageFileName(TEXT("DM-My Map.ut2"), TEXT("DM-My Map")), TEXT("space"));
+		Check(IsSafePackageFileName(TEXT("FR-(00)_It'sAlive!!!_B9.ut2"), TEXT("FR-(00)_It'sAlive!!!_B9")), TEXT("apostrophe"));
 		Check(!IsSafePackageFileName(TEXT("A|B.u"), TEXT("A|B")), TEXT("pipe"));
 		Check(!IsSafePackageFileName(TEXT(" A.u"), TEXT(" A")), TEXT("leading space"));
 		Check(!IsSafePackageFileName(TEXT("../System/Core.u"), TEXT("Core")), TEXT("parent path"));

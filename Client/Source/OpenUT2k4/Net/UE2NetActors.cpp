@@ -761,9 +761,8 @@ void AUE2NetPawn::NetDie(const FVector& MomentumUU, const FVector& HitLocationUU
 
 FRotator AUE2NetPawn::GetViewRotation() const
 {
-	// Pawn.ViewPitch: the pitch's high byte (0..255 for 0..65535 UE2 units)
-	const float Pitch = FRotator::NormalizeAxis(float(ViewPitchByte) * 256.f * 360.f / 65536.f);
-	return FRotator(Pitch, SmoothYaw, 0.f);
+	// Pawn.ViewPitch (the pitch's high byte), blended in Tick
+	return FRotator(SmoothPitch, SmoothYaw, 0.f);
 }
 
 FRotator AUE2NetPawn::GetBaseAimRotation() const
@@ -845,6 +844,11 @@ void AUE2NetPawn::Tick(float DeltaSeconds)
 			ThirdPersonWeapon->SetVisibility(!bFirstPerson && !bNetDead && WeaponArt != nullptr);
 		}
 	}
+	// the view pitch arrives in 256 steps at the net rate: blend towards it like PlayerController.BlendRot does for
+	// a spectator's TargetViewRotation (24 per second, a jump of more than 4096 UE2 units snaps)
+	const float NetPitch = FRotator::NormalizeAxis(float(ViewPitchByte) * 256.f * 360.f / 65536.f);
+	const float PitchErr = FRotator::NormalizeAxis(NetPitch - SmoothPitch);
+	SmoothPitch = FMath::Abs(PitchErr) > 22.5f ? NetPitch : FRotator::NormalizeAxis(SmoothPitch + PitchErr * FMath::Min(1.f, DeltaSeconds * 24.f));
 	AActor* Vehicle = NetVehicle.Get();
 	if (Vehicle && !bNetDead)
 	{
