@@ -16,6 +16,7 @@
 #include "ArenaUE2Effects.h"
 #include "Camera/CameraComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/Texture.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -93,6 +94,12 @@ UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& 
 			SD.Tint = FLinearColor(Tint.R / 255.f, Tint.G / 255.f, Tint.B / 255.f) * 2.f;
 			SD.FadePower = 0.f;
 			SD.bRandomRoll = false;
+			// xEmitter PT_Beam textures run along V (taller than wide: XEffectMat.Ion.painter_beam is 32 x 128, its red
+			// stripe down the middle), the width across U
+			if (const UTexture* T = ArenaArt::Load<UTexture>(*Path))
+			{
+				SD.bVerticalTexture = T->GetSurfaceHeight() > T->GetSurfaceWidth();
+			}
 			UArenaSpriteComponent* SC = NewObject<UArenaSpriteComponent>(Holder);
 			SC->SetUsingAbsoluteLocation(true);
 			SC->SetUsingAbsoluteRotation(true);
