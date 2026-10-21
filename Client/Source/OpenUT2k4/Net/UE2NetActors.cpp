@@ -1167,8 +1167,7 @@ void AUE2NetBeam::Tick(float DeltaSeconds)
 			ArenaWeaponBeam::Place(Fallback, Start, EndLoc, 2.f);
 			if (Type == EType::Painter)
 			{
-				Brightness = ArenaWeaponBeam::PainterBrightness(TargetState, Brightness, DeltaSeconds);
-				ArenaWeaponBeam::SetBrightness(Fallback, Brightness);
+				ArenaWeaponBeam::TickPainter(Fallback, Look, TargetState, DeltaSeconds);
 			}
 		}
 		else

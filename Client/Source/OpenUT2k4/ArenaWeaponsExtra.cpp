@@ -138,24 +138,42 @@ void ArenaWeaponBeam::Hide(UStaticMeshComponent* Beam)
 	Beam->SetComponentTickEnabled(false);
 }
 
-float ArenaWeaponBeam::PainterBrightness(uint8 TargetState, float Brightness, float DeltaTime)
+void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look, uint8 TargetState, float DeltaTime)
 {
-	switch (TargetState)
+	// XWeapons.PainterBeamEffect default mSizeRange[0], the width Make gave the beam
+	static const float DefaultWidth = []
 	{
-	case 1: return FMath::Max(FMath::Min(Brightness + DeltaTime * 100.f, 250.f), 100.f); // PTS_Marked
-	case 2: return 250.f;                                                                   // PTS_Aquired
-	case 3: return FMath::Max(Brightness - DeltaTime * 100.f, 40.f);                        // PTS_Cancelled
-	default: return 40.f;                                                                   // PTS_Aiming
+		FArenaUE2ActorDesc D;
+		const float W = ArenaUE2Effects::GetClassDesc(TEXT("XWeapons.PainterBeamEffect"), D) ? float(D.Props.Num(TEXT("mSizeRange"), 0.0)) : 0.f;
+		return W > 0.f ? W : 1.f;
+	}();
+	if (Look.Width < 0.f)
+	{
+		Look.Width = DefaultWidth;
 	}
-}
-
-void ArenaWeaponBeam::SetBrightness(UStaticMeshComponent* Beam, float Brightness)
-{
-	// the additive sprite's tint, scaled as Make scales the effect's colour
+	Look.AquiredTime = TargetState == 2 ? Look.AquiredTime + DeltaTime : 0.f;
+	if (TargetState == 2 && Look.AquiredTime <= 0.4f)
+	{
+		// state Aquired.Tick
+		Look.Brightness = 250.f;
+		Look.Width = FMath::Min(Look.Width + DeltaTime * 40.f, 16.f);
+	}
+	else if (TargetState >= 2)
+	{
+		// state Cancelled.Tick
+		Look.Brightness = FMath::Max(Look.Brightness - DeltaTime * 100.f, 40.f);
+		Look.Width = FMath::Max(Look.Width - DeltaTime * 40.f, 1.f);
+	}
+	else
+	{
+		Look.Brightness = TargetState == 1 ? FMath::Max(FMath::Min(Look.Brightness + DeltaTime * 100.f, 250.f), 100.f) : 40.f;
+	}
 	if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
 	{
-		const float B = Brightness / 255.f * 2.f;
+		// SetBrightness: the additive sprite's tint, scaled as Make scales the effect's colour
+		const float B = Look.Brightness / 255.f * 2.f;
 		S->SetTint(FLinearColor(B, B, B));
+		S->SetWidthScale(Look.Width / DefaultWidth);
 	}
 }
 
@@ -405,9 +423,8 @@ void AWeap_OrbitalDesignator::Tick(float DeltaSeconds)
 		FHitResult Hit;
 		PaintBeam->SetVisibility(true);
 		PlaceBeam(PaintBeam, GetMuzzleLocation(), WeaponTrace(Start, End, Hit) ? FVector(Hit.ImpactPoint) : End, 1.5f);
-		// brighter once the server's PainterBeamEffect says the mark holds (TargetState)
-		NetPaintBrightness = ArenaWeaponBeam::PainterBrightness(NetState.PainterTargetState, NetPaintBrightness, DeltaSeconds);
-		ArenaWeaponBeam::SetBrightness(PaintBeam, NetPaintBrightness);
+		// brighter (and wider once acquired) as the server's PainterBeamEffect says the mark holds (TargetState)
+		ArenaWeaponBeam::TickPainter(PaintBeam, NetPaintLook, NetState.PainterTargetState, DeltaSeconds);
 	}
 }
 
@@ -425,7 +442,7 @@ void AWeap_OrbitalDesignator::NetFireHeldChanged(uint8 Mode, bool bHeld)
 			PaintBeam = MakeBeam(this, FireModes[0].Color, TEXT("XWeapons.PainterBeamEffect"));
 		}
 		NetState.PainterTargetState = 0;
-		NetPaintBrightness = 40.f;
+		NetPaintLook = ArenaWeaponBeam::FPainterLook();
 		PlayFireSound(0, GetMuzzleLocation(), 0.5f, 1.f);
 	}
 	else if (PaintBeam)

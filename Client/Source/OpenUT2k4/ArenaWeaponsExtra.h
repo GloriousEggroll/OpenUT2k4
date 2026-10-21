@@ -8,6 +8,30 @@ class AArenaStickyGrenade;
 class AArenaCrawlerMine;
 class UStaticMeshComponent;
 
+/** Beams of held fire modes (painter, mine layer laser), also the other players' beams in net play (Net/UE2NetActors). */
+namespace ArenaWeaponBeam
+{
+	/** A beam on Holder placed every tick in world space: the stock effect class's texture and width as a camera-facing
+	 *  quad, else a glowing cylinder. Starts hidden. */
+	OPENUT2K4_API UStaticMeshComponent* Make(AActor* Holder, const FLinearColor& Color, const TCHAR* UE2EffectClass = nullptr);
+	/** Shows a beam made by Make from Start to End (MeshWidth: the cylinder's width). */
+	OPENUT2K4_API void Place(UStaticMeshComponent* Beam, const FVector& Start, const FVector& End, float MeshWidth);
+	/** Hides a beam made by Make (a sprite beam without a lifetime would show itself again on its next tick). */
+	OPENUT2K4_API void Hide(UStaticMeshComponent* Beam);
+	/** PainterBeamEffect's look on a client: Brightness (mColorRange) and width (mSizeRange[0], UU). */
+	struct FPainterLook
+	{
+		float Brightness = 40.f;
+		float Width = -1.f;       // < 0: the effect's default, on the first tick
+		float AquiredTime = 0.f;
+	};
+	/** PainterBeamEffect.Tick / Aquired / Cancelled after DeltaTime in the replicated TargetState (0 aiming, 1 marked,
+	 *  2 acquired, 3 cancelled), applied to a beam made by Make: 40 aiming, up to 250 once marked; acquired is 250 and
+	 *  widens to 16 UU until its 0.4 s timer goes to Cancelled, which fades to 40 and narrows to 1 UU (TargetState stays
+	 *  acquired on the wire). */
+	OPENUT2K4_API void TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look, uint8 TargetState, float DeltaTime);
+}
+
 /**
  * The UT2004 super weapons and the Onslaught / classic weapons, under their own names, with UT2004's numbers and
  * behaviour (XWeapons Redeemer / Painter, UTClassic ClassicSniperRifle, Onslaught ONSAVRiL / ONSGrenadeLauncher /
@@ -53,8 +77,8 @@ protected:
 	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	void StopPainting();
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> PaintBeam;
-	/** Net play: PainterBeamEffect's Brightness of our beam. */
-	float NetPaintBrightness = 40.f;
+	/** Net play: PainterBeamEffect's brightness and width of our beam. */
+	ArenaWeaponBeam::FPainterLook NetPaintLook;
 	bool bPainting = false;
 	bool bValidMark = false;
 	bool bMarkStarted = false;
@@ -158,23 +182,6 @@ protected:
 	bool bTargeting = false;
 	float NextTargetHit = 0.f;
 };
-
-/** Beams of held fire modes (painter, mine layer laser), also the other players' beams in net play (Net/UE2NetActors). */
-namespace ArenaWeaponBeam
-{
-	/** A beam on Holder placed every tick in world space: the stock effect class's texture and width as a camera-facing
-	 *  quad, else a glowing cylinder. Starts hidden. */
-	OPENUT2K4_API UStaticMeshComponent* Make(AActor* Holder, const FLinearColor& Color, const TCHAR* UE2EffectClass = nullptr);
-	/** Shows a beam made by Make from Start to End (MeshWidth: the cylinder's width). */
-	OPENUT2K4_API void Place(UStaticMeshComponent* Beam, const FVector& Start, const FVector& End, float MeshWidth);
-	/** Hides a beam made by Make (a sprite beam without a lifetime would show itself again on its next tick). */
-	OPENUT2K4_API void Hide(UStaticMeshComponent* Beam);
-	/** PainterBeamEffect.Tick / Aquired / Cancelled: its Brightness (40 aiming, up to 250 once marked) after DeltaTime
-	 *  in the replicated TargetState (0 aiming, 1 marked, 2 acquired, 3 cancelled). */
-	OPENUT2K4_API float PainterBrightness(uint8 TargetState, float Brightness, float DeltaTime);
-	/** PainterBeamEffect.SetBrightness: mColorRange = Brightness (grey) on the beam's texture. */
-	OPENUT2K4_API void SetBrightness(UStaticMeshComponent* Beam, float Brightness);
-}
 
 namespace ArenaWeaponList
 {

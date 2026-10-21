@@ -233,6 +233,8 @@ public:
 	/** Multiplies the layer's intensity (pulses, team / state dimming). */
 	void SetIntensityScale(float InScale);
 	void SetTint(const FLinearColor& InTint);
+	/** Multiplies the quad's height (a beam's width). */
+	void SetWidthScale(float InScale) { WidthScale = InScale; }
 	/** Restart the life cycle (looping layers driven by their owner). */
 	void Restart();
 
@@ -249,6 +251,7 @@ protected:
 	float Age = 0.f;
 	float Roll = 0.f;
 	float IntensityScale = 1.f;
+	float WidthScale = 1.f;
 	float BaseIntensity = 1.f;
 	bool bSpriteMaterial = false;
 	bool bConfigured = false;

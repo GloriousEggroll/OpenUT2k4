@@ -1285,7 +1285,7 @@ void UArenaSpriteComponent::UpdateSprite(float DeltaTime)
 	const float Grow = 1.f - FMath::Square(1.f - A);
 	const float SizeMul = FMath::Lerp(1.f, Desc.EndScale, Grow) * Scale;
 	const float W = FMath::Max(0.01f, Desc.Size.X * SizeMul);
-	const float H = FMath::Max(0.01f, Desc.Size.Y * SizeMul);
+	const float H = FMath::Max(0.01f, Desc.Size.Y * SizeMul * WidthScale);
 	Roll = FMath::Fmod(Roll + Desc.Spin * DeltaTime, 360.f);
 
 	// Material: fade and flipbook frame

@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "../ArenaArtVehicles.h"
 #include "../ArenaCharacter.h"
+#include "../ArenaWeaponsExtra.h"
 #include "UE2NetActors.generated.h"
 
 class UStaticMeshComponent;
@@ -195,7 +196,7 @@ public:
 	AUE2NetBeam();
 	enum class EType : uint8 { Link, Painter, MineLaser };
 	void Setup(EType InType);
-	/** PainterBeamEffect.TargetState (its brightness follows it). */
+	/** PainterBeamEffect.TargetState (its brightness and width follow it). */
 	void SetTargetState(uint8 InState) { TargetState = InState; }
 	/** From: the firing pawn (the beam leaves its third-person weapon); InStart: the replicated start (cm) when the pawn
 	 *  is not shown; InEnd: the replicated end (cm). */
@@ -210,7 +211,7 @@ protected:
 	FVector EndLoc = FVector::ZeroVector;
 	EType Type = EType::Link;
 	uint8 TargetState = 0;
-	float Brightness = 40.f;
+	ArenaWeaponBeam::FPainterLook Look;
 };
 
 /**
