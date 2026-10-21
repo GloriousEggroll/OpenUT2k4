@@ -10,10 +10,12 @@
 #include "../ArenaPickup.h"
 #include "../ArenaPlayerController.h"
 #include "../ArenaPlayerState.h"
+#include "../ArenaTranslocator.h"
 #include "../ArenaTypes.h"
 #include "../ArenaUE2World.h"
 #include "../ArenaUserSettings.h"
 #include "../ArenaWeapon.h"
+#include "../ArenaWeaponActors.h"
 #include "../UScript/UScriptCore.h"
 #include "../UScript/UScriptRuntime.h"
 #include "Components/StaticMeshComponent.h"
@@ -575,6 +577,11 @@ void FUE2NetPlay::ActorUpdated(const FUE2NetActor& A, const TArray<FString>& Cha
 			W.Native = UE2NetActors::WeaponClassFor(A.ClassPath);
 			W.Group = GetInt(A, TEXT("InventoryGroup"), 0);
 			W.Priority = GetFloat(A, TEXT("Priority"), 0.f);
+			if (W.Native && W.Native->IsChildOf(AWeap_Translocator::StaticClass()) && !Prop(A, TEXT("RepAmmo")))
+			{
+				// TransLauncher.RepAmmo comes when the charges change: a new launcher is full (AmmoChargeMax)
+				W.Ammo = FMath::FloorToInt32(ArenaTranslocator::AmmoChargeMax);
+			}
 			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: inventory + %s (group %d, ours %s)"), *A.ClassPath, W.Group, W.Native ? *W.Native->GetName() : TEXT("none"));
 		}
 		for (const TCHAR* Key : { TEXT("Ammo"), TEXT("Ammo[0]") })
@@ -584,7 +591,8 @@ void FUE2NetPlay::ActorUpdated(const FUE2NetActor& A, const TArray<FString>& Cha
 				W.AmmoChannel = Ammo0->Obj.Channel;
 			}
 		}
-		for (const TCHAR* Key : { TEXT("AmmoCharge"), TEXT("AmmoCharge[0]") })
+		// TransLauncher.RepAmmo: its charges (AmmoChargeF) as the owner sees them
+		for (const TCHAR* Key : { TEXT("AmmoCharge"), TEXT("AmmoCharge[0]"), TEXT("RepAmmo") })
 		{
 			if (Prop(A, Key))
 			{
@@ -638,6 +646,10 @@ void FUE2NetPlay::ActorClosed(const FUE2NetActor& A)
 	{
 		DeadPawnChannel = 0; // the index may be reused for our next pawn
 	}
+	if (A.Channel != 0 && A.Channel == WarheadChannel)
+	{
+		EndWarhead();
+	}
 	if (A.Channel == OwnPawnChannel)
 	{
 		UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: our pawn's channel %d closed"), A.Channel);
@@ -678,6 +690,10 @@ void FUE2NetPlay::SetOwnPawnChannel(int32 Channel, const TCHAR* Why)
 	{
 		DestroyLocalPawn(false);
 	}
+	if (WarheadChannel && Channel != WarheadChannel)
+	{
+		EndWarhead(); // RedeemerWarhead.RelinquishController: back to our pawn
+	}
 	OwnPawnChannel = Channel;
 	// the body the world layer showed for this pawn while it was not ours (a guided Redeemer warhead was): we are it again
 	FUE2NetWorld* NW = FUE2NetWorld::Get();
@@ -698,6 +714,15 @@ void FUE2NetPlay::TrySpawnLocalPawn()
 	const FUE2NetActor* A = OwnPawnChannel ? Connection->GetActors().Find(OwnPawnChannel) : nullptr;
 	if (!W || !PC || !A || LocalPawn.IsValid())
 	{
+		return;
+	}
+	if (ChainHas(*A, TEXT("RedeemerWarhead")))
+	{
+		// RedeemerGuidedFire: the controller possesses the warhead (PlayerRocketing), not a walking pawn
+		if (WarheadChannel != OwnPawnChannel)
+		{
+			StartWarhead(*A);
+		}
 		return;
 	}
 	FVector Loc = FVector(A->SpawnLocation);
@@ -825,6 +850,16 @@ void FUE2NetPlay::ApplyOwnPawn(const FUE2NetActor& A, const TArray<FString>* Cha
 {
 	using namespace UE2NetPlayLocal;
 	auto Changes = [Changed](const TCHAR* Key) { return !Changed || Changed->Contains(Key); };
+	if (A.Channel == WarheadChannel)
+	{
+		// RedeemerWarhead.BlowUp: bStaticScreen until the server gives us our pawn back
+		if (AArenaGuidedWarhead* WH = NetWarhead.Get(); WH && Changes(TEXT("bStaticScreen")) && GetInt(A, TEXT("bStaticScreen"), 0) != 0)
+		{
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: the warhead blew up (%d moves sent, %d corrections)"), RocketMovesSent, WarheadAdjustments);
+			WH->NetBlownUp();
+		}
+		return;
+	}
 	if (Changes(TEXT("bTearOff")) && GetInt(A, TEXT("bTearOff"), 0) != 0 && DeadPawnChannel != A.Channel)
 	{
 		DeadPawnChannel = A.Channel;
@@ -925,11 +960,22 @@ void FUE2NetPlay::ApplyWeapons()
 	{
 		return;
 	}
+	FUE2NetWorld* NW = FUE2NetWorld::Get();
 	for (TPair<int32, FWeaponInfo>& W : Weapons)
 	{
 		if (AArenaWeapon* Native = P->EnsureNetWeapon(W.Value.Native))
 		{
 			Native->Ammo = W.Value.Ammo;
+			// what the weapon shows of the server's weapon: the AVRiL's lock, the translocator's beacon
+			AArenaWeapon::FNetWeaponState& NS = Native->NetState;
+			NS.bValid = true;
+			if (const FUE2NetActor* WA = Connection->GetActors().Find(W.Key))
+			{
+				NS.bLockedOn = UE2NetPlayLocal::GetInt(*WA, TEXT("bLockedOn"), 0) != 0;
+				const int32 Target = UE2NetPlayLocal::GetRef(*WA, TEXT("HomingTarget"));
+				NS.HomingTarget = NW && Target ? NW->GetNativeActor(Target) : nullptr;
+				NS.bBeaconOut = UE2NetPlayLocal::GetRef(*WA, TEXT("TransBeacon")) != 0;
+			}
 		}
 	}
 	if (const FWeaponInfo* Cur = Weapons.Find(CurrentWeaponChannel))
@@ -1183,6 +1229,31 @@ void FUE2NetPlay::ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params,
 		return;
 	}
 	LastAdjustTimeStamp = TimeStamp;
+	if (AArenaGuidedWarhead* WH = NetWarhead.Get(); WH && WarheadChannel == OwnPawnChannel)
+	{
+		// PlayerRocketing: the server's warhead at TimeStamp, then our moves since (ClientUpdatePosition)
+		FVector Loc = NewLoc;
+		FVector Vel = bHasVelocity ? NewVel : WH->GetVelUU();
+		RocketMoves.RemoveAll([TimeStamp](const FRocketMove& M) { return M.TimeStamp <= TimeStamp; });
+		float Last = TimeStamp;
+		for (const FRocketMove& M : RocketMoves)
+		{
+			AArenaGuidedWarhead::FlyVelocity(Vel, M.AccelUU, M.Delta);
+			Loc += Vel * M.Delta;
+			Last = M.TimeStamp;
+		}
+		// the frames since the newest move sent
+		const float Rest = FMath::Clamp(float(World->GetTimeSeconds()) - Last, 0.f, 0.125f);
+		AArenaGuidedWarhead::FlyVelocity(Vel, WH->GetAccelUU(), Rest);
+		Loc += Vel * Rest;
+		const float Error = float(FVector::Dist(Loc, WH->GetActorLocation() / S));
+		if (++WarheadAdjustments <= 20)
+		{
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: warhead correction %d: %.1f UU off"), WarheadAdjustments, Error);
+		}
+		WH->SetNetFlight(Loc, Vel);
+		return;
+	}
 	// a base that moves (lift): the location is relative to it
 	FVector BaseOffset = FVector::ZeroVector;
 	const AActor* BaseNative = nullptr;
@@ -1440,6 +1511,10 @@ void FUE2NetPlay::PostActorTick(UWorld* InWorld, ELevelTick TickType, float Delt
 		DrivingTime += DeltaSeconds;
 		SendDrive();
 	}
+	else if (WarheadChannel && WarheadChannel == OwnPawnChannel)
+	{
+		SendRocketMove();
+	}
 	else if (LocalPawn.IsValid() && OwnPawnChannel && AckedPawnChannel == OwnPawnChannel)
 	{
 		RecordMove(DeltaSeconds);
@@ -1665,6 +1740,105 @@ void FUE2NetPlay::ClassifyFloor(FMove& M) const
 	M.SlopeZ = Known ? *Known : SlopeOffsets[M.SlopeBucket];
 }
 
+void FUE2NetPlay::StartWarhead(const FUE2NetActor& A)
+{
+	using namespace UE2NetPlayLocal;
+	UWorld* W = World.Get();
+	AArenaPlayerController* PC = GetPC();
+	if (!W || !PC)
+	{
+		return;
+	}
+	FVector Loc = FVector(A.SpawnLocation);
+	if (const FUE2NetValue* L = Prop(A, TEXT("Location")))
+	{
+		Loc = FVector(L->V);
+	}
+	FIntVector RotUU(A.SpawnRotation.X, A.SpawnRotation.Y, 0);
+	if (const FUE2NetValue* R = Prop(A, TEXT("Rotation")))
+	{
+		RotUU = R->R;
+	}
+	const FRotator Rot(RotUU.X * 360.f / 65536.f, RotUU.Y * 360.f / 65536.f, 0.f);
+	const FUE2NetValue* V = Prop(A, TEXT("Velocity"));
+	FActorSpawnParameters P;
+	P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	P.ObjectFlags |= RF_Transient;
+	AArenaGuidedWarhead* WH = W->SpawnActor<AArenaGuidedWarhead>(AArenaGuidedWarhead::StaticClass(), Loc * S, Rot, P);
+	if (!WH)
+	{
+		return;
+	}
+	WH->LaunchNet(PC, V ? FVector(V->V) : Rot.Vector() * 1000.f);
+	if (FUE2NetWorld* NW = FUE2NetWorld::Get())
+	{
+		NW->DropNativeActor(A.Channel); // the missile the world layer may already show for it
+	}
+	NetWarhead = WH;
+	WarheadChannel = A.Channel;
+	RocketMoves.Reset();
+	RocketMovesSent = 0;
+	WarheadAdjustments = 0;
+	LastAdjustTimeStamp = -1.f;
+	LastSendTime = 0.f;
+	// PlayerController.ClientRestart -> AcknowledgePossession, as for any pawn
+	const float Handedness = float(FMath::Clamp(UArenaUserSettings::Get()->WeaponHand, 0, 3) - 1);
+	Send(PCChannel(), TEXT("ServerAcknowledgePossession"), { VActor(A.Channel), VFloat(Handedness), VBool(false) });
+	AckedPawnChannel = A.Channel;
+	UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: flying the guided warhead (channel %d) from %s"), A.Channel, *Loc.ToCompactString());
+}
+
+void FUE2NetPlay::EndWarhead()
+{
+	if (AArenaGuidedWarhead* WH = NetWarhead.Get())
+	{
+		if (AArenaPlayerController* PC = GetPC(); PC && PC->GetPawn() == WH)
+		{
+			PC->UnPossess();
+		}
+		WH->Destroy();
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: the guided warhead is over (%d moves sent, %d corrections)"), RocketMovesSent, WarheadAdjustments);
+	}
+	NetWarhead.Reset();
+	WarheadChannel = 0;
+	RocketMoves.Reset();
+}
+
+void FUE2NetPlay::SendRocketMove()
+{
+	using namespace UE2NetPlayLocal;
+	AArenaGuidedWarhead* WH = NetWarhead.Get();
+	const int32 Ch = PCChannel();
+	if (!WH || !Ch || WH->IsStaticScreen())
+	{
+		return;
+	}
+	// PlayerRocketing.PlayerMove -> ReplicateMove: RocketServerMove(TimeStamp, Acceleration * 10, Location, bDuck,
+	// ClientRoll, View) at most every 1/45 s; the server flies the warhead with that acceleration since our last move
+	const float Now = float(World->GetTimeSeconds());
+	if (Now - LastSendTime < 0.0222f)
+	{
+		return;
+	}
+	FRocketMove M;
+	M.TimeStamp = Now;
+	M.Delta = FMath::Min(Now - FMath::Max(LastSendTime, LastTimeStamp), 0.125f);
+	M.AccelUU = WH->GetAccelUU();
+	LastSendTime = Now;
+	LastTimeStamp = Now;
+	RocketMoves.Add(M);
+	while (RocketMoves.Num() > 200)
+	{
+		RocketMoves.RemoveAt(0);
+	}
+	const FRotator R = WH->GetActorRotation();
+	const int32 Roll = (ToUU(R.Roll) >> 8) & 255;
+	Send(Ch, TEXT("RocketServerMove"), { VFloat(Now), VVec(M.AccelUU * 10.f), VVec(WH->GetActorLocation() / S), VBool(false), VByte(Roll),
+		VInt(ViewInt(FRotator(R.Pitch, R.Yaw, 0.f))) });
+	++RocketMovesSent;
+	++MovesSent;
+}
+
 void FUE2NetPlay::TickFireEffects()
 {
 	// UE2 clients play their own shots (Weapon.ClientStartFire -> the fire mode's ModeDoFire effects) while the server
@@ -1689,13 +1863,30 @@ void FUE2NetPlay::TickFireEffects()
 		return;
 	}
 	const float Now = float(World->GetTimeSeconds());
-	const bool bAmmo = Info->Ammo > 0 || W->bInfiniteAmmo;
+	// the translocator's presses count without charges too (TransRecall's failed sound)
+	const bool bAmmo = Info->Ammo > 0 || W->bInfiniteAmmo || W->IsA<AWeap_Translocator>();
 	for (uint8 Mode = 0; Mode < 2; ++Mode)
 	{
 		const float Refire = FMath::Max(0.05f, W->FireModes[Mode].RefireTime);
+		if (!bFireHeld[Mode])
+		{
+			bNetWaitRelease[Mode] = false;
+		}
 		// a charge keeps going when it took the last ammo (bio alt), the release fires it
-		const bool bHold = bFireHeld[Mode] && (bAmmo || (W->IsNetFireHeld(Mode) && W->IsChargeMode(Mode)));
+		const bool bHold = bFireHeld[Mode] && !bNetWaitRelease[Mode] && (bAmmo || (W->IsNetFireHeld(Mode) && W->IsChargeMode(Mode)));
 		bool bShot = W->SetNetFireHeld(Mode, bHold, Now >= NextFireEffect[Mode]);
+		if (!bShot && bHold && W->FireModes[Mode].FireType == EArenaFireType::Melee && Now >= NextMeleeTest)
+		{
+			// ShieldFire.Timer (AutoFireTestFreq 0.15 s, also on the owning client): a pawn in front within ShieldRange of
+			// the pawn's location releases the charge
+			NextMeleeTest = Now + 0.15f;
+			const FVector Dir = GetPC() ? GetPC()->GetControlRotation().Vector() : Pawn->GetActorForwardVector();
+			if (Now >= NextFireEffect[Mode] && TraceShownPawn(Pawn->GetActorLocation(), Dir, W->FireModes[Mode].Range) != 0)
+			{
+				bShot = W->SetNetFireHeld(Mode, false, true);
+				bNetWaitRelease[Mode] = true;
+			}
+		}
 		if (!bShot && bFireHeld[Mode] && bAmmo && W->IsNetAutoFire(Mode) && Now >= NextFireEffect[Mode])
 		{
 			W->PlayNetFireEffects(Mode);
@@ -2113,6 +2304,15 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 	case EInput::AltFire:
 	{
 		const uint8 Mode = Input == EInput::Fire ? 0 : 1;
+		if (WarheadChannel && WarheadChannel == OwnPawnChannel)
+		{
+			// RedeemerWarhead.Fire: ServerBlowUp
+			if (Send(WarheadChannel, TEXT("ServerBlowUp"), {}))
+			{
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: ServerBlowUp"));
+			}
+			return true;
+		}
 		if (!Pawn && IsWaitingForRound())
 		{
 			// the server only spawns us at the next round: its Spectating controls (Fire: next player, Alt-Fire: free camera)
@@ -2379,6 +2579,14 @@ void FUE2NetPlay::PreActorTick(UWorld* InWorld, ELevelTick TickType, float Delta
 		const FRotationMatrix R(FRotator(0.f, View.Yaw, 0.f));
 		PC->GetSpectatorPawn()->AddMovementInput(R.GetUnitAxis(EAxis::X), ScriptMove.Y);
 		PC->GetSpectatorPawn()->AddMovementInput(R.GetUnitAxis(EAxis::Y), ScriptMove.X);
+		return;
+	}
+	if (PC && NetWarhead.IsValid() && ScriptTurn != 0.f)
+	{
+		// scripted steering of a guided warhead (test hook)
+		FRotator View = PC->GetControlRotation();
+		View.Yaw += ScriptTurn * DeltaSeconds;
+		PC->SetControlRotation(View);
 		return;
 	}
 	if (!Pawn || !PC || PC->GetPawn() != Pawn)
@@ -2937,6 +3145,11 @@ void FUE2NetPlay::TickScript(double Now)
 			// face the last goto target (e.g. into the water), level
 			const FVector To = ScriptGotoTarget - Pawn->GetActorLocation();
 			PC->SetControlRotation(FRotator(0.f, To.Rotation().Yaw, 0.f));
+		}
+		else if (Key == TEXT("aim") && Pawn && PC)
+		{
+			// look straight at the last goto target (e.g. a vehicle to lock on to)
+			PC->SetControlRotation((ScriptGotoTarget - Pawn->GetPawnViewLocation()).Rotation());
 		}
 		else if (Key == TEXT("hunt"))
 		{

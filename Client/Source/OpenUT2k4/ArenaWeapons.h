@@ -33,6 +33,9 @@ protected:
 	virtual void BuildViewModel() override;
 	virtual void FireMelee(uint8 Mode, float ChargeAlpha) override;
 	float ShieldDrainAccum = 0.f;
+	/** Net play: our shield is up (alt fire held with the energy to raise it). */
+	bool bNetShield = false;
+	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	float NextAutoFireTest = 0.f;
 	UPROPERTY() TObjectPtr<class UStaticMeshComponent> ShieldVisual;
 	/** Owner-only shield plate in the view model */

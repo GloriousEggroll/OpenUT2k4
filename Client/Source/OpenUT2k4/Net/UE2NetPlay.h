@@ -201,6 +201,10 @@ private:
 	void ExitVehicle(bool bToFoot);
 	void SendDrive();
 	void TickFireEffects();
+	// guided Redeemer (UE2 PlayerController.PlayerRocketing: the RedeemerWarhead the server made our pawn)
+	void StartWarhead(const FUE2NetActor& A);
+	void EndWarhead();
+	void SendRocketMove();
 	/** NewNet weapons: the deferred start fire (sent when the weapon is ready, as UE2's ClientStartFire retries). */
 	void TickNewNetFire();
 	/** Channel of the server pawn / vehicle we show first along a ray (UU-scaled cm), before the world; 0 for none. */
@@ -236,6 +240,19 @@ private:
 	int32 OwnPRIChannel = 0;
 	/** The vehicle (or gunner seat) we drive, 0 on foot. */
 	int32 DrivingChannel = 0;
+	/** The guided Redeemer warhead we fly (our pawn while it flies), 0 when none. */
+	int32 WarheadChannel = 0;
+	TWeakObjectPtr<class AArenaGuidedWarhead> NetWarhead;
+	/** RocketServerMove moves the server has not answered yet (UU): replayed after its corrections. */
+	struct FRocketMove
+	{
+		float TimeStamp = 0.f;
+		float Delta = 0.f;
+		FVector AccelUU = FVector::ZeroVector;
+	};
+	TArray<FRocketMove> RocketMoves;
+	int32 RocketMovesSent = 0;
+	int32 WarheadAdjustments = 0;
 	float LastDriveSend = -1.f;
 	FVector4f LastDriveInput = FVector4f(0.f, 0.f, 0.f, 0.f);
 	int32 LastDriveView = 0;
@@ -287,6 +304,9 @@ private:
 	float NextFireEffect[2] = { 0.f, 0.f };
 	/** The weapon whose hold effects TickFireEffects drives (AArenaWeapon::SetNetFireHeld). */
 	TWeakObjectPtr<class AArenaWeapon> NetFireWeapon;
+	/** A charge released by itself (the shield gun hit someone): no new charge until the button comes up. */
+	bool bNetWaitRelease[2] = { false, false };
+	float NextMeleeTest = 0.f;
 	/** NewNet (Net/UE2NetNewNet.h): a held fire whose NewNet start fire is not sent yet (the weapon is not ready). */
 	bool bNewNetFirePending[2] = { false, false };
 	TUniquePtr<class FUE2NetNewNet> NewNet;

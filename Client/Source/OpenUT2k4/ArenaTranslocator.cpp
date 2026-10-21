@@ -488,8 +488,8 @@ void AWeap_Translocator::Tick(float DeltaSeconds)
 		return;
 	}
 	// TransLauncher.Tick: AmmoChargeF += dt x AmmoChargeRate up to AmmoChargeMax; a drained launcher (Bombing Run)
-	// gets 1.5 back as soon as someone holds the ball
-	if (AmmoChargeF < ArenaTranslocator::AmmoChargeMax)
+	// gets 1.5 back as soon as someone holds the ball (net play: the server's RepAmmo)
+	if (AmmoChargeF < ArenaTranslocator::AmmoChargeMax && !NetState.bValid)
 	{
 		AmmoChargeF = FMath::Min(AmmoChargeF + DeltaSeconds * ArenaTranslocator::AmmoChargeRate, ArenaTranslocator::AmmoChargeMax);
 		if (AmmoChargeF >= 1.5f)
@@ -519,7 +519,19 @@ void AWeap_Translocator::Tick(float DeltaSeconds)
 			PrevWeapon = Cur;
 		}
 	}
-	if (bEquipped && !ArenaOwner->IsDead())
+	if (bEquipped && !ArenaOwner->IsDead() && NetState.bValid)
+	{
+		for (uint8 M = 0; M < 2; ++M)
+		{
+			if (bPendingFire[M] && ReadyToFire(M))
+			{
+				bPendingFire[M] = false;
+				PlayNetTransFire(M);
+			}
+		}
+		ApplyTeamSkin();
+	}
+	else if (bEquipped && !ArenaOwner->IsDead())
 	{
 		for (uint8 M = 0; M < 2; ++M)
 		{
@@ -562,6 +574,57 @@ void AWeap_Translocator::Tick(float DeltaSeconds)
 	{
 		ViewPlayer();
 	}
+}
+
+void AWeap_Translocator::NetFireHeldChanged(uint8 Mode, bool bHeld)
+{
+	// TransFire / TransRecall bWaitForRelease: a press fires once, a press during the refire time when it is up
+	if (bHeld && Mode < 2)
+	{
+		bPendingFire[Mode] = true;
+	}
+}
+
+void AWeap_Translocator::PlayNetTransFire(uint8 Mode)
+{
+	// the owning client's part of TransFire / TransRecall (sounds, the throw animation); the server throws, recalls and
+	// translocates, the beacon and the translocation effects are its actors. RepAmmo is the whole charges.
+	if (!ArenaOwner)
+	{
+		return;
+	}
+	if (Mode == 0)
+	{
+		if (Ammo < 1)
+		{
+			return; // TransFire.AllowFire: AmmoChargeF >= 1
+		}
+		if (NetState.bBeaconOut)
+		{
+			PlaySound2D(ArenaOwner, RecallSound); // TransFire.SpawnProjectile with a beacon out: recall
+		}
+		else
+		{
+			PlaySound2D(ArenaOwner, FireSound);
+			if (ViewMesh && Art && bViewShown && Art->FireAnim[0])
+			{
+				PlayViewAnim(Art->FireAnim[0], false, 0.f, 0.f);
+			}
+		}
+	}
+	else
+	{
+		if (!NetState.bBeaconOut)
+		{
+			return;
+		}
+		if (Ammo < 1)
+		{
+			PlayOwnerSound(ArenaOwner, FailedSound); // TransRecall.AllowFire failed with a beacon out
+			return;
+		}
+	}
+	NextFireTime = FMath::Max(NextFireTime + ArenaTranslocator::FireRate, GetWorldTime());
 }
 
 void AWeap_Translocator::ApplyTeamSkin()

@@ -1079,6 +1079,97 @@ void AUE2NetProjectile::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+// =================================================================================================
+// AUE2NetBeam
+// =================================================================================================
+
+AUE2NetBeam::AUE2NetBeam()
+{
+	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.TickGroup = TG_PostUpdateWork; // after the pawns moved this frame
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	SetReplicates(false);
+}
+
+void AUE2NetBeam::Setup(bool bPainter)
+{
+	if (!bPainter)
+	{
+		// the link beam as our own weapon draws it (AArenaWeapon::UpdateLiveBeam, Beam.Link)
+		if (const ArenaArtFX::FEffectDesc* E = ArenaArtFX::FindEffect(TEXT("Beam.Link")))
+		{
+			for (const ArenaArtFX::FSpriteDesc& D : E->Sprites)
+			{
+				UArenaSpriteComponent* C = NewObject<UArenaSpriteComponent>(this);
+				C->SetUsingAbsoluteLocation(true);
+				C->SetUsingAbsoluteRotation(true);
+				C->SetUsingAbsoluteScale(true);
+				C->SetupAttachment(GetRootComponent());
+				if (C->SetupSprite(D))
+				{
+					C->RegisterComponent();
+					C->SetVisibility(false);
+					Sprites.Add(C);
+				}
+				else
+				{
+					C->DestroyComponent();
+				}
+			}
+		}
+	}
+	if (Sprites.Num() == 0)
+	{
+		Fallback = ArenaWeaponBeam::Make(this, bPainter ? FLinearColor(1.f, 0.15f, 0.1f) : FLinearColor(0.3f, 1.f, 0.3f),
+			bPainter ? TEXT("XWeapons.PainterBeamEffect") : nullptr);
+	}
+}
+
+void AUE2NetBeam::SetEnds(AUE2NetPawn* From, const FVector& InStart, const FVector& InEnd)
+{
+	Source = From;
+	StartLoc = InStart;
+	EndLoc = InEnd;
+}
+
+void AUE2NetBeam::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+	const AUE2NetPawn* From = Source.Get();
+	const FVector Start = From && !From->IsHidden() ? From->GetMuzzleLocation() : StartLoc;
+	const bool bShow = !EndLoc.IsNearlyZero() && !Start.IsNearlyZero();
+	for (UArenaSpriteComponent* C : Sprites)
+	{
+		if (!C)
+		{
+			continue;
+		}
+		if (bShow)
+		{
+			C->SetBeam(Start, EndLoc);
+			C->SetVisibility(true);
+			C->SetComponentTickEnabled(true);
+		}
+		else
+		{
+			C->SetVisibility(false);
+			C->SetComponentTickEnabled(false);
+		}
+	}
+	if (Fallback)
+	{
+		if (bShow)
+		{
+			Fallback->SetVisibility(true);
+			ArenaWeaponBeam::Place(Fallback, Start, EndLoc, 2.f);
+		}
+		else
+		{
+			ArenaWeaponBeam::Hide(Fallback);
+		}
+	}
+}
+
 void AUE2NetProjectile::NetExplode()
 {
 	if (bExploded)

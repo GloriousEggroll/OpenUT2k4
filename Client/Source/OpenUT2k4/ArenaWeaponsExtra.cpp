@@ -32,91 +32,17 @@ namespace ArenaWeaponsExtraLocal
 	 * may be hidden), placed every tick in world space. */
 	UStaticMeshComponent* MakeBeam(AArenaWeapon* W, const FLinearColor& Color, const TCHAR* UE2EffectClass = nullptr)
 	{
-		AActor* Holder = W->GetArenaOwner() ? static_cast<AActor*>(W->GetArenaOwner()) : static_cast<AActor*>(W);
-		// the stock beam effect's texture and width (XWeapons.PainterBeamEffect xEmitter skin and mSizeRange,
-		// Onslaught.ONSMineLayerTargetBeamEffect's BeamEmitter Texture / StartSizeRange) as a camera-facing beam quad
-		FArenaUE2ActorDesc D;
-		if (UE2EffectClass && ArenaUE2Effects::GetClassDesc(UE2EffectClass, D))
-		{
-			FString Tex = D.Skins.Num() > 0 ? D.Skins[0] : FString();
-			float Width = float(D.Props.Num(TEXT("mSizeRange"), 0.0));
-			FColor Tint = D.Props.Color(TEXT("mColorRange"), FColor::White);
-			for (const TSharedPtr<FJsonValue>& V : D.Props.Array(TEXT("Emitters")))
-			{
-				FString Cls;
-				TArray<FString> Chain;
-				FArenaUE2Props P;
-				if (D.GetSubobject(FArenaUE2Props::ToString(V), Cls, Chain, P))
-				{
-					Tex = P.Str(TEXT("Texture"));
-					FVector Mn, Mx;
-					P.RangeVector(TEXT("StartSizeRange"), Mn, Mx, FVector(4.0));
-					Width = float(Mx.X + Mn.X) * 0.5f;
-					Tint = FColor::White;
-					break;
-				}
-			}
-			const FString Path = ArenaUE2Effects::SpriteTexturePath(Tex);
-			if (!Path.IsEmpty() && Width > 0.f)
-			{
-				ArenaArtFX::FSpriteDesc SD;
-				SD.Texture = *Path;
-				SD.Blend = ArenaArtFX::EBlend::Additive;
-				SD.Facing = ArenaArtFX::EFacing::Beam;
-				SD.Size = FVector2D(100.f, Width * 2.f * UU);
-				SD.Tint = FLinearColor(Tint.R / 255.f, Tint.G / 255.f, Tint.B / 255.f) * 2.f;
-				SD.FadePower = 0.f;
-				SD.bRandomRoll = false;
-				UArenaSpriteComponent* SC = NewObject<UArenaSpriteComponent>(Holder);
-				SC->SetUsingAbsoluteLocation(true);
-				SC->SetUsingAbsoluteRotation(true);
-				SC->SetUsingAbsoluteScale(true);
-				SC->SetupAttachment(Holder->GetRootComponent());
-				if (SC->SetupSprite(SD))
-				{
-					SC->RegisterComponent();
-					SC->SetVisibility(false);
-					return SC;
-				}
-				SC->DestroyComponent();
-			}
-		}
-		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Holder);
-		C->SetStaticMesh(ArenaAssets::Cylinder());
-		C->SetUsingAbsoluteLocation(true);
-		C->SetUsingAbsoluteRotation(true);
-		C->SetUsingAbsoluteScale(true);
-		C->SetupAttachment(Holder->GetRootComponent());
-		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		C->SetCastShadow(false);
-		if (UMaterialInstanceDynamic* M = ArenaAssets::MakeGlow(W, Color, 10.f, 1.f))
-		{
-			C->SetMaterial(0, M);
-		}
-		C->RegisterComponent();
-		C->SetVisibility(false);
-		return C;
+		return ArenaWeaponBeam::Make(W->GetArenaOwner() ? static_cast<AActor*>(W->GetArenaOwner()) : static_cast<AActor*>(W), Color, UE2EffectClass);
 	}
 
-	/** Places a beam made by MakeBeam from Start to End. */
 	void PlaceBeam(UStaticMeshComponent* Beam, const FVector& Start, const FVector& End, float MeshWidth)
 	{
-		if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
-		{
-			S->SetBeam(Start, End);
-			S->SetComponentTickEnabled(true);
-		}
-		else
-		{
-			ArenaFX::OrientBeamMesh(Beam, Start, End, MeshWidth);
-		}
+		ArenaWeaponBeam::Place(Beam, Start, End, MeshWidth);
 	}
 
-	/** Hides a beam made by MakeBeam (a sprite beam without a lifetime would show itself again on its next tick). */
 	void HideBeam(UStaticMeshComponent* Beam)
 	{
-		Beam->SetVisibility(false);
-		Beam->SetComponentTickEnabled(false);
+		ArenaWeaponBeam::Hide(Beam);
 	}
 
 	AArenaBotController* BotOf(const AArenaCharacter* C)
@@ -125,6 +51,92 @@ namespace ArenaWeaponsExtraLocal
 	}
 }
 using namespace ArenaWeaponsExtraLocal;
+
+UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& Color, const TCHAR* UE2EffectClass)
+{
+	// the stock beam effect's texture and width (XWeapons.PainterBeamEffect xEmitter skin and mSizeRange,
+	// Onslaught.ONSMineLayerTargetBeamEffect's BeamEmitter Texture / StartSizeRange) as a camera-facing beam quad
+	FArenaUE2ActorDesc D;
+	if (UE2EffectClass && ArenaUE2Effects::GetClassDesc(UE2EffectClass, D))
+	{
+		FString Tex = D.Skins.Num() > 0 ? D.Skins[0] : FString();
+		float Width = float(D.Props.Num(TEXT("mSizeRange"), 0.0));
+		FColor Tint = D.Props.Color(TEXT("mColorRange"), FColor::White);
+		for (const TSharedPtr<FJsonValue>& V : D.Props.Array(TEXT("Emitters")))
+		{
+			FString Cls;
+			TArray<FString> Chain;
+			FArenaUE2Props P;
+			if (D.GetSubobject(FArenaUE2Props::ToString(V), Cls, Chain, P))
+			{
+				Tex = P.Str(TEXT("Texture"));
+				FVector Mn, Mx;
+				P.RangeVector(TEXT("StartSizeRange"), Mn, Mx, FVector(4.0));
+				Width = float(Mx.X + Mn.X) * 0.5f;
+				Tint = FColor::White;
+				break;
+			}
+		}
+		const FString Path = ArenaUE2Effects::SpriteTexturePath(Tex);
+		if (!Path.IsEmpty() && Width > 0.f)
+		{
+			ArenaArtFX::FSpriteDesc SD;
+			SD.Texture = *Path;
+			SD.Blend = ArenaArtFX::EBlend::Additive;
+			SD.Facing = ArenaArtFX::EFacing::Beam;
+			SD.Size = FVector2D(100.f, Width * 2.f * UU);
+			SD.Tint = FLinearColor(Tint.R / 255.f, Tint.G / 255.f, Tint.B / 255.f) * 2.f;
+			SD.FadePower = 0.f;
+			SD.bRandomRoll = false;
+			UArenaSpriteComponent* SC = NewObject<UArenaSpriteComponent>(Holder);
+			SC->SetUsingAbsoluteLocation(true);
+			SC->SetUsingAbsoluteRotation(true);
+			SC->SetUsingAbsoluteScale(true);
+			SC->SetupAttachment(Holder->GetRootComponent());
+			if (SC->SetupSprite(SD))
+			{
+				SC->RegisterComponent();
+				SC->SetVisibility(false);
+				return SC;
+			}
+			SC->DestroyComponent();
+		}
+	}
+	UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Holder);
+	C->SetStaticMesh(ArenaAssets::Cylinder());
+	C->SetUsingAbsoluteLocation(true);
+	C->SetUsingAbsoluteRotation(true);
+	C->SetUsingAbsoluteScale(true);
+	C->SetupAttachment(Holder->GetRootComponent());
+	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	C->SetCastShadow(false);
+	if (UMaterialInstanceDynamic* M = ArenaAssets::MakeGlow(Holder, Color, 10.f, 1.f))
+	{
+		C->SetMaterial(0, M);
+	}
+	C->RegisterComponent();
+	C->SetVisibility(false);
+	return C;
+}
+
+void ArenaWeaponBeam::Place(UStaticMeshComponent* Beam, const FVector& Start, const FVector& End, float MeshWidth)
+{
+	if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
+	{
+		S->SetBeam(Start, End);
+		S->SetComponentTickEnabled(true);
+	}
+	else
+	{
+		ArenaFX::OrientBeamMesh(Beam, Start, End, MeshWidth);
+	}
+}
+
+void ArenaWeaponBeam::Hide(UStaticMeshComponent* Beam)
+{
+	Beam->SetVisibility(false);
+	Beam->SetComponentTickEnabled(false);
+}
 
 // =================================================================================================
 // Warhead Launcher (Redeemer)
@@ -678,7 +690,18 @@ void AWeap_SeekerLauncher::Tick(float DeltaSeconds)
 		return;
 	}
 	const float Now = GetWorldTime();
-	if (Now >= LockCheckTime)
+	if (NetState.bValid)
+	{
+		// net play: the server's lock (ONSAVRiL.bLockedOn / HomingTarget, replicated to the owner)
+		const bool bWasLocked = bLockedOn;
+		HomingTarget = NetState.HomingTarget;
+		bLockedOn = NetState.bLockedOn && HomingTarget.IsValid();
+		if (bLockedOn && !bWasLocked)
+		{
+			ArenaAssets::PlaySoundAt(this, TEXT("S_LockOn"), ArenaOwner->GetActorLocation(), 0.6f);
+		}
+	}
+	else if (Now >= LockCheckTime)
 	{
 		LockCheckTime = Now + 0.2f; // LockCheckFreq
 		UpdateLock();
@@ -1085,25 +1108,6 @@ void AWeap_CrawlerLayer::StopFire(uint8 Mode)
 		}
 	}
 	Super::StopFire(Mode);
-}
-
-void AWeap_CrawlerLayer::NetFireHeldChanged(uint8 Mode, bool bHeld)
-{
-	// net play: the target laser while alt fire is held (ONSMineLayerTargetBeamEffect of a first-person shooter, from our
-	// weapon along our view); the server moves the mines
-	if (Mode != 1)
-	{
-		return;
-	}
-	bTargeting = bHeld && bEquipped;
-	if (bTargeting && !TargetBeam)
-	{
-		TargetBeam = MakeBeam(this, FireModes[1].Color, TEXT("Onslaught.ONSMineLayerTargetBeamEffect"));
-	}
-	if (!bTargeting && TargetBeam)
-	{
-		HideBeam(TargetBeam);
-	}
 }
 
 void AWeap_CrawlerLayer::Unequip()

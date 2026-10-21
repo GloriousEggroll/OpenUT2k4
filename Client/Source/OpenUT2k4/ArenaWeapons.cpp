@@ -178,7 +178,7 @@ void AWeap_Gauntlet::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 
 	const bool bAlive = ArenaOwner && !ArenaOwner->IsDead();
-	const bool bShieldOn = bEquipped && bAlive && (bFireHeld[1] || bNetFireHeld[1]) && Ammo > 0; // bNetFireHeld: net play
+	const bool bShieldOn = bEquipped && bAlive && (bFireHeld[1] || bNetShield) && Ammo > 0; // bNetShield: net play
 	if (ShieldVisual && ShieldVisual->IsVisible() != bShieldOn)
 	{
 		ShieldVisual->SetVisibility(bShieldOn);
@@ -253,6 +253,15 @@ void AWeap_Gauntlet::StartFire(uint8 Mode)
 		return;
 	}
 	Super::StartFire(Mode);
+}
+
+void AWeap_Gauntlet::NetFireHeldChanged(uint8 Mode, bool bHeld)
+{
+	// net play: the shield comes up only with the 15 energy the server's ShieldAltFire needs (AmmoPerFire, as StartFire)
+	if (Mode == 1)
+	{
+		bNetShield = bHeld && Ammo >= 15;
+	}
 }
 
 bool AWeap_Gauntlet::CheckReflect(const FVector& HitLocation, FVector& OutRefNormal, int32 AmmoDrain)

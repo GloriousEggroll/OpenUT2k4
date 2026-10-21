@@ -696,7 +696,17 @@ bool AArenaWeapon::SetNetFireHeld(uint8 Mode, bool bHeld, bool bReady)
 	NetFireHeldChanged(Mode, bHeld);
 	if (FM.FireType == EArenaFireType::Zoom)
 	{
-		return false; // a zoom or a laser sight: no shot (UE2 SniperZoom / ONSMineLayerAltFire)
+		// zooms and laser sights are the client's own (SniperZoom, PainterZoom, ONSAVRiLAltFire, ONSMineLayerAltFire run
+		// on the owning client): the weapon's own StartFire / StopFire, which fire nothing
+		if (bHeld)
+		{
+			StartFire(Mode);
+		}
+		else
+		{
+			StopFire(Mode);
+		}
+		return false;
 	}
 	if (bHeld)
 	{

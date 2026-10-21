@@ -17,6 +17,7 @@
 #include "../ArenaPlayerController.h"
 #include "../ArenaPlayerState.h"
 #include "../ArenaRuntimeContent.h"
+#include "../ArenaTranslocator.h"
 #include "../ArenaTypes.h"
 #include "../ArenaUE2World.h"
 #include "../ArenaWeapon.h"
@@ -51,7 +52,7 @@ namespace UE2NetWorldLocal
 	{
 		static const TCHAR* Names[] = { TEXT("unknown"), TEXT("ignored"), TEXT("controller"), TEXT("pri"), TEXT("gri"), TEXT("team"), TEXT("pawn"),
 			TEXT("vehicle"), TEXT("attachment"), TEXT("projectile"), TEXT("pickup"), TEXT("mover"), TEXT("flag"), TEXT("dompoint"), TEXT("objective"),
-			TEXT("beam"), TEXT("gameobject"), TEXT("weaponpawn"), TEXT("vehicleweapon") };
+			TEXT("beam"), TEXT("gameobject"), TEXT("weaponpawn"), TEXT("vehicleweapon"), TEXT("heldbeam") };
 		static_assert(UE_ARRAY_COUNT(Names) == int32(FUE2NetWorld::EKind::Num), "kind names");
 		return Names[int32(K)];
 	}
@@ -134,6 +135,7 @@ namespace UE2NetWorldLocal
 		struct FMap { const TCHAR* Class; const TCHAR* Style; float Scale; FLinearColor Glow; };
 		static const FMap Table[] = {
 			{ TEXT("redeemerprojectile"), TEXT("Rocket"), 2.5f, FLinearColor(1.f, 0.6f, 0.3f) },
+			{ TEXT("redeemerwarhead"), TEXT("Rocket"), 2.5f, FLinearColor(1.f, 0.6f, 0.3f) },
 			{ TEXT("seekingrocketproj"), TEXT("Rocket"), 1.f, FLinearColor(1.f, 0.6f, 0.3f) },
 			{ TEXT("rocketproj"), TEXT("Rocket"), 1.f, FLinearColor(1.f, 0.6f, 0.3f) },
 			{ TEXT("onsavrilrocket"), TEXT("Rocket"), 1.2f, FLinearColor(1.f, 0.6f, 0.3f) },
@@ -476,6 +478,10 @@ FUE2NetWorld::EKind FUE2NetWorld::Classify(const FEntity& E) const
 	{
 		return EKind::Vehicle;
 	}
+	if (Has(E, TEXT("redeemerwarhead")))
+	{
+		return EKind::Projectile; // a guided Redeemer: a pawn its player flies, shown as the missile (ours is flown by Net/UE2NetPlay)
+	}
 	if (Has(E, TEXT("timestamp_pawn")))
 	{
 		return EKind::Ignored; // UTComp's NewNet clock (Net/UE2NetNewNet.h): no body, never shown
@@ -520,6 +526,14 @@ FUE2NetWorld::EKind FUE2NetWorld::Classify(const FEntity& E) const
 		|| Has(E, TEXT("redeemerexplosion")) || Has(E, TEXT("smallredeemerexplosion")))
 	{
 		return EKind::Beam; // shot effects (beams, hit effects, blasts) spawned once by the server
+	}
+	if (E.ClassName.StartsWith(TEXT("NewTransEffect")) || E.ClassName.StartsWith(TEXT("NewTransDeres")))
+	{
+		return EKind::Beam; // xPawn.PlayTeleportEffect / DoTranslocateOut: the translocation flashes
+	}
+	if (Has(E, TEXT("linkbeameffect")) || Has(E, TEXT("painterbeameffect")))
+	{
+		return EKind::HeldBeam;
 	}
 	// known engine / game infrastructure without anything to show (inventory is replicated to its owner only)
 	static const TCHAR* Known[] = { TEXT("levelinfo"), TEXT("inventory"), TEXT("voicechatreplicationinfo"), TEXT("playerchatmanager"),
@@ -574,6 +588,20 @@ void FUE2NetWorld::ActorUpdated(const FUE2NetActor& A, const TArray<FString>& Ch
 	}
 }
 
+void FUE2NetWorld::DropNativeActor(int32 Channel)
+{
+	FEntity* E = Entities.Find(Channel);
+	if (E && E->bOwned && E->Native.IsValid())
+	{
+		E->Native->Destroy();
+	}
+	if (E)
+	{
+		E->Native.Reset();
+		E->bOwned = false;
+	}
+}
+
 void FUE2NetWorld::ActorClosed(const FUE2NetActor& A)
 {
 	FEntity E;
@@ -601,7 +629,24 @@ void FUE2NetWorld::ActorClosed(const FUE2NetActor& A)
 		{
 			// bNetTemporary projectiles: the channel closes right after the initial bunch, the client flies them on
 			// until they hit something; the others are closed when they explode
-			if (!Proj->IsTemporary())
+			if (Has(E, TEXT("shockprojectile")))
+			{
+				// a shock combo may come with its close: the core's explosion waits for it (SpawnBeam)
+				bool bCombo = false;
+				for (const TPair<FVector, double>& C : RecentCombos)
+				{
+					bCombo |= FPlatformTime::Seconds() - C.Value < 0.5 && FVector::Dist(C.Key, Proj->GetActorLocation()) < 250.f * UE2NetWorldLocal::S;
+				}
+				if (bCombo)
+				{
+					Proj->Destroy();
+				}
+				else
+				{
+					PendingShockCores.Emplace(Proj, FPlatformTime::Seconds() + 0.1);
+				}
+			}
+			else if (!Proj->IsTemporary())
 			{
 				Proj->NetExplode();
 			}
@@ -713,6 +758,7 @@ void FUE2NetWorld::Apply(FEntity& E, const FUE2NetActor& A, const TArray<FString
 			SpawnBeam(E, A);
 		}
 		break;
+	case EKind::HeldBeam: ApplyHeldBeam(E, A, Changed, bInitial); break;
 	default:
 		break;
 	}
@@ -1144,6 +1190,26 @@ void FUE2NetWorld::SpawnBeam(FEntity& E, const FUE2NetActor& A)
 	if (W && Has(E, TEXT("shockcombo")))
 	{
 		ArenaFX::SpawnExplosion(W, Start, FLinearColor(0.6f, 0.3f, 1.f), 250.f, TEXT("Explosion.ShockCombo"));
+		// ShockProjectile.SuperExplosion: the core goes without its own explosion (closed now or in a moment)
+		RecentCombos.Emplace(Start, FPlatformTime::Seconds());
+		for (int32 i = PendingShockCores.Num() - 1; i >= 0; --i)
+		{
+			AUE2NetProjectile* Core = PendingShockCores[i].Key.Get();
+			if (!Core || FVector::Dist(Core->GetActorLocation(), Start) < 250.f * S)
+			{
+				if (Core)
+				{
+					Core->Destroy();
+				}
+				PendingShockCores.RemoveAt(i);
+			}
+		}
+		return;
+	}
+	if (W && (E.ClassName.StartsWith(TEXT("NewTransEffect")) || E.ClassName.StartsWith(TEXT("NewTransDeres"))))
+	{
+		// TransEffects where a pawn arrives, TransOutEffect where it left (the team colour is in the class)
+		AArenaTransEffect::Spawn(W, Start, E.ClassName.Contains(TEXT("Blue")) ? 1 : 0, E.ClassName.StartsWith(TEXT("NewTransDeres")));
 		return;
 	}
 	if (W && Has(E, TEXT("smallredeemerexplosion")))
@@ -1201,6 +1267,36 @@ void FUE2NetWorld::SpawnBeam(FEntity& E, const FUE2NetActor& A)
 	}
 }
 
+void FUE2NetWorld::ApplyHeldBeam(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial)
+{
+	using namespace UE2NetWorldLocal;
+	UWorld* W = World.Get();
+	const int32 Inst = GetRef(A, TEXT("Instigator"));
+	const FUE2NetPlay* Play = FUE2NetPlay::Get();
+	if (!W || (Play && Play->IsOwnPawnChannel(Inst)))
+	{
+		return; // ours: our weapon draws it while we hold fire (its StartEffect / EndEffect are not sent to us)
+	}
+	AUE2NetBeam* Beam = Cast<AUE2NetBeam>(E.Native.Get());
+	if (!Beam)
+	{
+		FActorSpawnParameters P;
+		P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		P.ObjectFlags |= RF_Transient;
+		Beam = W->SpawnActor<AUE2NetBeam>(AUE2NetBeam::StaticClass(), ToVec(A.SpawnLocation) * S, FRotator::ZeroRotator, P);
+		if (!Beam)
+		{
+			return;
+		}
+		Beam->Setup(Has(E, TEXT("painterbeameffect")));
+		E.Native = Beam;
+		E.bOwned = true;
+	}
+	// LinkBeamEffect: StartEffect / EndEffect; PainterBeamEffect: EndEffect (it starts at the painter); the beam leaves
+	// the firing pawn's weapon as we show it
+	Beam->SetEnds(PawnForChannel(Inst), GetVec(A, TEXT("StartEffect"), ToVec(A.SpawnLocation)) * S, GetVec(A, TEXT("EndEffect")) * S);
+}
+
 // =================================================================================================
 // Projectiles, pickups, movers, objectives
 // =================================================================================================
@@ -1212,9 +1308,10 @@ void FUE2NetWorld::ApplyProjectile(FEntity& E, const FUE2NetActor& A, const TArr
 	AUE2NetProjectile* Proj = Cast<AUE2NetProjectile>(E.Native.Get());
 	if (!Proj)
 	{
-		if (!W)
+		const FUE2NetPlay* Play = FUE2NetPlay::Get();
+		if (!W || (Play && Play->IsOwnPawnChannel(A.Channel)) || GetBool(A, TEXT("bHidden")))
 		{
-			return;
+			return; // our own guided warhead (flown by Net/UE2NetPlay), or one already blown up
 		}
 		const FVector Loc = GetVec(A, TEXT("Location"), ToVec(A.SpawnLocation)) * S;
 		const FRotator Rot(A.SpawnRotation.X * 360.f / 65536.f, A.SpawnRotation.Y * 360.f / 65536.f, 0.f);
@@ -2869,6 +2966,18 @@ void FUE2NetWorld::Tick(float DeltaSeconds)
 		return;
 	}
 	const double Now = FPlatformTime::Seconds();
+	for (int32 i = PendingShockCores.Num() - 1; i >= 0; --i)
+	{
+		if (Now >= PendingShockCores[i].Value)
+		{
+			if (AUE2NetProjectile* Core = PendingShockCores[i].Key.Get())
+			{
+				Core->NetExplode();
+			}
+			PendingShockCores.RemoveAt(i);
+		}
+	}
+	RecentCombos.RemoveAll([Now](const TPair<FVector, double>& C) { return Now - C.Value > 0.5; });
 	AArenaGameState* GS = W->GetGameState<AArenaGameState>();
 	// UE2 GameReplicationInfo.Timer on clients: the remaining time counts down locally between RemainingMinute updates
 	if (Now >= NextSecond)

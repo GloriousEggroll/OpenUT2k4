@@ -126,6 +126,18 @@ public:
 	/** Net play: the mode plays a shot at its fire rate while held (instant hit and projectile modes that don't charge). */
 	virtual bool IsNetAutoFire(uint8 Mode) const;
 	bool IsNetFireHeld(uint8 Mode) const { return Mode < 2 && bNetFireHeld[Mode]; }
+	/** Net play: the UT2004 server's state of this weapon (its weapon actor, replicated to us as its owner), set by
+	 *  Net/UE2NetPlay; bValid only in net play. */
+	struct FNetWeaponState
+	{
+		bool bValid = false;
+		/** ONSAVRiL.bLockedOn / HomingTarget (the target as we show it) */
+		bool bLockedOn = false;
+		TWeakObjectPtr<AActor> HomingTarget;
+		/** TransLauncher.TransBeacon is out */
+		bool bBeaconOut = false;
+	};
+	FNetWeaponState NetState;
 	/** UE2 Weapon.GetEffectStart: where our shot effects leave the weapon (the first-person muzzle). */
 	FVector GetEffectStart() const { return GetMuzzleLocation(); }
 	/** Fire on release for charge modes. */

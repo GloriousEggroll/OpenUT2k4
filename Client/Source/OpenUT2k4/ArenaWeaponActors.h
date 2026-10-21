@@ -124,6 +124,19 @@ public:
 	/** Vertical speed (cm/s): the altitude strips pan with it. */
 	float GetClimbRate() const { return VelUU.Z * ArenaWeaponActors::UU; }
 	AArenaCharacter* GetOldPawn() const { return OldPawn.Get(); }
+	/** Net play (Net/UE2NetPlay.h): the UT2004 server's RedeemerWarhead we possess, flown here like PlayerRocketing and
+	 *  corrected by the server; it does no damage and has no blast of its own (the server's RedeemerExplosion). */
+	void LaunchNet(AController* InFlyer, const FVector& InVelUU);
+	/** Net play: the server's location and velocity (UU), after replaying our moves since. */
+	void SetNetFlight(const FVector& LocUU, const FVector& InVelUU);
+	/** Net play: the server blew it up (bStaticScreen): the static screen until it gives us our pawn back. */
+	void NetBlownUp();
+	bool IsNetFlight() const { return bNetFlight; }
+	/** UE2 Acceleration / Velocity (UU). */
+	const FVector& GetAccelUU() const { return AccelUU; }
+	const FVector& GetVelUU() const { return VelUU; }
+	/** PHYS_Flying's velocity step (UE2 CalcVelocity with the default volume's FluidFriction 0.3, AirSpeed 1000). */
+	static void FlyVelocity(FVector& InOutVelUU, const FVector& InAccelUU, float DeltaTime);
 	UPROPERTY() TObjectPtr<USphereComponent> Collision;
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> Mesh;
 	UPROPERTY() TObjectPtr<UCameraComponent> Camera;
@@ -146,6 +159,7 @@ protected:
 	FRotator LastSetRotation = FRotator::ZeroRotator;
 	bool bFireWasDown = true;
 	bool bBlown = false;
+	bool bNetFlight = false;
 	bool bStaticScreen = false;
 	float RelinquishTime = -1.f;
 	bool bRelinquished = false;

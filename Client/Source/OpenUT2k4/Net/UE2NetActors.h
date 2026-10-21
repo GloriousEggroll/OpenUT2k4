@@ -184,6 +184,29 @@ protected:
 	bool HitsPawn(const FVector& From, const FVector& To, FVector& OutHit) const;
 };
 
+/** A beam another player's held fire keeps (LinkBeamEffect, PainterBeamEffect): from its gun to the replicated end. */
+UCLASS(NotPlaceable, Transient)
+class OPENUT2K4_API AUE2NetBeam : public AActor
+{
+	GENERATED_BODY()
+
+public:
+	AUE2NetBeam();
+	/** bPainter: the painter's beam (PainterBeamEffect), else the link gun's (LinkBeamEffect). */
+	void Setup(bool bPainter);
+	/** From: the firing pawn (the beam leaves its third-person weapon); InStart: the replicated start (cm) when the pawn
+	 *  is not shown; InEnd: the replicated end (cm). */
+	void SetEnds(class AUE2NetPawn* From, const FVector& InStart, const FVector& InEnd);
+	virtual void Tick(float DeltaSeconds) override;
+
+protected:
+	UPROPERTY() TArray<TObjectPtr<class UArenaSpriteComponent>> Sprites;
+	UPROPERTY() TObjectPtr<UStaticMeshComponent> Fallback;
+	TWeakObjectPtr<class AUE2NetPawn> Source;
+	FVector StartLoc = FVector::ZeroVector;
+	FVector EndLoc = FVector::ZeroVector;
+};
+
 /**
  * Anything else worth showing that has no native counterpart yet (ONS vehicles, the bombing run ball when no
  * native ball exists ...): a team-tinted box of the replicated collision size, or a static mesh, at the replicated

@@ -57,6 +57,8 @@ public:
 	/** Our AUE2NetPawn for a pawn channel (also torn-off ones until the channel closes), or null. */
 	class AUE2NetPawn* GetNetPawn(int32 PawnChannel) { return PawnForChannel(PawnChannel); }
 	/** Our actor for any channel (a vehicle's AUE2NetVehicle, a map actor we drive, a pawn ...), or null. */
+	/** Removes what we show for an actor without its end effects (our own guided warhead: Net/UE2NetPlay flies it). */
+	void DropNativeActor(int32 Channel);
 	AActor* GetNativeActor(int32 Channel) const { const FEntity* E = Channel ? Entities.Find(Channel) : nullptr; return E ? E->Native.Get() : nullptr; }
 	/** The channel whose actor (or a component's owner chain up to it) Actor is, or 0. */
 	int32 FindChannelOf(const AActor* Actor) const;
@@ -70,7 +72,7 @@ public:
 	enum class EKind : uint8
 	{
 		Unknown, Ignored, Controller, PRI, GRI, Team, Pawn, Vehicle, Attachment, Projectile, Pickup, Mover, Flag, DomPoint,
-		Objective, Beam, GameObject, WeaponPawn, VehicleWeapon, Num
+		Objective, Beam, GameObject, WeaponPawn, VehicleWeapon, HeldBeam, Num
 	};
 
 private:
@@ -157,6 +159,8 @@ private:
 	 */
 	bool ShowScriptedMessage(const FString& ClassPath, FUSClass* Class, int32 Switch, int32 PRI1, int32 PRI2, const struct FUE2NetValue* Optional);
 	void SpawnBeam(FEntity& E, const FUE2NetActor& A);
+	/** LinkBeamEffect / PainterBeamEffect of other players: a beam kept while they hold fire. */
+	void ApplyHeldBeam(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 
 	// controller calls
 	void ReceiveLocalizedMessage(const TArray<TPair<FName, FUE2NetValue>>& Params);
@@ -196,6 +200,10 @@ private:
 	TMap<int32, FEntity> Entities;
 	/** Torn-off pawns kept a few seconds after their channel closed (ragdolls). */
 	TArray<TPair<TWeakObjectPtr<AActor>, double>> Corpses;
+	/** Shock cores whose channel closed: their explosion waits a moment, a shock combo there takes its place. */
+	TArray<TPair<TWeakObjectPtr<class AUE2NetProjectile>, double>> PendingShockCores;
+	/** Recent shock combos (location, real time): a core closing there just goes. */
+	TArray<TPair<FVector, double>> RecentCombos;
 
 	int32 OwnPRIChannel = 0;
 	int32 GRIChannel = 0;

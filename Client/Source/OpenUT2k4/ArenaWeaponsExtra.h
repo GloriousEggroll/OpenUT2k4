@@ -151,12 +151,23 @@ public:
 protected:
 	virtual void BuildViewModel() override;
 	virtual void FireProjectile(uint8 Mode, float ChargeAlpha) override;
-	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> TargetBeam;
 	TArray<TWeakObjectPtr<AArenaCrawlerMine>> Mines;
 	bool bTargeting = false;
 	float NextTargetHit = 0.f;
 };
+
+/** Beams of held fire modes (painter, mine layer laser), also the other players' beams in net play (Net/UE2NetActors). */
+namespace ArenaWeaponBeam
+{
+	/** A beam on Holder placed every tick in world space: the stock effect class's texture and width as a camera-facing
+	 *  quad, else a glowing cylinder. Starts hidden. */
+	OPENUT2K4_API UStaticMeshComponent* Make(AActor* Holder, const FLinearColor& Color, const TCHAR* UE2EffectClass = nullptr);
+	/** Shows a beam made by Make from Start to End (MeshWidth: the cylinder's width). */
+	OPENUT2K4_API void Place(UStaticMeshComponent* Beam, const FVector& Start, const FVector& End, float MeshWidth);
+	/** Hides a beam made by Make (a sprite beam without a lifetime would show itself again on its next tick). */
+	OPENUT2K4_API void Hide(UStaticMeshComponent* Beam);
+}
 
 namespace ArenaWeaponList
 {

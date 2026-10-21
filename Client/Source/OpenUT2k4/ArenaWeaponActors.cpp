@@ -480,6 +480,86 @@ void AArenaGuidedWarhead::Launch(AArenaCharacter* Old, AController* InFlyer, con
 	}
 }
 
+void AArenaGuidedWarhead::LaunchNet(AController* InFlyer, const FVector& InVelUU)
+{
+	// the server spawned the warhead and possessed it (RedeemerGuidedFire.SpawnProjectile, PlayerController.Possess ->
+	// ClientRestart): we fly it in PlayerRocketing; the old pawn stays on the server (the world layer shows it)
+	bNetFlight = true;
+	Flyer = InFlyer;
+	const FVector Dir = GetActorForwardVector();
+	VelUU = InVelUU.IsNearlyZero() ? Dir * 1000.f : InVelUU;
+	AccelUU = VelUU.GetSafeNormal() * 2000.f;
+	SetCanBeDamaged(false);
+	Tags.Remove(ShootableTag);
+	Mesh = AddArtMesh(this, Collision, TEXT("StaticMeshes/WeaponStaticMesh/RedeemerMissile"), 150.f, FLinearColor(1.f, 0.6f, 0.3f));
+	if (Mesh)
+	{
+		Mesh->SetOwnerNoSee(true); // bOwnerNoSee
+	}
+	if (AArenaEmitter* T = ArenaUE2Effects::SpawnEmitter(GetWorld(), TEXT("XEffects.RedeemerTrail"), GetActorLocation() - Dir * 40.f * UU, Dir.Rotation(), 30.f))
+	{
+		T->AttachToActor(this, FAttachmentTransformRules::KeepWorldTransform);
+		SmokeTrail = T;
+	}
+	if (USoundBase* S = ArenaArt::Load<USoundBase>(TEXT("Sounds/WeaponSounds/Misc_redeemer_flight")))
+	{
+		FlightSound->SetSound(S);
+		FlightSound->Play();
+	}
+	if (AController* C = InFlyer)
+	{
+		APlayerState* PS = C->PlayerState;
+		C->Possess(this);
+		SetPlayerState(PS);
+		LastSetRotation = FRotator(GetActorRotation().Pitch, GetActorRotation().Yaw, 0.f);
+		C->SetControlRotation(LastSetRotation);
+	}
+}
+
+void AArenaGuidedWarhead::SetNetFlight(const FVector& LocUU, const FVector& InVelUU)
+{
+	if (bBlown)
+	{
+		return;
+	}
+	SetActorLocation(LocUU * UU, false, nullptr, ETeleportType::TeleportPhysics);
+	VelUU = InVelUU;
+}
+
+void AArenaGuidedWarhead::NetBlownUp()
+{
+	if (bBlown)
+	{
+		return;
+	}
+	// RedeemerWarhead.BlowUp on the server: bStaticScreen for the flyer until RelinquishController; the explosion is
+	// the server's RedeemerExplosion actor
+	bBlown = true;
+	bStaticScreen = true;
+	SetActorHiddenInGame(true);
+	SetActorEnableCollision(false);
+	if (FlightSound)
+	{
+		FlightSound->Stop();
+	}
+	if (AActor* T = SmokeTrail.Get())
+	{
+		T->Destroy();
+	}
+}
+
+void AArenaGuidedWarhead::FlyVelocity(FVector& InOutVelUU, const FVector& InAccelUU, float DeltaTime)
+{
+	const float VelSize = InOutVelUU.Size();
+	const FVector AccelDir = InAccelUU.GetSafeNormal();
+	InOutVelUU = InOutVelUU - (InOutVelUU - AccelDir * VelSize) * FMath::Min(DeltaTime * 0.3f, 1.f);
+	InOutVelUU += InAccelUU * DeltaTime;
+	if (InOutVelUU.SizeSquared() > FMath::Square(1000.f))
+	{
+		InOutVelUU = InOutVelUU.GetSafeNormal() * 1000.f;
+	}
+}
+
 float AArenaGuidedWarhead::GetBankingDeg() const
 {
 	return Banking * 360.f / 65536.f;
@@ -536,11 +616,14 @@ void AArenaGuidedWarhead::Tick(float DeltaSeconds)
 	{
 		FlightSound->Play();
 	}
-	// Flying.Tick: the old pawn died, or the player left -> blow up
+	// Flying.Tick: the old pawn died, or the player left -> blow up (net play: the server decides)
 	AArenaCharacter* Old = OldPawn.Get();
-	if (!Old || Old->IsDead() || !Controller || Controller != Flyer.Get())
+	if (!Controller || (!bNetFlight && (!Old || Old->IsDead() || Controller != Flyer.Get())))
 	{
-		BlowUp(GetActorLocation());
+		if (!bNetFlight)
+		{
+			BlowUp(GetActorLocation());
+		}
 		return;
 	}
 	// PlayerRocketing.PlayerMove: aTurn / aLookUp (UE2 ViewRotation += 32 x dt x aTurn) from this frame's mouse input
@@ -555,21 +638,13 @@ void AArenaGuidedWarhead::Tick(float DeltaSeconds)
 		PitchChange = DPitch * 65536.f / 360.f / (32.f * DeltaSeconds);
 	}
 	UpdateRocketAcceleration(DeltaSeconds, YawChange, PitchChange);
-	// PHYS_Flying (UE2 CalcVelocity with the default volume's FluidFriction 0.3, AirSpeed 1000)
-	const float VelSize = VelUU.Size();
-	const FVector AccelDir = AccelUU.GetSafeNormal();
-	VelUU = VelUU - (VelUU - AccelDir * VelSize) * FMath::Min(DeltaSeconds * 0.3f, 1.f);
-	VelUU += AccelUU * DeltaSeconds;
-	if (VelUU.SizeSquared() > FMath::Square(1000.f))
-	{
-		VelUU = VelUU.GetSafeNormal() * 1000.f;
-	}
+	FlyVelocity(VelUU, AccelUU, DeltaSeconds);
 	FHitResult Hit;
 	SetActorLocation(GetActorLocation() + VelUU * UU * DeltaSeconds, true, &Hit);
 	FRotator R = VelUU.Rotation();
 	R.Roll = GetBankingDeg();
 	SetActorRotation(R);
-	if (Hit.bBlockingHit)
+	if (Hit.bBlockingHit && !bNetFlight)
 	{
 		BlowUp(Hit.Location);
 		return;
@@ -578,8 +653,8 @@ void AArenaGuidedWarhead::Tick(float DeltaSeconds)
 	const FRotator View(R.Pitch, R.Yaw, 0.f);
 	Controller->SetControlRotation(View);
 	LastSetRotation = View;
-	// Fire / AltFire: blow it up
-	if (APlayerController* PC = Cast<APlayerController>(Controller))
+	// Fire / AltFire: blow it up (net play: ServerBlowUp, sent by Net/UE2NetPlay)
+	if (APlayerController* PC = bNetFlight ? nullptr : Cast<APlayerController>(Controller))
 	{
 		const bool bDown = PC->IsInputKeyDown(EKeys::LeftMouseButton) || PC->IsInputKeyDown(EKeys::RightMouseButton)
 			|| PC->IsInputKeyDown(EKeys::Gamepad_RightTrigger) || PC->IsInputKeyDown(EKeys::Gamepad_LeftTrigger);
@@ -594,7 +669,7 @@ void AArenaGuidedWarhead::Tick(float DeltaSeconds)
 
 float AArenaGuidedWarhead::TakeDamage(float DamageAmount, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
-	if (bBlown || DamageAmount <= 0.f)
+	if (bBlown || bNetFlight || DamageAmount <= 0.f)
 	{
 		return 0.f;
 	}
@@ -681,7 +756,7 @@ void AArenaGuidedWarhead::RelinquishController()
 
 void AArenaGuidedWarhead::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (EndPlayReason == EEndPlayReason::Destroyed && !bRelinquished)
+	if (EndPlayReason == EEndPlayReason::Destroyed && !bRelinquished && !bNetFlight)
 	{
 		RelinquishController();
 	}

@@ -98,6 +98,8 @@ public:
 	virtual uint8 GetBotFireMode(float DistanceToEnemy) const override { return 0; }
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Net play: one throw / recall / translocation per press (bWaitForRelease), never at the fire rate. */
+	virtual bool IsNetAutoFire(uint8 Mode) const override { return false; }
 
 	// ---- TransLauncher ----
 	/** AmmoChargeF: whole charges plus the one recharging. */
@@ -142,6 +144,10 @@ protected:
 	/** TransRecall.Translocate body: the destination, the pawns there and the move. */
 	bool DoTranslocate(AArenaTransBeacon* B);
 	void ApplyTeamSkin();
+	/** Net play: a press (SetNetFireHeld), played when the mode is ready like a UE2 client's TransFire / TransRecall. */
+	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
+	/** Net play: the owner's effects of a throw, recall or translocation; the server does them. */
+	void PlayNetTransFire(uint8 Mode);
 	/** UE2 Pawn.gibbedBy(Other) for Victim. */
 	static void GibbedBy(AArenaCharacter* Victim, AArenaCharacter* Other);
 
