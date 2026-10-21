@@ -53,6 +53,8 @@ protected:
 	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	void StopPainting();
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> PaintBeam;
+	/** Net play: PainterBeamEffect's Brightness of our beam. */
+	float NetPaintBrightness = 40.f;
 	bool bPainting = false;
 	bool bValidMark = false;
 	bool bMarkStarted = false;
@@ -167,6 +169,11 @@ namespace ArenaWeaponBeam
 	OPENUT2K4_API void Place(UStaticMeshComponent* Beam, const FVector& Start, const FVector& End, float MeshWidth);
 	/** Hides a beam made by Make (a sprite beam without a lifetime would show itself again on its next tick). */
 	OPENUT2K4_API void Hide(UStaticMeshComponent* Beam);
+	/** PainterBeamEffect.Tick / Aquired / Cancelled: its Brightness (40 aiming, up to 250 once marked) after DeltaTime
+	 *  in the replicated TargetState (0 aiming, 1 marked, 2 acquired, 3 cancelled). */
+	OPENUT2K4_API float PainterBrightness(uint8 TargetState, float Brightness, float DeltaTime);
+	/** PainterBeamEffect.SetBrightness: mColorRange = Brightness (grey) on the beam's texture. */
+	OPENUT2K4_API void SetBrightness(UStaticMeshComponent* Beam, float Brightness);
 }
 
 namespace ArenaWeaponList

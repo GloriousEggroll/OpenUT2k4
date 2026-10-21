@@ -138,6 +138,27 @@ void ArenaWeaponBeam::Hide(UStaticMeshComponent* Beam)
 	Beam->SetComponentTickEnabled(false);
 }
 
+float ArenaWeaponBeam::PainterBrightness(uint8 TargetState, float Brightness, float DeltaTime)
+{
+	switch (TargetState)
+	{
+	case 1: return FMath::Max(FMath::Min(Brightness + DeltaTime * 100.f, 250.f), 100.f); // PTS_Marked
+	case 2: return 250.f;                                                                   // PTS_Aquired
+	case 3: return FMath::Max(Brightness - DeltaTime * 100.f, 40.f);                        // PTS_Cancelled
+	default: return 40.f;                                                                   // PTS_Aiming
+	}
+}
+
+void ArenaWeaponBeam::SetBrightness(UStaticMeshComponent* Beam, float Brightness)
+{
+	// the additive sprite's tint, scaled as Make scales the effect's colour
+	if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
+	{
+		const float B = Brightness / 255.f * 2.f;
+		S->SetTint(FLinearColor(B, B, B));
+	}
+}
+
 // =================================================================================================
 // Warhead Launcher (Redeemer)
 // =================================================================================================
@@ -384,6 +405,9 @@ void AWeap_OrbitalDesignator::Tick(float DeltaSeconds)
 		FHitResult Hit;
 		PaintBeam->SetVisibility(true);
 		PlaceBeam(PaintBeam, GetMuzzleLocation(), WeaponTrace(Start, End, Hit) ? FVector(Hit.ImpactPoint) : End, 1.5f);
+		// brighter once the server's PainterBeamEffect says the mark holds (TargetState)
+		NetPaintBrightness = ArenaWeaponBeam::PainterBrightness(NetState.PainterTargetState, NetPaintBrightness, DeltaSeconds);
+		ArenaWeaponBeam::SetBrightness(PaintBeam, NetPaintBrightness);
 	}
 }
 
@@ -400,6 +424,8 @@ void AWeap_OrbitalDesignator::NetFireHeldChanged(uint8 Mode, bool bHeld)
 		{
 			PaintBeam = MakeBeam(this, FireModes[0].Color, TEXT("XWeapons.PainterBeamEffect"));
 		}
+		NetState.PainterTargetState = 0;
+		NetPaintBrightness = 40.f;
 		PlayFireSound(0, GetMuzzleLocation(), 0.5f, 1.f);
 	}
 	else if (PaintBeam)

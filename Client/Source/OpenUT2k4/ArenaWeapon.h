@@ -136,6 +136,8 @@ public:
 		TWeakObjectPtr<AActor> HomingTarget;
 		/** TransLauncher.TransBeacon is out */
 		bool bBeaconOut = false;
+		/** Our PainterBeamEffect's TargetState (0 aiming, 1 marked, 2 acquired, 3 cancelled) */
+		uint8 PainterTargetState = 0;
 	};
 	FNetWeaponState NetState;
 	/** UE2 Weapon.GetEffectStart: where our shot effects leave the weapon (the first-person muzzle). */

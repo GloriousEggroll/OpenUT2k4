@@ -1871,6 +1871,10 @@ void FUE2NetPlay::TickFireEffects()
 		if (!bFireHeld[Mode])
 		{
 			bNetWaitRelease[Mode] = false;
+			if (W->FireModes[Mode].FireType == EArenaFireType::Melee)
+			{
+				NextMeleeTest = Now + 0.15f; // ShieldFire.ModeHoldFire: SetTimer(AutoFireTestFreq, true)
+			}
 		}
 		// a charge keeps going when it took the last ammo (bio alt), the release fires it
 		const bool bHold = bFireHeld[Mode] && !bNetWaitRelease[Mode] && (bAmmo || (W->IsNetFireHeld(Mode) && W->IsChargeMode(Mode)));
@@ -3148,8 +3152,22 @@ void FUE2NetPlay::TickScript(double Now)
 		}
 		else if (Key == TEXT("aim") && Pawn && PC)
 		{
-			// look straight at the last goto target (e.g. a vehicle to lock on to)
-			PC->SetControlRotation((ScriptGotoTarget - Pawn->GetPawnViewLocation()).Rotation());
+			// look straight at the last goto target; aim=vehicle: at the nearest vehicle shown (e.g. one to lock on to)
+			FVector Target = ScriptGotoTarget;
+			if (Value == TEXT("vehicle"))
+			{
+				double Best = TNumericLimits<double>::Max();
+				for (TActorIterator<AUE2NetVehicle> It(World.Get()); It; ++It)
+				{
+					const double D = FVector::DistSquared(It->GetActorLocation(), Pawn->GetActorLocation());
+					if (D < Best)
+					{
+						Best = D;
+						Target = It->GetActorLocation();
+					}
+				}
+			}
+			PC->SetControlRotation((Target - Pawn->GetPawnViewLocation()).Rotation());
 		}
 		else if (Key == TEXT("hunt"))
 		{

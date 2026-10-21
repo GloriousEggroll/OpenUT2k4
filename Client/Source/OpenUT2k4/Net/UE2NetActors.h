@@ -184,7 +184,8 @@ protected:
 	bool HitsPawn(const FVector& From, const FVector& To, FVector& OutHit) const;
 };
 
-/** A beam another player's held fire keeps (LinkBeamEffect, PainterBeamEffect): from its gun to the replicated end. */
+/** A beam another player's held fire keeps (LinkBeamEffect, PainterBeamEffect, ONSMineLayerTargetBeamEffect): from its
+ *  gun to the replicated end. */
 UCLASS(NotPlaceable, Transient)
 class OPENUT2K4_API AUE2NetBeam : public AActor
 {
@@ -192,8 +193,10 @@ class OPENUT2K4_API AUE2NetBeam : public AActor
 
 public:
 	AUE2NetBeam();
-	/** bPainter: the painter's beam (PainterBeamEffect), else the link gun's (LinkBeamEffect). */
-	void Setup(bool bPainter);
+	enum class EType : uint8 { Link, Painter, MineLaser };
+	void Setup(EType InType);
+	/** PainterBeamEffect.TargetState (its brightness follows it). */
+	void SetTargetState(uint8 InState) { TargetState = InState; }
 	/** From: the firing pawn (the beam leaves its third-person weapon); InStart: the replicated start (cm) when the pawn
 	 *  is not shown; InEnd: the replicated end (cm). */
 	void SetEnds(class AUE2NetPawn* From, const FVector& InStart, const FVector& InEnd);
@@ -205,6 +208,9 @@ protected:
 	TWeakObjectPtr<class AUE2NetPawn> Source;
 	FVector StartLoc = FVector::ZeroVector;
 	FVector EndLoc = FVector::ZeroVector;
+	EType Type = EType::Link;
+	uint8 TargetState = 0;
+	float Brightness = 40.f;
 };
 
 /**

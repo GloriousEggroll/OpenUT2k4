@@ -89,7 +89,7 @@ Command line (development and test hooks):
 | `-UE2NetDownloadSelfTest` | at startup, checks the file name rules and `.uz2` unpacking and logs `UE2NetDownloadSelfTest: n passed, m failed` (non-shipping) |
 | `-UE2NetTestMapVote=<map>` | once the server counts a map vote down (and the map list is complete), votes for that map in the current game type (test hook for map voting, non-shipping) |
 | `-UE2NetViewPlayer` | once joined, asks the server every 20 s to let our spectator follow the next player (`ServerViewNextPlayer`); keeps a pawn relevant and tests client to server calls. Local test servers only |
-| `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `aim` (look straight at it), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire; `hunt=tap`: one press per shot, released once the start fire went out) |
+| `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `aim` (look straight at it; `aim=vehicle`: at the nearest vehicle shown), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire; `hunt=tap`: one press per shot, released once the start fire went out) |
 | `-UE2NetPlayProbe` | step 4 test hook, local servers only: `ClientLoc` is sent 500 UU off, so the server answers every move with its own pawn state. Logged (`UE2NetPlayProbe: ...`), never applied. This measured the 3369 server's physics |
 | `-UE2NetLag=<ms>` | adds that much round trip time (half in each direction) to every packet (test hook, non-shipping) |
 | `-UE2NetNoNewNet` | NewNet weapons get the stock `ServerStartFire` (no lag compensation; A/B test hook, non-shipping) |
@@ -889,7 +889,7 @@ Role and RemoteRole are swapped. Actors are classified by their class chain:
 | `ShockBeamEffect`, `NewLightningBolt`, `ShockCombo` | our shock / instagib / lightning beams and impacts (our own shock beams from our first-person weapon), the shock combo explosion |
 | `SniperWallHitEffect`, `RedeemerExplosion`, `SmallRedeemerExplosion` | the classic sniper rifle's hit effect, the Redeemer's nuke (`AArenaWarheadShell::SpawnNukeEffects`) and its small blast |
 | `NewTransEffect*`, `NewTransDeres*` | the translocation flashes where a pawn arrives and where it left (`AArenaTransEffect`) |
-| `LinkBeamEffect`, `PainterBeamEffect` (other players') | `AUE2NetBeam` from the player's third-person weapon to the replicated `EndEffect` while it exists (ours: our own weapon draws it) |
+| `LinkBeamEffect`, `PainterBeamEffect`, `ONSMineLayerTargetBeamEffect` (other players') | `AUE2NetBeam` from the player's third-person weapon to the replicated `EndEffect` while it exists (the mine laser until `bCancel`); the painter's brightness follows `TargetState` as `PainterBeamEffect.SetBrightness` does (40 aiming, up to 250 once marked / acquired). Ours: our own weapon draws the beam, and our painter takes `TargetState` from our `PainterBeamEffect` |
 | `ShockCombo` | also takes the place of the shock core's own explosion (the core's close waits 0.1 s for it) |
 | `Projectile` | `AUE2NetProjectile` with the art of our projectile table (rocket, flak chunk and shell, shock core, link plasma, bio, grenades; others a glow), flown along the replicated velocity with gravity when falling. **`bNetTemporary` projectiles** (rockets, flak, link plasma...) are sent once and their channel closes at once: the client flies them itself until they hit the world or a pawn (then their explosion / impact) or their `LifeSpan` ends; flak chunks and grenades bounce. Other projectiles explode when their channel closes |
 | `Pickup` | the map's `AArenaPickup` nearest to the replicated location (pickups are spawned actors in UE2): shown / hidden by `bHidden` (taken / respawned) |
@@ -1089,10 +1089,12 @@ and our floor component.
   the button is held (`AArenaWeapon::PlayNetFireEffects`; UE2 clients play their own shots too), and the assault
   rifle's and minigun's tracers along our view. Charged modes (shield gun, bio and assault rifle alt, rocket load) play
   their shot on release (the shield gun also when a pawn is in front of it, as `ShieldFire.Timer` does on the owning
-  client); the shield (with the 15 energy it needs), the link beam, the mine layer's laser and the painter's beam show
+  client every 0.15 s of the hold, and not again when the button comes up); the shield (with the 15 energy it needs), the link beam, the mine layer's laser and the painter's beam show
   while held (`AArenaWeapon::SetNetFireHeld`). Zooms are the client's own as in UE2: alt fire runs the weapon's own
   zoom (lightning gun, classic sniper rifle, painter; the AVRiL's while the server's `ONSAVRiL.bLockedOn` /
-  `HomingTarget` say it is locked), reset when the weapon goes down. The translocator plays one throw / recall per
+  `HomingTarget` say it is locked), reset when the weapon goes down. The AVRiL locks (`ONSAVRiL.WeaponTick`, server
+  side) through `Controller.PickTarget`, which only finds pawns with a controller: driven vehicles, not empty ones (in
+  team games only the other team's). The translocator plays one throw / recall per
   press with its charges from `TransLauncher.RepAmmo` (full until it first comes) and whether `TransBeacon` is out;
   the translocations themselves are the server's (`NewTransEffect*` / `NewTransDeres*`). Instagib's two modes share
   one refire time (`bSharedFireMode`). Projectiles, beams, bullet impacts, hits and kills come from the server.

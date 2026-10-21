@@ -531,7 +531,7 @@ FUE2NetWorld::EKind FUE2NetWorld::Classify(const FEntity& E) const
 	{
 		return EKind::Beam; // xPawn.PlayTeleportEffect / DoTranslocateOut: the translocation flashes
 	}
-	if (Has(E, TEXT("linkbeameffect")) || Has(E, TEXT("painterbeameffect")))
+	if (Has(E, TEXT("linkbeameffect")) || Has(E, TEXT("painterbeameffect")) || Has(E, TEXT("onsminelayertargetbeameffect")))
 	{
 		return EKind::HeldBeam;
 	}
@@ -1273,9 +1273,21 @@ void FUE2NetWorld::ApplyHeldBeam(FEntity& E, const FUE2NetActor& A, const TArray
 	UWorld* W = World.Get();
 	const int32 Inst = GetRef(A, TEXT("Instigator"));
 	const FUE2NetPlay* Play = FUE2NetPlay::Get();
-	if (!W || (Play && Play->IsOwnPawnChannel(Inst)))
+	const bool bPainter = Has(E, TEXT("painterbeameffect"));
+	if (Play && Play->IsOwnPawnChannel(Inst))
 	{
-		return; // ours: our weapon draws it while we hold fire (its StartEffect / EndEffect are not sent to us)
+		// ours: our weapon draws it while we hold fire; the painter's mark state is the server's (TargetState)
+		AArenaCharacter* Own = Play->GetLocalPawn();
+		AArenaWeapon* Weapon = Own ? Own->GetCurrentWeapon() : nullptr;
+		if (bPainter && Weapon)
+		{
+			Weapon->NetState.PainterTargetState = uint8(GetInt(A, TEXT("TargetState")));
+		}
+		return;
+	}
+	if (!W)
+	{
+		return;
 	}
 	AUE2NetBeam* Beam = Cast<AUE2NetBeam>(E.Native.Get());
 	if (!Beam)
@@ -1288,13 +1300,15 @@ void FUE2NetWorld::ApplyHeldBeam(FEntity& E, const FUE2NetActor& A, const TArray
 		{
 			return;
 		}
-		Beam->Setup(Has(E, TEXT("painterbeameffect")));
+		Beam->Setup(bPainter ? AUE2NetBeam::EType::Painter : (Has(E, TEXT("linkbeameffect")) ? AUE2NetBeam::EType::Link : AUE2NetBeam::EType::MineLaser));
 		E.Native = Beam;
 		E.bOwned = true;
 	}
-	// LinkBeamEffect: StartEffect / EndEffect; PainterBeamEffect: EndEffect (it starts at the painter); the beam leaves
-	// the firing pawn's weapon as we show it
-	Beam->SetEnds(PawnForChannel(Inst), GetVec(A, TEXT("StartEffect"), ToVec(A.SpawnLocation)) * S, GetVec(A, TEXT("EndEffect")) * S);
+	// LinkBeamEffect: StartEffect / EndEffect; PainterBeamEffect: EndEffect, TargetState; ONSMineLayerTargetBeamEffect:
+	// EndEffect, bCancel (it fades out). The beam leaves the firing pawn's weapon as we show it.
+	const bool bCancelled = GetBool(A, TEXT("bCancel"));
+	Beam->SetEnds(PawnForChannel(Inst), GetVec(A, TEXT("StartEffect"), ToVec(A.SpawnLocation)) * S, bCancelled ? FVector::ZeroVector : GetVec(A, TEXT("EndEffect")) * S);
+	Beam->SetTargetState(uint8(GetInt(A, TEXT("TargetState"))));
 }
 
 // =================================================================================================

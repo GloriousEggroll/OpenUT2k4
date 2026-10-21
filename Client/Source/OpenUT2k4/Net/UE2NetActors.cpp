@@ -1091,9 +1091,10 @@ AUE2NetBeam::AUE2NetBeam()
 	SetReplicates(false);
 }
 
-void AUE2NetBeam::Setup(bool bPainter)
+void AUE2NetBeam::Setup(EType InType)
 {
-	if (!bPainter)
+	Type = InType;
+	if (Type == EType::Link)
 	{
 		// the link beam as our own weapon draws it (AArenaWeapon::UpdateLiveBeam, Beam.Link)
 		if (const ArenaArtFX::FEffectDesc* E = ArenaArtFX::FindEffect(TEXT("Beam.Link")))
@@ -1120,8 +1121,10 @@ void AUE2NetBeam::Setup(bool bPainter)
 	}
 	if (Sprites.Num() == 0)
 	{
-		Fallback = ArenaWeaponBeam::Make(this, bPainter ? FLinearColor(1.f, 0.15f, 0.1f) : FLinearColor(0.3f, 1.f, 0.3f),
-			bPainter ? TEXT("XWeapons.PainterBeamEffect") : nullptr);
+		// the painter's and the mine layer's beams as our own weapons draw them (ArenaWeaponBeam)
+		const bool bPainter = Type == EType::Painter;
+		Fallback = ArenaWeaponBeam::Make(this, bPainter ? FLinearColor(1.f, 0.15f, 0.1f) : (Type == EType::MineLaser ? FLinearColor(1.f, 0.3f, 0.2f) : FLinearColor(0.3f, 1.f, 0.3f)),
+			bPainter ? TEXT("XWeapons.PainterBeamEffect") : (Type == EType::MineLaser ? TEXT("Onslaught.ONSMineLayerTargetBeamEffect") : nullptr));
 	}
 }
 
@@ -1162,6 +1165,11 @@ void AUE2NetBeam::Tick(float DeltaSeconds)
 		{
 			Fallback->SetVisibility(true);
 			ArenaWeaponBeam::Place(Fallback, Start, EndLoc, 2.f);
+			if (Type == EType::Painter)
+			{
+				Brightness = ArenaWeaponBeam::PainterBrightness(TargetState, Brightness, DeltaSeconds);
+				ArenaWeaponBeam::SetBrightness(Fallback, Brightness);
+			}
 		}
 		else
 		{
