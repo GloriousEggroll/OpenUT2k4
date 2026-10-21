@@ -198,6 +198,7 @@ public:
 	void Setup(EType InType);
 	/** PainterBeamEffect.TargetState (its brightness and width follow it). */
 	void SetTargetState(uint8 InState) { TargetState = InState; }
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	/** From: the firing pawn (the beam leaves its third-person weapon); InStart: the replicated start (cm) when the pawn
 	 *  is not shown; InEnd: the replicated end (cm). */
 	void SetEnds(class AUE2NetPawn* From, const FVector& InStart, const FVector& InEnd);

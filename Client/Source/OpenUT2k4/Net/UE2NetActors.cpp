@@ -1128,6 +1128,12 @@ void AUE2NetBeam::Setup(EType InType)
 	}
 }
 
+void AUE2NetBeam::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	ArenaWeaponBeam::StopPainter(Look);
+	Super::EndPlay(EndPlayReason);
+}
+
 void AUE2NetBeam::SetEnds(AUE2NetPawn* From, const FVector& InStart, const FVector& InEnd)
 {
 	Source = From;

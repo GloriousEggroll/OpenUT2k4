@@ -5,9 +5,11 @@
 #include "ArenaBotController.h"
 #include "ArenaCharacter.h"
 #include "ArenaDamage.h"
+#include "ArenaEmitters.h"
 #include "ArenaFX.h"
 #include "ArenaGameMode.h"
 #include "ArenaONS_Vehicle.h"
+#include "ArenaRuntimeContent.h"
 #include "ArenaWeaponActors.h"
 #include "ArenaArt.h"
 #include "ArenaArtFX.h"
@@ -170,6 +172,24 @@ void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look
 	{
 		PlayBeamSound(TEXT("Sounds/WeaponSounds/TAGRifle_TAGTargetAquired"));
 	}
+	// AmbientSound TAGFireA (SoundVolume 45, SoundRadius 120) until it goes; Aquired.BeginState: AmbientSound = None
+	if (TargetState != 2 && !Look.Hum.IsValid() && Beam->GetOwner())
+	{
+		AActor* Holder = Beam->GetOwner();
+		FActorSpawnParameters SP;
+		SP.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		SP.ObjectFlags |= RF_Transient;
+		if (AArenaAmbientSound* A = Holder->GetWorld()->SpawnActor<AArenaAmbientSound>(AArenaAmbientSound::StaticClass(), Holder->GetActorTransform(), SP))
+		{
+			A->AttachToActor(Holder, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+			A->Setup(ArenaRuntimeContent::LoadSoundByObjectPath(TEXT("WeaponSounds.TAGRifle.TAGFireA")), 120.f, 45, 64);
+			Look.Hum = A;
+		}
+	}
+	else if (TargetState == 2)
+	{
+		StopPainter(Look);
+	}
 	Look.AquiredTime = TargetState == 2 ? Look.AquiredTime + DeltaTime : 0.f;
 	if (TargetState == 2 && Look.AquiredTime <= 0.4f)
 	{
@@ -194,6 +214,15 @@ void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look
 		S->SetTint(FLinearColor(B, B, B));
 		S->SetWidthScale(Look.Width / DefaultWidth);
 	}
+}
+
+void ArenaWeaponBeam::StopPainter(FPainterLook& Look)
+{
+	if (AActor* A = Look.Hum.Get())
+	{
+		A->Destroy();
+	}
+	Look.Hum.Reset();
 }
 
 // =================================================================================================
@@ -450,15 +479,21 @@ void AWeap_OrbitalDesignator::Tick(float DeltaSeconds)
 		// brighter (and wider once acquired) as the server's PainterBeamEffect says the mark holds (TargetState)
 		ArenaWeaponBeam::TickPainter(PaintBeam, NetPaintLook, NetState.PainterTargetState, DeltaSeconds);
 	}
-	else if (PaintBeam && PaintBeam->IsVisible())
+	else
 	{
-		HideBeam(PaintBeam);
+		// not painting (also put down, which hid the beam already): no beam, no hum
+		if (PaintBeam && PaintBeam->IsVisible())
+		{
+			HideBeam(PaintBeam);
+		}
+		ArenaWeaponBeam::StopPainter(NetPaintLook);
 	}
 }
 
 void AWeap_OrbitalDesignator::NetFireHeldChanged(uint8 Mode, bool bHeld)
 {
-	// net play: PainterBeamEffect of a first-person shooter while primary is held, and PainterFire's start sound
+	// net play: PainterBeamEffect of a first-person shooter while primary is held (PainterFire plays no sound of its
+	// own on the press, bFireOnRelease without a FireSound: the beam's hum is the sound)
 	if (Mode != 0)
 	{
 		return;
@@ -474,9 +509,9 @@ void AWeap_OrbitalDesignator::NetFireHeldChanged(uint8 Mode, bool bHeld)
 		{
 			// a new PainterBeamEffect (PainterFire.Paint.BeginState spawns one unless the last is still fading out)
 			NetState.PainterTargetState = 0;
+			ArenaWeaponBeam::StopPainter(NetPaintLook);
 			NetPaintLook = ArenaWeaponBeam::FPainterLook();
 		}
-		PlayFireSound(0, GetMuzzleLocation(), 0.5f, 1.f);
 	}
 	// released: Tick hides the beam once the server's PainterBeamEffect is gone (bPainterBeamOpen)
 }
@@ -575,6 +610,7 @@ void AWeap_OrbitalDesignator::PaintTick(float DeltaSeconds)
 
 void AWeap_OrbitalDesignator::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	ArenaWeaponBeam::StopPainter(NetPaintLook);
 	if (PaintBeam)
 	{
 		PaintBeam->DestroyComponent();

@@ -24,12 +24,16 @@ namespace ArenaWeaponBeam
 		float Brightness = 40.f;
 		float Width = -1.f;       // < 0: the effect's default, on the first tick
 		float AquiredTime = 0.f;
+		/** Its AmbientSound (the hum while painting, gone once acquired): an AArenaAmbientSound on the beam's holder */
+		TWeakObjectPtr<AActor> Hum;
 	};
 	/** PainterBeamEffect.Tick / Aquired / Cancelled after DeltaTime in the replicated TargetState (0 aiming, 1 marked,
 	 *  2 acquired, 3 cancelled), applied to a beam made by Make: 40 aiming, up to 250 once marked; acquired is 250 and
 	 *  widens to 16 UU until its 0.4 s timer goes to Cancelled, which fades to 40 and narrows to 1 UU (TargetState stays
 	 *  acquired on the wire). */
 	OPENUT2K4_API void TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look, uint8 TargetState, float DeltaTime);
+	/** The beam is gone: its hum stops. */
+	OPENUT2K4_API void StopPainter(FPainterLook& Look);
 }
 
 /**
