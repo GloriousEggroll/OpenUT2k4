@@ -9,6 +9,7 @@
 #include "ArenaGameMode.h"
 #include "ArenaONS_Vehicle.h"
 #include "ArenaWeaponActors.h"
+#include "ArenaArt.h"
 #include "ArenaArtFX.h"
 #include "ArenaUE2Effects.h"
 #include "Camera/CameraComponent.h"
@@ -18,7 +19,9 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
+#include "Kismet/GameplayStatics.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Sound/SoundBase.h"
 
 using ArenaWeaponActors::UU;
 
@@ -150,6 +153,22 @@ void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look
 	if (Look.Width < 0.f)
 	{
 		Look.Width = DefaultWidth;
+	}
+	// MarkSound when the mark first holds (Tick: Brightness still 40), AquiredSound as Aquired begins
+	auto PlayBeamSound = [Beam](const TCHAR* Path)
+	{
+		if (USoundBase* Snd = ArenaArt::LoadOneShotSound(Path))
+		{
+			UGameplayStatics::PlaySoundAtLocation(Beam, Snd, Beam->GetComponentLocation());
+		}
+	};
+	if (TargetState == 1 && Look.Brightness == 40.f)
+	{
+		PlayBeamSound(TEXT("Sounds/WeaponSounds/TAGRifle_TAGFireB"));
+	}
+	if (TargetState == 2 && Look.AquiredTime == 0.f)
+	{
+		PlayBeamSound(TEXT("Sounds/WeaponSounds/TAGRifle_TAGTargetAquired"));
 	}
 	Look.AquiredTime = TargetState == 2 ? Look.AquiredTime + DeltaTime : 0.f;
 	if (TargetState == 2 && Look.AquiredTime <= 0.4f)
@@ -413,18 +432,27 @@ void AWeap_OrbitalDesignator::Tick(float DeltaSeconds)
 		}
 		PaintTick(DeltaSeconds);
 	}
-	else if (bNetFireHeld[0] && PaintBeam && bEquipped && ArenaOwner)
+	else if (((bNetFireHeld[0] && !NetState.bPainterBeamGone) || NetState.bPainterBeamOpen) && PaintBeam && bEquipped && ArenaOwner)
 	{
-		// net play: the beam from our weapon to where our view hits (as PaintTick, EndEffect); the server paints
-		FVector Eye, Dir;
-		GetAim(Eye, Dir);
-		const FVector Start = Eye + Dir * ArenaOwner->GetSimpleCollisionRadius();
-		const FVector End = Start + Dir * FireModes[0].Range;
-		FHitResult Hit;
+		// net play: the beam from our weapon to where our view hits (as PaintTick, EndEffect) while we paint; after the
+		// button comes up the server's PainterBeamEffect fades out (Cancelled, 0.4 s) at the end it had
+		if (bNetFireHeld[0])
+		{
+			FVector Eye, Dir;
+			GetAim(Eye, Dir);
+			const FVector Start = Eye + Dir * ArenaOwner->GetSimpleCollisionRadius();
+			const FVector End = Start + Dir * FireModes[0].Range;
+			FHitResult Hit;
+			NetPaintEnd = WeaponTrace(Start, End, Hit) ? FVector(Hit.ImpactPoint) : End;
+		}
 		PaintBeam->SetVisibility(true);
-		PlaceBeam(PaintBeam, GetMuzzleLocation(), WeaponTrace(Start, End, Hit) ? FVector(Hit.ImpactPoint) : End, 1.5f);
+		PlaceBeam(PaintBeam, GetMuzzleLocation(), NetPaintEnd, 1.5f);
 		// brighter (and wider once acquired) as the server's PainterBeamEffect says the mark holds (TargetState)
 		ArenaWeaponBeam::TickPainter(PaintBeam, NetPaintLook, NetState.PainterTargetState, DeltaSeconds);
+	}
+	else if (PaintBeam && PaintBeam->IsVisible())
+	{
+		HideBeam(PaintBeam);
 	}
 }
 
@@ -441,14 +469,16 @@ void AWeap_OrbitalDesignator::NetFireHeldChanged(uint8 Mode, bool bHeld)
 		{
 			PaintBeam = MakeBeam(this, FireModes[0].Color, TEXT("XWeapons.PainterBeamEffect"));
 		}
-		NetState.PainterTargetState = 0;
-		NetPaintLook = ArenaWeaponBeam::FPainterLook();
+		NetState.bPainterBeamGone = false;
+		if (!NetState.bPainterBeamOpen)
+		{
+			// a new PainterBeamEffect (PainterFire.Paint.BeginState spawns one unless the last is still fading out)
+			NetState.PainterTargetState = 0;
+			NetPaintLook = ArenaWeaponBeam::FPainterLook();
+		}
 		PlayFireSound(0, GetMuzzleLocation(), 0.5f, 1.f);
 	}
-	else if (PaintBeam)
-	{
-		HideBeam(PaintBeam);
-	}
+	// released: Tick hides the beam once the server's PainterBeamEffect is gone (bPainterBeamOpen)
 }
 
 void AWeap_OrbitalDesignator::PaintTick(float DeltaSeconds)

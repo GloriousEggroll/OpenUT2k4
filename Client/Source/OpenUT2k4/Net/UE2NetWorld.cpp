@@ -22,6 +22,7 @@
 #include "../ArenaUE2World.h"
 #include "../ArenaWeapon.h"
 #include "../ArenaWeaponActors.h"
+#include "../ArenaWeaponsExtra.h"
 #include "../UScript/UScriptCore.h"
 #include "../UScript/UScriptRuntime.h"
 #include "../UScript/UScriptWorld.h"
@@ -691,6 +692,18 @@ void FUE2NetWorld::ActorClosed(const FUE2NetActor& A)
 			V->RemoveWeapon(E.Channel);
 		}
 		break;
+	case EKind::HeldBeam:
+		if (const FUE2NetPlay* Play = FUE2NetPlay::Get(); Play && Has(E, TEXT("painterbeameffect")) && Play->IsOwnPawnChannel(GetRef(A, TEXT("Instigator"))))
+		{
+			// our PainterBeamEffect is gone (Cancelled's 0.4 s timer): our beam goes too
+			AArenaCharacter* Own = Play->GetLocalPawn();
+			if (AArenaWeapon* Weapon = Own ? Own->FindWeapon(AWeap_OrbitalDesignator::StaticClass()) : nullptr)
+			{
+				Weapon->NetState.bPainterBeamOpen = false;
+				Weapon->NetState.bPainterBeamGone = true;
+			}
+		}
+		break;
 	case EKind::PRI:
 		if (E.PS.IsValid() && E.Channel != OwnPRIChannel)
 		{
@@ -1276,12 +1289,22 @@ void FUE2NetWorld::ApplyHeldBeam(FEntity& E, const FUE2NetActor& A, const TArray
 	const bool bPainter = Has(E, TEXT("painterbeameffect"));
 	if (Play && Play->IsOwnPawnChannel(Inst))
 	{
-		// ours: our weapon draws it while we hold fire; the painter's mark state is the server's (TargetState)
+		// ours: our weapon draws it while we hold fire and while the server's effect fades; the painter's mark state is
+		// the server's (TargetState)
 		AArenaCharacter* Own = Play->GetLocalPawn();
-		AArenaWeapon* Weapon = Own ? Own->GetCurrentWeapon() : nullptr;
-		if (bPainter && Weapon)
+		AArenaWeapon* Weapon = Own && bPainter ? Own->FindWeapon(AWeap_OrbitalDesignator::StaticClass()) : nullptr;
+		if (Weapon)
 		{
 			Weapon->NetState.PainterTargetState = uint8(GetInt(A, TEXT("TargetState")));
+			Weapon->NetState.bPainterBeamOpen = true;
+			if (Weapon != Own->GetCurrentWeapon() && Changed.Contains(TEXT("TargetState")) && Weapon->NetState.PainterTargetState == 2)
+			{
+				// the strike put the painter down (ClientSwitchToBestWeapon) before its beam's Aquired: its AquiredSound
+				if (USoundBase* Snd = ArenaArt::LoadOneShotSound(TEXT("Sounds/WeaponSounds/TAGRifle_TAGTargetAquired")))
+				{
+					UGameplayStatics::PlaySoundAtLocation(Own, Snd, Own->GetActorLocation());
+				}
+			}
 		}
 		return;
 	}

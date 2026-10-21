@@ -1112,6 +1112,25 @@ bool FUE2NetPlay::FunctionCall(const FUE2NetActor& A, FUSFunction* Function, con
 			ServerState = NAME_None;
 			return false; // the world layer also resets its match state on ClientRestart
 		}
+		if (Name == TEXT("ClientSwitchToBestWeapon"))
+		{
+			// Controller.ClientSwitchToBestWeapon (the painter after its strike, its last charge going): the best other
+			// weapon that has ammo
+			const FWeaponInfo* Best = nullptr;
+			for (const TPair<int32, FWeaponInfo>& W : Weapons)
+			{
+				const AArenaWeapon* Def = W.Value.Native ? W.Value.Native->GetDefaultObject<AArenaWeapon>() : nullptr;
+				if (W.Key != CurrentWeaponChannel && (W.Value.Ammo > 0 || (Def && Def->bInfiniteAmmo)) && (!Best || W.Value.Priority > Best->Priority))
+				{
+					Best = &W.Value;
+				}
+			}
+			if (Best)
+			{
+				SwitchToWeapon(Best->Channel);
+			}
+			return true;
+		}
 		if (Name == TEXT("ClientGotoState"))
 		{
 			if (const FUE2NetValue* S2 = Param(Params, TEXT("NewState")))
@@ -3152,9 +3171,23 @@ void FUE2NetPlay::TickScript(double Now)
 		}
 		else if (Key == TEXT("aim") && Pawn && PC)
 		{
-			// look straight at the last goto target; aim=vehicle: at the nearest vehicle shown (e.g. one to lock on to)
+			// look straight at the last goto target; aim=vehicle / aim=player: at the nearest vehicle / player shown (e.g.
+			// one to lock on to, one to watch)
 			FVector Target = ScriptGotoTarget;
-			if (Value == TEXT("vehicle"))
+			if (Value == TEXT("player"))
+			{
+				double Best = TNumericLimits<double>::Max();
+				for (TActorIterator<AUE2NetPawn> It(World.Get()); It; ++It)
+				{
+					const double D = FVector::DistSquared(It->GetActorLocation(), Pawn->GetActorLocation());
+					if (!It->IsNetDead() && D < Best)
+					{
+						Best = D;
+						Target = It->GetActorLocation();
+					}
+				}
+			}
+			else if (Value == TEXT("vehicle"))
 			{
 				double Best = TNumericLimits<double>::Max();
 				for (TActorIterator<AUE2NetVehicle> It(World.Get()); It; ++It)

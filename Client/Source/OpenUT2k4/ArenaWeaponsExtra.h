@@ -79,6 +79,8 @@ protected:
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> PaintBeam;
 	/** Net play: PainterBeamEffect's brightness and width of our beam. */
 	ArenaWeaponBeam::FPainterLook NetPaintLook;
+	/** Net play: where our beam ends (frozen while it fades after the button came up). */
+	FVector NetPaintEnd = FVector::ZeroVector;
 	bool bPainting = false;
 	bool bValidMark = false;
 	bool bMarkStarted = false;

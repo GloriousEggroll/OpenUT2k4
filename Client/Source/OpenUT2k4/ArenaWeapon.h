@@ -136,8 +136,12 @@ public:
 		TWeakObjectPtr<AActor> HomingTarget;
 		/** TransLauncher.TransBeacon is out */
 		bool bBeaconOut = false;
-		/** Our PainterBeamEffect's TargetState (0 aiming, 1 marked, 2 acquired, 3 cancelled) */
+		/** Our PainterBeamEffect's TargetState (0 aiming, 1 marked, 2 acquired, 3 cancelled), and that the server still
+		 *  has it (it fades for 0.4 s after the button comes up) */
 		uint8 PainterTargetState = 0;
+		bool bPainterBeamOpen = false;
+		/** It went while the button was still held (after a strike the server paints no more until the next press) */
+		bool bPainterBeamGone = false;
 	};
 	FNetWeaponState NetState;
 	/** UE2 Weapon.GetEffectStart: where our shot effects leave the weapon (the first-person muzzle). */
