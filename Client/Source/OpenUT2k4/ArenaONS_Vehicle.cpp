@@ -658,7 +658,7 @@ void ArenaONS::FireGunShot(AArenaONS_Vehicle* Vehicle, const FArenaONS_GunSpec& 
 		bool bSolid = true;
 		if (HitComp && !Cast<APawn>(HitActor) && !Cast<AArenaProjectile>(HitActor))
 		{
-			bSolid = HitComp->GetCollisionResponseToChannel(ECC_Pawn) == ECR_Block;
+			bSolid = HitComp->GetCollisionResponseToChannel(ECC_Pawn) == ECR_Block || HitComp->ComponentHasTag(ARENA_SHOT_BLOCKER_TAG);
 		}
 		if (bSolid)
 		{

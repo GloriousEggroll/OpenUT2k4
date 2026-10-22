@@ -683,7 +683,10 @@ void AArenaBlockingVolume::ApplyCollision()
 	}
 	if (bBlockZeroExtentTraces)
 	{
+		// sight and shots (zero extent traces)
 		Collision->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+		Collision->SetCollisionResponseToChannel(ECC_Weapon, ECR_Block);
+		Collision->ComponentTags.AddUnique(ARENA_SHOT_BLOCKER_TAG);
 	}
 }
 

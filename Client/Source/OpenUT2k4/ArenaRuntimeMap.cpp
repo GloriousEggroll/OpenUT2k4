@@ -1198,6 +1198,10 @@ void ArenaRuntimeMap::ApplyUE2MeshCollision(UStaticMeshComponent* Visual, UStati
 		Set(ExtentChannels, ExtentOwner == Comp);
 		Set(PhysicsChannels, PhysicsOwner == Comp);
 		Set(LineChannels, LineOwner == Comp);
+		if (LineOwner == Comp && ExtentOwner != Comp)
+		{
+			Comp->ComponentTags.AddUnique(ARENA_SHOT_BLOCKER_TAG);
+		}
 		if (!bAny)
 		{
 			Comp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -1445,6 +1449,7 @@ bool ArenaRuntimeMap::BuildWorld(UWorld* World, const FString& MapName)
 		{
 			// pawns collide with the lowered copies below (PawnTerrain); everything else with the true surface
 			Terrain->GetStaticMeshComponent()->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+			Terrain->GetStaticMeshComponent()->ComponentTags.Add(ARENA_SHOT_BLOCKER_TAG);
 			++NumTerrain;
 		}
 	}

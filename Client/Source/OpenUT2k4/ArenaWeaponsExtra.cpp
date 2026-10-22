@@ -60,6 +60,11 @@ namespace ArenaWeaponsExtraLocal
 	constexpr float BeamFadeLength = 110.f;
 	constexpr float BeamFadeScale = 38.f;
 	constexpr float BeamFadeFloor = 0.12f;
+	/** UE2 adds an additive skin to the frame in gamma space, we add it in linear light (then exposure and tone mapping):
+	 *  over the mid-tone ground a painted spot is on, that left our xEmitter beam about 0.6 as bright as 3369's
+	 *  (measured), so its colour is scaled up to match there (brighter than 3369 over dark backgrounds, dimmer over
+	 *  bright ones). */
+	constexpr float GammaAddScale = 1.8f;
 	/** Where fade part I begins, as a fraction of the faded stretch. */
 	float FadePartFrom(int32 I) { return FMath::Square(float(I) / FadeParts); }
 
@@ -107,7 +112,7 @@ UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& 
 			// across: a BeamEmitter's StartSizeRange x 2; an xEmitter PT_Beam measures about 1.5 x mSizeRange in 3369
 			// (PainterBeamEffect, mSizeRange 8: some 12 UU)
 			SD.Size = FVector2D(100.f, Width * (bEmitter ? 2.f : 1.5f) * UU);
-			SD.Tint = FLinearColor(Tint.R / 255.f, Tint.G / 255.f, Tint.B / 255.f) * 2.f;
+			SD.Tint = FLinearColor(Tint.R / 255.f, Tint.G / 255.f, Tint.B / 255.f) * 2.f * (bEmitter ? 1.f : GammaAddScale);
 			SD.FadePower = 0.f;
 			SD.bRandomRoll = false;
 			// xEmitter PT_Beam textures run along V (taller than wide: XEffectMat.Ion.painter_beam is 32 x 128, its red
@@ -277,7 +282,7 @@ void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look
 	if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
 	{
 		// SetBrightness: the additive sprite's tint, scaled as Make scales the effect's colour
-		const float B = Look.Brightness / 255.f * 2.f;
+		const float B = Look.Brightness / 255.f * 2.f * GammaAddScale;
 		S->SetTint(FLinearColor(B, B, B));
 		S->SetWidthScale(Look.Width / DefaultWidth);
 		for (USceneComponent* Child : S->GetAttachChildren())

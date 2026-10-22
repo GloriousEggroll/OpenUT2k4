@@ -847,7 +847,11 @@ tower meshes, `bBlockActors=False`, on top of hidden collision hulls). The runti
   pass when the actor has `bBlockNonZeroExtentTraces=False`; zero-extent traces (Visibility, Camera, Weapon,
   Projectile) use the model when `UseSimpleLineCollision` and pass when `bBlockZeroExtentTraces=False` (e.g. grates
   players cannot pass but shots can); physics bodies (Vehicle, PhysicsBody, Destructible) collide with the sections,
-  or the model when there are none.
+  or the model when there are none. Weapon traces (`AArenaWeapon::WeaponTrace`, vehicle guns) pass things that block
+  the Weapon channel but not pawns (triggers, pickups), except world geometry tagged `ArenaShotBlocker`: a mesh
+  component that takes the zero-extent traces while the pawns' extent traces go to the model or pass, terrain's true
+  surface (pawns use the lowered copies) and BlockingVolumes with `bBlockZeroExtentTraces=True`. Without that, shots
+  went through terrain and through such meshes (e.g. DM-Rankin's wall panels) to whatever was behind.
 - **Terrain** (`TerrainPrimitive`): UE2 splits each quad along (x, y) - (x + 1, y + 1), the other diagonal where
   `EdgeTurnBitmap` is set, and a vertex is `(h - 32767) x TerrainScale.Z / 256` above the actor (one height step above
   the documented `h - 32768`). Both were checked against UT2004 itself: the vertices it saves in every `.ut2`

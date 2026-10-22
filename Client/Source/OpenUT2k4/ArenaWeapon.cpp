@@ -832,7 +832,8 @@ bool AArenaWeapon::WeaponTrace(const FVector& Start, const FVector& End, FHitRes
 		static const FName ShootableTag(TEXT("ArenaShootable"));
 		if (HitComp && !Cast<APawn>(HitActor) && !Cast<AArenaProjectile>(HitActor) && !(HitActor && HitActor->ActorHasTag(ShootableTag)))
 		{
-			bSolid = HitComp->GetCollisionResponseToChannel(ECC_Pawn) == ECR_Block;
+			// solid: blocks players, or world geometry only shots stop at (terrain, ARENA_SHOT_BLOCKER_TAG)
+			bSolid = HitComp->GetCollisionResponseToChannel(ECC_Pawn) == ECR_Block || HitComp->ComponentHasTag(ARENA_SHOT_BLOCKER_TAG);
 		}
 		if (bSolid)
 		{
