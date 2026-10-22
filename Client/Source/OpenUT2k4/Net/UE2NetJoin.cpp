@@ -21,6 +21,7 @@
 #include "UE2NetPlay.h"
 #include "UE2NetScriptHUD.h"
 #include "UE2NetMapVote.h"
+#include "UE2NetPlayerAgreement.h"
 #include "../UScript/UScriptCore.h"
 #include "UE2NetLog.h"
 #include "HAL/FileManager.h"
@@ -67,6 +68,10 @@ namespace UE2NetJoinLocal
 	TUniquePtr<FUE2NetScriptHUD> GNetScriptHUD;
 	/** The server's map voting (Net/UE2NetMapVote.h); lives with GNetWorld. */
 	TUniquePtr<FUE2NetMapVote> GMapVote;
+	/** The server's player agreement (Net/UE2NetPlayerAgreement.h); lives with GNetWorld. */
+	TUniquePtr<FUE2NetPlayerAgreement> GPlayerAgreement;
+	/** The text of the server's last ClientNetworkMessage (a kick's reason): why the connection closes right after. */
+	FString GServerMessage;
 	/**
 	 * A server map change in progress, from ClientTravel until the next map's world is up: the HUD covers the old map
 	 * (its actors are gone once the server drops the connection) with the progress of the reconnect, downloads and
@@ -79,6 +84,7 @@ namespace UE2NetJoinLocal
 	void ResetNetWorld()
 	{
 		GMapVote.Reset();
+		GPlayerAgreement.Reset();
 		GNetScriptHUD.Reset();
 		GNetPlay.Reset();
 		GNetWorld.Reset();
@@ -432,6 +438,7 @@ namespace UE2NetJoinLocal
 			GNetPlay = MakeUnique<FUE2NetPlay>(*GConnection, World);
 			GNetScriptHUD = MakeUnique<FUE2NetScriptHUD>(*GConnection, World);
 			GMapVote = MakeUnique<FUE2NetMapVote>(*GConnection);
+			GPlayerAgreement = MakeUnique<FUE2NetPlayerAgreement>(*GConnection);
 			bChangingMap = false;
 			GTravelMap.Reset();
 			GMapChangeError.Reset();
@@ -617,6 +624,7 @@ namespace ArenaNet
 		}
 		LeaveServer();
 		GLastError.Reset();
+		GServerMessage.Reset();
 		UE2NetDownload::ClearJoinNotice();
 		bServerTravel = false;
 		bChangingMap = false;
@@ -640,7 +648,12 @@ namespace ArenaNet
 				UE_LOG(LogUE2Net, Log, TEXT("Map change: reconnecting to %s"), *GReconnectAddress);
 				return;
 			}
-			if (!Reason.IsEmpty())
+			if (!GServerMessage.IsEmpty())
+			{
+				// the server said why before it closed (PlayerController.ClientNetworkMessage, e.g. a player agreement declined)
+				GLastError = GServerMessage;
+			}
+			else if (!Reason.IsEmpty())
 			{
 				GLastError = Reason;
 			}
@@ -648,6 +661,13 @@ namespace ArenaNet
 		};
 		GConnection->OnFunctionCall = [](const FUE2NetActor& Actor, FUSFunction* Function, const TArray<TPair<FName, FUE2NetValue>>& Params)
 		{
+			if (Function && Function->Name == TEXT("ClientNetworkMessage") && Params.Num() > 1 && !Params[1].Value.S.IsEmpty())
+			{
+				// PlayerController.ClientNetworkMessage(ParamA, ParamB): the stock client shows ParamB in a message box
+				// ("AC_Kicked": "You must accept the agreement to play on this server")
+				GServerMessage = Params[1].Value.S;
+				UE_LOG(LogUE2Net, Log, TEXT("Server message (%s): %s"), *Params[0].Value.S, *GServerMessage);
+			}
 			if (Function && Function->Name == TEXT("ClientTravel"))
 			{
 				bServerTravel = true;
@@ -660,6 +680,10 @@ namespace ArenaNet
 			if (GMapVote && GMapVote->FunctionCall(Actor, Function, Params))
 			{
 				return; // map voting (Net/UE2NetMapVote.h)
+			}
+			if (GPlayerAgreement && GPlayerAgreement->FunctionCall(Actor, Function, Params))
+			{
+				return; // the server's player agreement (Net/UE2NetPlayerAgreement.h)
 			}
 			if (GNetScriptHUD)
 			{
@@ -730,6 +754,10 @@ namespace ArenaNet
 			if (GMapVote)
 			{
 				GMapVote->ActorClosed(Actor);
+			}
+			if (GPlayerAgreement)
+			{
+				GPlayerAgreement->ActorClosed(Actor);
 			}
 		};
 		FString Err;
@@ -820,6 +848,16 @@ namespace ArenaNet
 			{
 				// one line: the bar is a single centred line at 1280 x 720
 				return FString::Printf(TEXT("The %s anti-cheat on this server does not let OpenUT2k4 play: you can only spectate"), *AntiCheat);
+			}
+			if (GPlayerAgreement && GPlayerAgreement->IsOpen())
+			{
+				// PlayerAgreementManager.setup holds us as a spectator until we answer
+				return FString(TEXT("Accept the server's player agreement to play - it keeps you spectating until then")) + NoticeLine;
+			}
+			if (GNetPlay->IsHeldAsSpectator())
+			{
+				// the server made us a spectator (bOnlySpectator) and has not let us in yet
+				return FString(TEXT("The server keeps you spectating for now - Fire joins once it lets you play")) + NoticeLine;
 			}
 			return (GNetPlay->IsWaitingForRound() ? FString(TEXT("You join when the next round starts - Fire: view a player, Alt-Fire: free camera"))
 				: FString(TEXT("Press Fire to join the match"))) + NoticeLine;
@@ -961,6 +999,18 @@ namespace ArenaNet
 	{
 		using namespace UE2NetJoinLocal;
 		return GMapVote.IsValid() && GMapVote->ConsumeCloseRequest();
+	}
+
+	const FUE2NetPlayerAgreement* GetPlayerAgreement()
+	{
+		using namespace UE2NetJoinLocal;
+		return GPlayerAgreement.IsValid() && GPlayerAgreement->IsOpen() ? GPlayerAgreement.Get() : nullptr;
+	}
+
+	bool AnswerPlayerAgreement(bool bYes)
+	{
+		using namespace UE2NetJoinLocal;
+		return GPlayerAgreement.IsValid() && GPlayerAgreement->Answer(bYes);
 	}
 
 	bool RetryLastJoin()

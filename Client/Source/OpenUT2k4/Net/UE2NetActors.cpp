@@ -281,20 +281,68 @@ namespace UE2NetActorsLocal
 			{
 				return *Found;
 			}
-			UClass*& Result = Cache.Add(ClassName, nullptr);
-			FUSClass* C = FUSRuntime::Get().FindClass(ClassName);
-			for (C = C ? C->GetSuperClass() : nullptr; C && !Result; C = C->GetSuperClass())
+			Cache.Add(ClassName, nullptr);
+			UClass* Result = nullptr;
+			auto FromChain = [](FUSClass* C) -> UClass*
 			{
-				const FString Name = C->Name.ToString();
-				for (const FMap& M : Table)
+				for (; C; C = C->GetSuperClass())
 				{
-					if (Name.StartsWith(M.Prefix, ESearchCase::IgnoreCase))
+					const FString Name = C->Name.ToString();
+					for (const FMap& M : Table)
 					{
-						Result = M.Class();
-						break;
+						if (Name.StartsWith(M.Prefix, ESearchCase::IgnoreCase))
+						{
+							return M.Class();
+						}
 					}
 				}
+				return nullptr;
+			};
+			FUSClass* const Class = FUSRuntime::Get().FindClass(ClassName);
+			Result = FromChain(Class ? Class->GetSuperClass() : nullptr);
+			// a mod weapon that extends Weapon itself (ProSniperRifle_20_BETA3.ProSniperRifle): the stock weapon its
+			// pickup, ammo or attachment class comes from (ProSniperPickup extends ClassicSniperRiflePickup)
+			FUSObject* Def = Class && !Result ? Class->GetDefaultObject() : nullptr;
+			for (const TCHAR* PropName : { TEXT("PickupClass"), TEXT("AmmoClass"), TEXT("AttachmentClass") })
+			{
+				FUSProperty* Prop = Def && Def->Data && !Result ? Def->FindProperty(PropName) : nullptr;
+				if (!Prop || Prop->Type != EUSType::Class)
+				{
+					continue;
+				}
+				for (int32 i = 0; i < Prop->ArrayDim && !Result; ++i)
+				{
+					// the default names the class (its object may not be loaded yet): by path
+					const FUSObject* Ref = *reinterpret_cast<FUSObject**>(Def->Data + Prop->Offset + i * Prop->ElementSize);
+					Result = Ref ? FromChain(FUSRuntime::Get().FindClass(Ref->GetPathName())) : nullptr;
+				}
 			}
+			// a mod attachment that extends xWeaponAttachment itself (ProSniperAttachment): the weapon of its package that
+			// hands it out (Weapon.AttachmentClass)
+			bool bAttachment = false;
+			for (FUSClass* C = Class; C && !Result && !bAttachment; C = C->GetSuperClass())
+			{
+				bAttachment = C->Name == TEXT("WeaponAttachment");
+			}
+			FString Pkg;
+			FUSLinker* Linker = bAttachment && ClassName.Split(TEXT("."), &Pkg, nullptr) ? FUSRuntime::Get().LoadPackage(FName(*Pkg)) : nullptr;
+			for (int32 Ei = 0; Linker && !Result && Ei < Linker->NumExports(); ++Ei)
+			{
+				const FString WeaponPath = Pkg + TEXT(".") + Linker->GetExportName(Ei);
+				FUSClass* WeaponClass = Linker->IsTopLevelClass(Ei) && WeaponPath != ClassName ? FUSRuntime::Get().FindClass(WeaponPath) : nullptr;
+				FUSObject* WeaponDef = WeaponClass ? WeaponClass->GetDefaultObject() : nullptr;
+				FUSProperty* Prop = WeaponDef && WeaponDef->Data ? WeaponDef->FindProperty(TEXT("AttachmentClass")) : nullptr;
+				const FUSObject* Ref = Prop && Prop->Type == EUSType::Class ? *reinterpret_cast<FUSObject**>(WeaponDef->Data + Prop->Offset) : nullptr;
+				if (Ref && Ref->GetPathName().Equals(ClassName, ESearchCase::IgnoreCase))
+				{
+					Result = WeaponForAttachment(WeaponPath);
+				}
+			}
+			if (Result)
+			{
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetActors: mod weapon %s shown as our %s (its nearest stock relative)"), *ClassName, *Result->GetName());
+			}
+			Cache.Add(ClassName, Result);
 			return Result;
 		}
 		return nullptr;

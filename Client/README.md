@@ -714,7 +714,8 @@ exists: `<cache>/maps/<Map>/map.json` (runtime) or the level `/Game/Imported/Map
   pre-pivot / draw scale transforms, skins and collision flags (movers, volumes, triggers, emitters and the sky box are native UE2 world actors, see below;
   meshes with `bBlockNonZeroExtentTraces=False` stop shots and sight but players walk through them, as in UT2004, e.g. the
   charger ring around DM-Morpheus3's jump pad), UE2 collision that is never drawn (see "World collision" below), UT2004 lights
-  as unshadowed movable point / spot lights, and a sun, sky light, atmosphere, height fog and post process volume.
+  as unshadowed movable point / spot lights, and a sun (runtime maps: only when the map has a Sunlight actor, as in UE2,
+  so night and space maps stay dark), sky light, atmosphere, height fog and post process volume.
   Meshes and materials come from the runtime asset provider (`ArenaRuntimeContent`). Then `BuildImported` (player
   starts, pickups, jump pads, anchors) and `ArenaImportedLighting` run as for cooked maps. The load blocks for a
   moment; the log line `RuntimeMap: built <Map> in N s (...)` breaks the time down.

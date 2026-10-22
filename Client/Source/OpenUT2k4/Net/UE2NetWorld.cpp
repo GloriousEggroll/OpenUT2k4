@@ -523,7 +523,7 @@ FUE2NetWorld::EKind FUE2NetWorld::Classify(const FEntity& E) const
 	{
 		return EKind::Objective;
 	}
-	if (Has(E, TEXT("shockbeameffect")) || Has(E, TEXT("newlightningbolt")) || Has(E, TEXT("shockcombo")) || Has(E, TEXT("sniperwallhiteffect"))
+	if (Has(E, TEXT("shockbeameffect")) || Has(E, TEXT("newlightningbolt")) || Has(E, TEXT("shockcombo")) || HasLike(E, TEXT("wallhiteffect"))
 		|| Has(E, TEXT("redeemerexplosion")) || Has(E, TEXT("smallredeemerexplosion")))
 	{
 		return EKind::Beam; // shot effects (beams, hit effects, blasts) spawned once by the server
@@ -1241,9 +1241,10 @@ void FUE2NetWorld::SpawnBeam(FEntity& E, const FUE2NetActor& A)
 		}
 		return;
 	}
-	if (W && Has(E, TEXT("sniperwallhiteffect")))
+	if (W && HasLike(E, TEXT("wallhiteffect")))
 	{
-		// ClassicSniperFire.DoTrace: SniperWallHitEffect at the hit, turned along -X of the shot
+		// ClassicSniperFire.DoTrace: SniperWallHitEffect at the hit, turned along -X of the shot (mods' copies too:
+		// ProSniperRifle's ProSniperWallHitEffect, IK_Stealth's Stealth_WallHitEffect)
 		const FRotator Rot(A.SpawnRotation.X * 360.f / 65536.f, A.SpawnRotation.Y * 360.f / 65536.f, 0.f);
 		ArenaFX::SpawnImpact(W, Start, Rot.Vector(), FLinearColor(1.f, 0.8f, 0.4f), 12.f, TEXT("Impact.Bullet"));
 		return;

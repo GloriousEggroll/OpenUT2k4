@@ -591,6 +591,18 @@ void AArenaHUD::DrawHUD()
 	{
 		ArenaMidGameMenu::CloseMapVote(PC);
 	}
+	// a UT2004 server's player agreement (Net/UE2NetPlayerAgreement.h) keeps the menu open on its page until answered
+	static bool bAgreementShown = false;
+	const bool bAgreement = ArenaNet::GetPlayerAgreement() != nullptr;
+	if (PC && bAgreement && !PC->IsPauseMenuOpen())
+	{
+		PC->SetPauseMenuOpen(true);
+	}
+	else if (PC && !bAgreement && bAgreementShown && PC->IsPauseMenuOpen())
+	{
+		PC->SetPauseMenuOpen(false);
+	}
+	bAgreementShown = bAgreement;
 
 	// Flying a guided warhead: its scope (RedeemerWarhead.DrawHUD) under the rest of the HUD
 	if (const AArenaGuidedWarhead* Warhead = Cast<AArenaGuidedWarhead>(GetOwningPawn()))

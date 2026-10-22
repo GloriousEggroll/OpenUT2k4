@@ -4,6 +4,7 @@
 
 class UWorld;
 class FUE2NetMapVote;
+class FUE2NetPlayerAgreement;
 
 /**
  * Joining stock UT2004 (UE2, build 3369/3374) servers from OpenUT2k4. See Docs/UE2Net.md.
@@ -71,6 +72,10 @@ namespace ArenaNet
 	OPENUT2K4_API bool ConsumeMapVoteOpenRequest();
 	/** True once when the server closed map voting (a map was chosen). */
 	OPENUT2K4_API bool ConsumeMapVoteCloseRequest();
+	/** The server's player agreement while it waits for our answer, else null. Game thread only; valid until the next tick. */
+	OPENUT2K4_API const FUE2NetPlayerAgreement* GetPlayerAgreement();
+	/** Answers the server's player agreement: yes lets us play, no gets us kicked. */
+	OPENUT2K4_API bool AnswerPlayerAgreement(bool bYes);
 	/** Re-joins the last server (same URL and options). Used after the player set a password or stats and chose retry. */
 	OPENUT2K4_API bool RetryLastJoin();
 }

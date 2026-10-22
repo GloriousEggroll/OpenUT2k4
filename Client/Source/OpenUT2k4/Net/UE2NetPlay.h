@@ -121,6 +121,9 @@ public:
 	 * server's controller is in its Spectating state. Fire then views the next player instead of asking to restart.
 	 */
 	bool IsWaitingForRound() const;
+	/** Playing, but the server holds us as a spectator (our PlayerReplicationInfo's bOnlySpectator, e.g. a player
+	 *  agreement not answered yet): Fire cannot spawn us. */
+	bool IsHeldAsSpectator() const;
 
 	enum class EInput : uint8 { Fire, AltFire, FireRelease, AltFireRelease, NextWeapon, PrevWeapon, Slot, Use, Suicide };
 	/** Input of the local player while on the server; true when handled (the local game must not act on it). */

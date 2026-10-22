@@ -648,8 +648,11 @@ namespace ArenaConvProps
 					bOk = false;
 					if (Type == PT_ARRAY || Type == PT_STRUCT)
 					{
-						// UE2 quirk: the stored size of struct/array data is sometimes smaller than the data
-						FConvReader Sub2(R.Buf, Start, FMath::Min(EndLimit, End + 64));
+						// UE2 quirk: the stored size of struct/array data is sometimes smaller than the data (UE2 reads
+						// the value itself and only skips by the size). An array is read element by element, up to the
+						// object's end: DM-Big_City-Final-(Eisbaer)'s BigCitySMPCTastatur1 stores 916 bytes for
+						// 1006 of Materials (103 StaticMeshMaterial structs)
+						FConvReader Sub2(R.Buf, Start, Type == PT_ARRAY ? EndLimit : FMath::Min(EndLimit, End + 64));
 						FConvProp V2;
 						// accept data read past the stored size only when a property tag follows it: otherwise the relaxed
 						// parse ran into the next property (binary structs such as WetTexture drops)

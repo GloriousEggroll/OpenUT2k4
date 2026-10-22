@@ -104,6 +104,12 @@ private:
 	};
 
 	bool Has(const FEntity& E, const TCHAR* ShortClass) const { return E.Chain.Contains(FString(ShortClass)); }
+	/** Has, or a mod's copy of the stock class under its own name that extends the stock class's parent instead
+	 *  (ProSniperRifle's ProSniperWallHitEffect extends Effects): a class of the chain ends with ShortClassEnd. */
+	bool HasLike(const FEntity& E, const TCHAR* ShortClassEnd) const
+	{
+		return E.Chain.ContainsByPredicate([ShortClassEnd](const FString& C) { return C.EndsWith(ShortClassEnd); });
+	}
 	EKind Classify(const FEntity& E) const;
 	void Apply(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 	void ApplyPRI(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);

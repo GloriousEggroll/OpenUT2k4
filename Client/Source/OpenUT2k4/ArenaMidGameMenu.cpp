@@ -9,6 +9,7 @@
 #include "Net/UE2Server.h"
 #include "Net/UE2NetJoin.h"
 #include "Net/UE2NetMapVote.h"
+#include "Net/UE2NetPlayerAgreement.h"
 
 #include "Containers/Ticker.h"
 #include "Engine/Canvas.h"
@@ -266,6 +267,37 @@ namespace ArenaMidGameMenuLocal
 
 using namespace ArenaMidGameMenuLocal;
 
+namespace ArenaMidGameMenuLocal
+{
+	/**
+	 * A UT2004 server's player agreement (Net/UE2NetPlayerAgreement.h), as DruidsPlayerAgreement's PlayerAgreementPage
+	 * lays it out over the whole page: the text in "Player Agreement", "I agree!" (usable once its count down ran out)
+	 * and "I do not agree." under it. It cannot be closed without an answer (InternalOnCanClose).
+	 */
+	void DrawPlayerAgreement(FGUI& G, const FUE2NetPlayerAgreement& Agreement)
+	{
+		G.PageBackground();
+		const FRect Page = G.Page().Inset(0.f, G.L(16.f), 0.f, G.L(16.f));
+		const FRect TextR = G.Section(Page.Sub(0.035693f, 0.030325f, 0.922427f, 0.694637f), TEXT("Player Agreement"), true);
+		const FRect ButtonsR = G.Section(Page.Sub(0.035693f, 0.728274f, 0.922427f, 0.208224f), TEXT("Choose your destiny"), true);
+		G.ScrollText(FGUI::Id(TEXT("AgreementText")), TextR.Inset(G.L(12.f), G.L(8.f), G.L(12.f), G.L(8.f)), FString::Join(Agreement.GetLines(), TEXT("\n")));
+		const int32 Wait = Agreement.GetSecondsUntilYes();
+		const FString Yes = Wait == 0 ? FString(TEXT("I agree!")) : Wait > 0 ? FString::Printf(TEXT("I agree! (Enabled in %d)"), Wait) : FString(TEXT("I agree!"));
+		const float BtnH = FMath::Max(ButtonsR.H * 0.3f, G.L(28.f));
+		const float BtnY = ButtonsR.Y + (ButtonsR.H - BtnH) * 0.5f;
+		if (G.Button(FGUI::Id(TEXT("AgreementYes")), FRect(ButtonsR.X + ButtonsR.W * 0.45f, BtnY, ButtonsR.W * 0.25f, BtnH), TEXT("SquareMenuButton"), Yes,
+			TEXT("Accept the agreement and play"), Wait == 0, EFontScale::Small))
+		{
+			ArenaNet::AnswerPlayerAgreement(true);
+		}
+		if (G.Button(FGUI::Id(TEXT("AgreementNo")), FRect(ButtonsR.X + ButtonsR.W * 0.72f, BtnY, ButtonsR.W * 0.25f, BtnH), TEXT("SquareMenuButton"),
+			TEXT("I do not agree."), TEXT("Decline: the server will remove you"), true, EFontScale::Small))
+		{
+			ArenaNet::AnswerPlayerAgreement(false);
+		}
+	}
+}
+
 void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerController* PC, bool bForceSettings)
 {
 	if (!HUD || !Canvas)
@@ -299,6 +331,13 @@ void ArenaMidGameMenu::DrawPauseMenu(AHUD* HUD, UCanvas* Canvas, AArenaPlayerCon
 			// the controller's settings sub page: its last row is Back
 			PC->ClickPauseSetting(AArenaPlayerController::GetPauseSettingsRows().Num() - 1, +1);
 		}
+		G.End();
+		return;
+	}
+
+	if (const FUE2NetPlayerAgreement* Agreement = ArenaNet::GetPlayerAgreement())
+	{
+		DrawPlayerAgreement(G, *Agreement);
 		G.End();
 		return;
 	}

@@ -995,6 +995,7 @@ namespace ArenaConvUserContent
 			const FConvJson* Old = PrevMaps.Find(U.Name);
 			const bool bUnchanged = bReuse && Old && !bChangedDep && Old->GetString(TEXT("signature")) == Signature
 				&& Old->GetString(TEXT("status")) == TEXT("ok")
+				&& (Old->GetNumber(TEXT("errors"), 0) == 0 || Old->GetNumber(TEXT("error_retry"), 0) >= ErrorRetryVersion)
 				&& MapJsonSchema(Out / TEXT("maps") / FConvExporter::Safe(U.Name) / TEXT("map.json")) >= ArenaConverterVersions::MapSchemaVersion
 				&& FM.FileExists(*(Out / TEXT("data") / (U.Name + TEXT(".json"))));
 			if (bUnchanged)
@@ -1193,6 +1194,7 @@ namespace ArenaConvUserContent
 			Rec.Set(TEXT("seconds"), FConvJson::RoundTo(FPlatformTime::Seconds() - TM, 2));
 			Rec.Set(TEXT("converted"), FDateTime::UtcNow().ToIso8601());
 			Rec.Set(TEXT("errors"), Errors.Num());
+			Rec.Set(TEXT("error_retry"), ErrorRetryVersion);
 			const FString MapJson = Out / TEXT("maps") / FConvExporter::Safe(T.Name) / TEXT("map.json");
 			FConvJson Doc;
 			// notes from the scan (missing packages whose parts are left out) stay with the map

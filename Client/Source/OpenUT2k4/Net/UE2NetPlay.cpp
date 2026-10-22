@@ -1,4 +1,5 @@
 #include "UE2NetPlay.h"
+#include "UE2NetJoin.h"
 #include "../ArenaHitchLog.h"
 
 #include "../ArenaCharacterMovement.h"
@@ -489,6 +490,16 @@ bool FUE2NetPlay::IsWaitingForRound() const
 	}
 	const FUE2NetActor* PRI = OwnPRIChannel ? Connection->GetActors().Find(OwnPRIChannel) : nullptr;
 	return PRI && UE2NetPlayLocal::GetInt(*PRI, TEXT("bOutOfLives"), 0) != 0;
+}
+
+bool FUE2NetPlay::IsHeldAsSpectator() const
+{
+	if (!IsPlaying() || LocalPawn.IsValid() || DrivingChannel)
+	{
+		return false;
+	}
+	const FUE2NetActor* PRI = OwnPRIChannel ? Connection->GetActors().Find(OwnPRIChannel) : nullptr;
+	return PRI && UE2NetPlayLocal::GetInt(*PRI, TEXT("bOnlySpectator"), 0) != 0;
 }
 
 int32 FUE2NetPlay::ViewInt(const FRotator& View) const
@@ -2336,7 +2347,7 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 			}
 			return true;
 		}
-		if (!Pawn && IsWaitingForRound())
+		if (!Pawn && (IsWaitingForRound() || IsHeldAsSpectator()))
 		{
 			// the server only spawns us at the next round: its Spectating controls (Fire: next player, Alt-Fire: free camera)
 			FUE2NetWorld* NW = FUE2NetWorld::Get();
@@ -2890,6 +2901,11 @@ void FUE2NetPlay::TickScript(double Now)
 		else if (Key == TEXT("ready"))
 		{
 			Ready();
+		}
+		else if (Key == TEXT("agree") || Key == TEXT("disagree"))
+		{
+			// the server's player agreement page (Net/UE2NetPlayerAgreement.h): "I agree!" / "I do not agree."
+			ArenaNet::AnswerPlayerAgreement(Key == TEXT("agree"));
 		}
 		else if ((Key == TEXT("say") || Key == TEXT("teamsay")))
 		{

@@ -24,6 +24,7 @@ Package downloads (custom maps and mod packages: HTTP redirect, file channel, ne
 |---|---|
 | `Net/UE2NetJoin.h/.cpp` | Public API `ArenaNet::JoinServer / LeaveServer / IsConnectedToServer / GetConnectionStatus / GetSpectatorBarText`; join flow, map loading, map changes, test hooks |
 | `Net/UE2NetMapVote.h/.cpp` | Map voting (xVoting's `VotingReplicationInfo`): map list, vote counts, count down, `SendMapVote`; drawn by the mid-game menu's Map Voting tab |
+| `Net/UE2NetPlayerAgreement.h/.cpp` | A server's player agreement (DruidsPlayerAgreement's `PlayerAgreementManager`): its text, `showPage`, `yes` / `no`; drawn by the mid-game menu as the mod's page |
 | `Net/UE2NetConnection.h/.cpp` | `FUE2NetConnection`: socket, packets, acks, bunches, channels, control handshake, actor channel decoding, client to server function calls |
 | `Net/UE2NetDownload.h/.cpp` | `FUE2NetDownloader`: package downloads between WELCOME and JOIN (HTTP redirect, file channel), `.uz2` unpacking, the per-user net cache, conversion of downloaded maps |
 | `Net/UE2NetPackageMap.h/.cpp` | `FUE2PackageMap`: USES list, local package matching (GUID, generations), object / name numbering, per-class replicated field tables (`FUE2ClassNetCache`) |
@@ -546,7 +547,21 @@ server reads them either way.
    first item and the end of a match was a silent `VoteTimeLimit` wait (70 s by default). Tested on a local 3369
    server with `[xVoting.xVotingHandler] bMapVote=True`: 46 maps received, a vote made the server switch to that map.
    Restart Match is not offered on a server (it restarted our local copy of the match).
-6. **Leaving**: opening any other map (the menu), `LeaveServer()` or quitting the game sends the control channel close.
+6. **Player agreement** (DruidsPlayerAgreement, `Net/UE2NetPlayerAgreement`): the server actor
+   `PlayerAgreementServerActor` gives every new player a `PlayerAgreementManager` (owned by the player's controller)
+   unless the player accepted this agreement's `Timestamp` before. `setup` makes the player a spectator
+   (`bOnlySpectator`, state `Spectating`), so `ServerReStartPlayer` does nothing (on such a server "Fire to
+   join" did nothing) until an answer. The manager calls the client's `PlayerAgreement` (the stock client opens the
+   mod's `PlayerAgreementPage`, ours the same page in the mid-game menu: "Player Agreement" text, "I agree!" usable
+   after the `doneAdding` count down, "I do not agree."; it cannot be closed without an answer) and the client calls
+   `showPage` back; `addToAgreement` sends each line. "I agree!" sends `yes()`: the server lets the player in
+   (`PlayerWaiting`, Fire joins); `no()` gets the player kicked with `ClientNetworkMessage("AC_Kicked", "You must
+   accept the agreement to play on this server")`, which the leave screen shows; no answer within the manager's
+   `Timeout` (90 s by default) kicks too. Until then the spectator bar says the agreement holds the player.
+   Script steps `agree` / `disagree` answer it. Tested on a local 3369 server running `Classic_FreezeTag_i4i` with
+   `DruidsPlayerAgreement110.PlayerAgreementServerActor`: the page with the server's text, `yes` and Fire spawned us,
+   `no` closed the connection with the kick message. FreezeTag itself spawns players who join mid-match at once.
+7. **Leaving**: opening any other map (the menu), `LeaveServer()` or quitting the game sends the control channel close.
 
 ## Mod servers
 
@@ -566,7 +581,12 @@ the player does not have.
 - **Mod classes of stock kinds** are shown as their stock ancestor: a weapon, its attachment and its projectiles by
   the first stock class up the mod class's super chain (`NewNet_ShockRifle` -> `ShockRifle`, view model, effects and
   HUD icon of our pulse rifle; `UE2NetActors::WeaponClassFor`). Before, every mod weapon was "ours none": no view model
-  and no local fire effects.
+  and no local fire effects. A mod weapon that extends `Weapon` itself takes the stock weapon its `PickupClass`,
+  `AmmoClass` or `AttachmentClass` comes from (`ProSniperRifle_20_BETA3.ProSniperRifle`: `ProSniperPickup` extends
+  `ClassicSniperRiflePickup`, so our marksman rifle with its zoom), and a mod attachment that extends
+  `xWeaponAttachment` itself the weapon of its package that hands it out. Mods' copies of a stock hit effect under
+  their own name (`ProSniperWallHitEffect`, IK_Stealth's `Stealth_WallHitEffect`, both extending `Effects`) show as the
+  stock one (class name ending in `WallHitEffect`).
 
 ### NewNet (lag compensated weapons)
 
@@ -854,8 +874,11 @@ keeps ticking: keep-alives and acks go out, and the server waits for `JOIN`.
        most recently used.
      - `ReferencePackages`: the custom content folder's packages, which are found but never converted or removed here.
      - `bMaintenance=false`.
-     The conversion is incremental (MD5 per file): rejoining converts nothing. A package with the name of a stock one
-     is never converted over it (the converter's shadowing rule).
+     The conversion is incremental (MD5 per file): rejoining converts nothing. A map converted with errors by an older
+     converter revision is converted again once (`ArenaConvUserContent::ErrorRetryVersion`, the record's
+     `error_retry`): DM-Big_City-Final-(Eisbaer) lost a static mesh whose `Materials` array is stored with a size 90
+     bytes short (the converter now reads a struct array element by element up to the object's end, as UE2 does). A
+     package with the name of a stock one is never converted over it (the converter's shadowing rule).
    - Then `ArenaRuntimeContent::ResetCacheIndex` and `AArenaLevelBuilder::RefreshImportedLayouts` run, and the
      server's map loads like any converted map.
 9. **Progress**:
@@ -887,7 +910,7 @@ Role and RemoteRole are swapped. Actors are classified by their class chain:
 | `Pawn` (xPawn) | `AUE2NetPawn`: our character body with the player model and skins of the PRI's `CharacterName` (the install's player lists, `System/*.upl`: mesh, `BodySkin`, `FaceSkin`; team skins `<skin>_0 / _1`; the animation set from the cache's mesh record), `PawnPosition` extrapolated along its velocity and eased in (no lag behind a moving target, snaps above 4 m), yaw smoothed, aim pitch from `ViewPitch`, movement state from `bIsCrouched` / `CollisionHeight` and from each `PawnPosition` (`Physics` reaches a simulated pawn in its initial bunch only, so, like the UE2 client, we work it out: a water volume means swimming, a vertical speed of 100 UU/s or more falling, a small one or a fall's end walking once a floor is below; our native animation reads velocity and movement mode), `AnimAction` weapon switches, hit reactions from `HitFxTicker`, death on `bTearOff` (ragdoll with `TearOffMomentum`, gibs for damage types with `bAlwaysGibs`); the body stays 8 s after the channel closes. Camera: behind the pawn when the server says `ClientSetBehindView(True)` (stock spectating), else first person |
 | `WeaponAttachment` | the third-person weapon of its `Instigator` (attachment class -> our weapon art), fire animation and muzzle flash on `FlashCount`, bullet tracers and impacts from `mHitLocation` / `SpawnHitCount` (assault rifle, minigun; for our own attachment, which gets no `FlashCount`, the impacts only: our weapon draws the tracer) |
 | `ShockBeamEffect`, `NewLightningBolt`, `ShockCombo` | our shock / instagib / lightning beams and impacts (our own shock beams from our first-person weapon), the shock combo explosion |
-| `SniperWallHitEffect`, `RedeemerExplosion`, `SmallRedeemerExplosion` | the classic sniper rifle's hit effect, the Redeemer's nuke (`AArenaWarheadShell::SpawnNukeEffects`) and its small blast |
+| `SniperWallHitEffect` (and mods' `*WallHitEffect` copies), `RedeemerExplosion`, `SmallRedeemerExplosion` | the classic sniper rifle's hit effect, the Redeemer's nuke (`AArenaWarheadShell::SpawnNukeEffects`) and its small blast |
 | `NewTransEffect*`, `NewTransDeres*` | the translocation flashes where a pawn arrives and where it left (`AArenaTransEffect`) |
 | `LinkBeamEffect`, `PainterBeamEffect`, `ONSMineLayerTargetBeamEffect` (other players') | `AUE2NetBeam` from the player's third-person weapon to the replicated `EndEffect` while it exists (the mine laser until `bCancel`); the beams are camera-facing quads of the effect's texture and width (xEmitter beam textures run lengthwise, so `XEffectMat.Ion.painter_beam`'s stripe runs along the beam; an xEmitter beam is 1.5 x `mSizeRange` across, the painter's 12 UU, a BeamEmitter 2 x `StartSizeRange`; an xEmitter beam's colour is `mColorRange` x 2 x 1.8: UE2 adds it to the frame in gamma space, we add it in linear light, which over the mid-tone ground under a painted spot came out about 0.6 as bright as 3369). The painter's beam is dim where it starts, as 3369 draws it (measured against 3369 in the same view: 0.12 as bright at the start, closing on full as 1 - exp(-UU along / 38), from quads along its first 110 UU; `PainterBeamEffect` is the one PT_Beam xEmitter with a non-zero `mAttenKa`, the cause is native). Our own first-person beam starts where `PainterBeamEffect.Tick` puts it: the eye + `CalcDrawOffset` (`PlayerViewOffset` x 0.9 / `DisplayFOV` x 100, Y x Hand) + its `EffectOffset` (-5, 15 x Hand, -7) in the view axes (the pawn's location for the hidden hand); seen from outside, and other players', at the third-person weapon's tip. The painter's brightness and width (`mSizeRange`) follow `TargetState` as `PainterBeamEffect` does (40 aiming, up to 250 once marked; acquired: 250 and widening to 16 UU for its 0.4 s, then the `Cancelled` fade to 40 and 1 UU, since `TargetState` stays acquired on the wire), with its `MarkSound` / `AquiredSound` and its hum (`AmbientSound` TAGFireA, `SoundVolume` 45, `SoundRadius` 120, off once acquired). On a dedicated server the beam is gone 4 game seconds after it came (its xEmitter `mLifeRange`, as measured against 3369; the cause is native) unless a strike ended it first: painting on without a mark then shows no beam, ours included. Ours: our own weapon draws the beam while we hold fire and until our `PainterBeamEffect` closes (released: `TargetState` cancelled, its 0.4 s fade at the last end); our painter takes `TargetState` from it. A strike puts the painter down at once (`ClientSwitchToBestWeapon`: the best other weapon with ammo), so our beam ends there (stock UT2004 would point it at the new weapon's missing `EndEffect`) |
 | `ShockCombo` | also takes the place of the shock core's own explosion (the core's close waits 0.1 s for it) |

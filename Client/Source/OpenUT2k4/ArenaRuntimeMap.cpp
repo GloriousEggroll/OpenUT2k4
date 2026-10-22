@@ -934,7 +934,10 @@ namespace ArenaRuntimeMapLocal
 		{
 			SunRot.Pitch = -50.f;
 		}
-		if (ADirectionalLight* D = World->SpawnActor<ADirectionalLight>(ADirectionalLight::StaticClass(), FVector(0.f, 0.f, 5000.f), SunRot, Params))
+		// UE2 lights a map with the sun only when it has a Sunlight actor: without one there is none (night and space
+		// maps such as DM-Big_City-Final-(Eisbaer) or CTF-FaceClassic stay dark and keep their sky box instead of
+		// the atmosphere's lit blue sky; daylight maps without a sun are lit by their own lights and zone ambient)
+		if (ADirectionalLight* D = Sun.IsValid() ? World->SpawnActor<ADirectionalLight>(ADirectionalLight::StaticClass(), FVector(0.f, 0.f, 5000.f), SunRot, Params) : nullptr)
 		{
 			if (UDirectionalLightComponent* C = Cast<UDirectionalLightComponent>(D->GetLightComponent()))
 			{
@@ -954,8 +957,8 @@ namespace ArenaRuntimeMapLocal
 						uint8(FMath::Clamp(FMath::RoundToInt(RGB.Z * 255.0), 0, 255)), 255);
 				}
 				C->RegisterComponent();
-				UE_LOG(LogOpenUT2k4, Log, TEXT("RuntimeMap: sun %s intensity %.1f color %s (%s)"), *D->GetActorRotation().ToCompactString(), C->Intensity,
-					*C->LightColor.ToString(), Sun.IsValid() ? TEXT("map sunlight") : TEXT("default"));
+				UE_LOG(LogOpenUT2k4, Log, TEXT("RuntimeMap: sun %s intensity %.1f color %s (map sunlight)"), *D->GetActorRotation().ToCompactString(), C->Intensity,
+					*C->LightColor.ToString());
 			}
 		}
 		if (ASkyLight* S = World->SpawnActor<ASkyLight>(ASkyLight::StaticClass(), FVector(0.f, 0.f, 3000.f), FRotator::ZeroRotator, Params))

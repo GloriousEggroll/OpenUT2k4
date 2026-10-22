@@ -30,6 +30,10 @@ namespace ArenaConvUserContent
 {
 	/** Bumped when the state layout or the per-map conversion changes (every custom map is converted again). */
 	constexpr int32 StateVersion = 1;
+	/** Bumped when a converter fix may export what failed before: a custom map converted with errors by an older
+	 *  revision is converted again (state.json "error_retry"; 1: struct arrays stored with a short size, e.g. a static
+	 *  mesh's Materials). */
+	constexpr int32 ErrorRetryVersion = 1;
 
 	struct FOptions
 	{
