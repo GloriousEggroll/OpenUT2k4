@@ -775,6 +775,10 @@ void AUE2NetPawn::NetDie(const FVector& MomentumUU, const FVector& HitLocationUU
 		return;
 	}
 	bNetDead = true;
+	if (bNetFrozen && GetMesh())
+	{
+		GetMesh()->bPauseAnims = false; // (a frozen body that is shattered: the ragdoll takes it, still icy)
+	}
 	bDead = true;
 	DeadTime = FPlatformTime::Seconds();
 	const FVector Momentum = MomentumUU * S;
@@ -887,11 +891,64 @@ void AUE2NetPawn::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
 	OutResult.bUseFirstPersonParameters = false;
 }
 
+void AUE2NetPawn::SetNetOverlay(UMaterialInterface* Material, float Seconds)
+{
+	NetOverlay = Material;
+	NetOverlayEnd = Material && Seconds > 0.f ? FPlatformTime::Seconds() + Seconds : 0.0;
+	UpdateOverlay();
+}
+
+void AUE2NetPawn::SetNetFrozen(bool bFrozen, UMaterialInterface* Ice)
+{
+	if (bFrozen == bNetFrozen && (!bFrozen || Ice == IceOverlay))
+	{
+		return;
+	}
+	bNetFrozen = bFrozen;
+	IceOverlay = bFrozen ? Ice : nullptr;
+	if (USkeletalMeshComponent* SkelMesh = GetMesh())
+	{
+		// StopAnimating: the body keeps the pose it froze in; thawed, it animates again
+		SkelMesh->bPauseAnims = bFrozen;
+	}
+	UpdateOverlay();
+}
+
+void AUE2NetPawn::UpdateOverlay()
+{
+	USkeletalMeshComponent* SkelMesh = GetMesh();
+	if (!SkelMesh || bNetDead)
+	{
+		return;
+	}
+	if (NetOverlay && NetOverlayEnd > 0.0 && FPlatformTime::Seconds() >= NetOverlayEnd)
+	{
+		NetOverlay = nullptr;
+		NetOverlayEnd = 0.0;
+	}
+	// (frozen: the mod clears the overlay and puts the ice into the skins)
+	UMaterialInterface* Net = bNetFrozen ? IceOverlay.Get() : NetOverlay.Get();
+	if (Net && !bNetOverlayShown)
+	{
+		RestOverlay = SkelMesh->GetOverlayMaterial();
+	}
+	UMaterialInterface* Want = Net ? Net : (bNetOverlayShown ? RestOverlay.Get() : SkelMesh->GetOverlayMaterial());
+	bNetOverlayShown = Net != nullptr;
+	if (SkelMesh->GetOverlayMaterial() != Want)
+	{
+		SkelMesh->SetOverlayMaterial(Want);
+	}
+}
+
 void AUE2NetPawn::Tick(float DeltaSeconds)
 {
 	using namespace UE2NetActorsLocal;
 	// ACharacter's tick only: no AArenaCharacter gameplay (combos, regeneration, spawn checks)
 	ACharacter::Tick(DeltaSeconds);
+	if (bSkeletalBody && (NetOverlay || bNetFrozen || bNetOverlayShown))
+	{
+		UpdateOverlay();
+	}
 	// the player model once the PRI named the character (a stock pick when it does not come)
 	if (!bModelApplied && (bCharacterKnown || GetGameTimeSinceCreation() > 1.f))
 	{

@@ -66,6 +66,13 @@ public:
 	/** bTearOff: the server killed this pawn. Momentum / hit location in UE2 units; bGib for gibbing damage. */
 	void NetDie(const FVector& MomentumUU, const FVector& HitLocationUU, bool bGib);
 	bool IsNetDead() const { return bNetDead; }
+	/** Actor.OverlayMaterial / OverlayTimer: a material drawn over the body (shield hits, damage flashes, a mod's
+	 *  glow) for Seconds (0: until replaced or cleared); null clears it. */
+	void SetNetOverlay(UMaterialInterface* Material, float Seconds);
+	/** A Freeze Tag pawn's replicated bFrozen: the pose stops where it is and Ice is drawn over the body (the mod's
+	 *  client Tick: StopAnimating, skins plus its frost material); false thaws it back. */
+	void SetNetFrozen(bool bFrozen, UMaterialInterface* Ice);
+	bool IsNetFrozen() const { return bNetFrozen; }
 	/** Driving a vehicle (Vehicle.Driver): hidden, carried along with the vehicle, the camera behind the vehicle. */
 	void SetNetVehicle(AActor* Vehicle);
 	AActor* GetNetVehicle() const { return NetVehicle.Get(); }
@@ -130,6 +137,16 @@ protected:
 	double DeadTime = 0.0;
 	float CollisionHalfHeight = 88.f;
 	TWeakObjectPtr<AActor> NetVehicle;
+	UPROPERTY() TObjectPtr<UMaterialInterface> NetOverlay;
+	UPROPERTY() TObjectPtr<UMaterialInterface> IceOverlay;
+	/** When NetOverlay ends (0: not timed). */
+	double NetOverlayEnd = 0.0;
+	bool bNetFrozen = false;
+	/** Ours before a replicated overlay took over (the team rim of a model without team skins), and whether one did. */
+	TWeakObjectPtr<UMaterialInterface> RestOverlay;
+	bool bNetOverlayShown = false;
+	/** The overlay the body should have now (frozen: the ice). */
+	void UpdateOverlay();
 };
 
 /** A replicated projectile: the art of our projectile table, flown along the replicated velocity, exploding on close. */

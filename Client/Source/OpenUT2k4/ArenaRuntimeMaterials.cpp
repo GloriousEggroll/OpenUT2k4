@@ -1316,6 +1316,21 @@ static FAutoConsoleCommand GDumpMaterialResolves(
 		UE_LOG(LogOpenUT2k4, Display, TEXT("arena.DumpMaterialResolves: %d materials in %.1fs -> %s"), Paths.Num(), FPlatformTime::Seconds() - T0, *File);
 	}));
 
+UMaterialInstanceDynamic* ArenaRuntimeContent::CreateAdditiveLayer(const FString& TextureObjectPath, const FLinearColor& Tint, UObject* Outer)
+{
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(ArenaRuntimePrivate::GetMaster(TEXT("M_ImportedAdditive")), Outer);
+	if (!MID)
+	{
+		return nullptr;
+	}
+	if (UTexture2D* Tex = TextureObjectPath.IsEmpty() ? nullptr : LoadTextureByObjectPath(TextureObjectPath))
+	{
+		MID->SetTextureParameterValue(TEXT("Base"), Tex);
+	}
+	MID->SetVectorParameterValue(TEXT("Tint"), Tint);
+	return MID;
+}
+
 UMaterialInstanceDynamic* ArenaRuntimeContent::CreateMaterialInstance(UMaterialInterface* Source, UObject* Outer)
 {
 	if (!Source)

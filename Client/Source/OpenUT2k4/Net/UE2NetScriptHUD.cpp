@@ -1149,6 +1149,7 @@ struct FUE2NetScriptHUD::FImpl
 	}
 
 	static FUSClass* RTActor() { return FUSRuntime::Get().ActorClass; }
+	static FUSClass* RTPawn() { return FUSRuntime::Get().PawnClass; }
 
 	void InitWeaponFires(FUSObject* Weapon)
 	{
@@ -1572,6 +1573,59 @@ struct FUE2NetScriptHUD::FImpl
 		}
 	}
 
+	/**
+	 * UE2's renderer, for each pawn on screen with bScriptPostRender: Pawn.PostRender2D(Canvas, ScreenLocX, ScreenLocY)
+	 * in place of the native team beacon (Pawn's: the HUD's DrawCustomBeacon). A Freeze Tag pawn sets bScriptPostRender in
+	 * its client Tick once its replicated bFrozen is set (Freon_Pawn: the snowflake beacon with the thaw bar), which
+	 * the mirror does not run: that line is done here.
+	 */
+	void PawnPostRender2D()
+	{
+		FUE2NetWorld* NW = FUE2NetWorld::Get();
+		if (!NW || !RTPawn())
+		{
+			return;
+		}
+		for (const TPair<int32, FUSObject*>& KV : Mirrors)
+		{
+			FUSObject* O = KV.Value;
+			if (!O || O == Level || !O->Data || !O->Class || !O->Class->IsChildOf(RTPawn()))
+			{
+				continue;
+			}
+			FUSProperty* Post = O->FindProperty(FName(TEXT("bScriptPostRender")));
+			if (!Post || Post->Type != EUSType::Bool)
+			{
+				continue;
+			}
+			uint32& bPost = *reinterpret_cast<uint32*>(O->Data + Post->Offset);
+			if (FUSProperty* Frozen = O->FindProperty(FName(TEXT("bFrozen"))); Frozen && Frozen->Type == EUSType::Bool)
+			{
+				bPost = *reinterpret_cast<const uint32*>(O->Data + Frozen->Offset) != 0 ? 1u : bPost;
+			}
+			AActor* Native = bPost ? NW->GetNativeActor(KV.Key) : nullptr;
+			if (!Native || Native->IsHidden())
+			{
+				continue;
+			}
+			const FUSVector Loc = USUnits::ToUE2(Native->GetActorLocation());
+			USProps().Location.Set<FUSVector>(O, Loc);
+			const FUSVector Screen = Backend.WorldToScreen(Loc);
+			if (Screen.Z <= 0.f)
+			{
+				continue;
+			}
+			if (FUSFunction* F = USVM::FindFunction(O, TEXT("PostRender2D")))
+			{
+				FUSParms Parms(F);
+				Parms.Object(CanvasObj);
+				Parms.Float(Screen.X);
+				Parms.Float(Screen.Y);
+				Parms.Call(O);
+			}
+		}
+	}
+
 	FDrawResult Draw(AHUD* Hud, UCanvas* Canvas, bool bShowScores)
 	{
 		FDrawResult R;
@@ -1601,6 +1655,7 @@ struct FUE2NetScriptHUD::FImpl
 			{
 				*reinterpret_cast<uint32*>(ScriptHud->Data + P->Offset) = bWantScores ? 1u : 0u;
 			}
+			PawnPostRender2D();
 			if (FUSFunction* F = USVM::FindFunction(ScriptHud, TEXT("PostRender")))
 			{
 				FUSParms Parms(F);

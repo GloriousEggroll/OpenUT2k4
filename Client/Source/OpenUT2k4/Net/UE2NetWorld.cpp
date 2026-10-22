@@ -1078,6 +1078,36 @@ void FUE2NetWorld::ApplyPawn(FEntity& E, const FUE2NetActor& A, const TArray<FSt
 	{
 		Pawn->Shield = GetFloat(A, TEXT("ShieldStrength"));
 	}
+	if (Changed.Contains(TEXT("OverlayMaterial")) || Changed.Contains(TEXT("OverlayTimer")))
+	{
+		// Actor.OverlayMaterial / OverlayTimer (the server's SetOverlayMaterial)
+		const FString Overlay = GetObjPath(A, TEXT("OverlayMaterial"));
+		UMaterialInterface* M = Overlay.IsEmpty() || Overlay.Equals(TEXT("None")) ? nullptr : UE2NetModWeapons::LoadSkins({ Overlay })[0];
+		Pawn->SetNetOverlay(M, GetFloat(A, TEXT("OverlayTimer")));
+		static TSet<FString> Logged;
+		if (M && !Logged.Contains(Overlay))
+		{
+			Logged.Add(Overlay);
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: pawn overlay %s for %.1f s"), *Overlay, GetFloat(A, TEXT("OverlayTimer")));
+		}
+	}
+	if (Changes(TEXT("bFrozen")) && A.Class && A.Class->GetDefaultObject() && A.Class->GetDefaultObject()->FindProperty(FName(TEXT("bFrozen"))))
+	{
+		// Freeze Tag (WS3SPN Freon_Pawn, L7's freeze tag and its relatives): the replicated bFrozen; the client Tick stops
+		// the animation and adds the class's FrostMaterial to the skins (Combiner CO_Add)
+		static TMap<FUSClass*, TStrongObjectPtr<UMaterialInterface>> Ice;
+		TStrongObjectPtr<UMaterialInterface>& M = Ice.FindOrAdd(A.Class);
+		if (!M.IsValid())
+		{
+			M.Reset(ArenaRuntimeContent::CreateAdditiveLayer(DefaultText(A.Class, TEXT("FrostMaterial")), FLinearColor(0.55f, 0.65f, 0.8f), GetTransientPackage()));
+		}
+		const bool bFrozen = GetBool(A, TEXT("bFrozen"));
+		if (bFrozen != Pawn->IsNetFrozen())
+		{
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: %s %s (%s)"), *E.ClassName, bFrozen ? TEXT("frozen") : TEXT("thawed"), *DefaultText(A.Class, TEXT("FrostMaterial")));
+		}
+		Pawn->SetNetFrozen(bFrozen, M.Get());
+	}
 	if (Changes(TEXT("PawnPosition")) && PawnPos)
 	{
 		FVector Loc, Vel;
@@ -3355,6 +3385,32 @@ void FUE2NetWorld::Tick(float DeltaSeconds)
 					FollowPRI = 0;
 				}
 				UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: spectate script: vehicle view %s"), Pick ? *PickClass : TEXT("(none left)"));
+			}
+			else if (Cmd == TEXT("frozen"))
+			{
+				// test view of a frozen Freeze Tag pawn (the next one each time): the free camera beside it
+				static int32 Next = 0;
+				TArray<AUE2NetPawn*> Frozen;
+				for (const TPair<int32, FEntity>& P : Entities)
+				{
+					if (AUE2NetPawn* Pawn = P.Value.Kind == EKind::Pawn ? Cast<AUE2NetPawn>(P.Value.Native.Get()) : nullptr; Pawn && Pawn->IsNetFrozen())
+					{
+						Frozen.Add(Pawn);
+					}
+				}
+				AActor* Cam = PC->GetSpectatorPawn() ? static_cast<AActor*>(PC->GetSpectatorPawn()) : static_cast<AActor*>(PC);
+				if (Frozen.Num() > 0)
+				{
+					AUE2NetPawn* Pick = Frozen[Next++ % Frozen.Num()];
+					const FVector At = Pick->GetActorLocation();
+					const FVector Dir = (Pick->GetActorForwardVector() * 0.9f + Pick->GetActorRightVector() * 0.4f).GetSafeNormal();
+					Cam->SetActorLocation(At + Dir * 260.f + FVector(0.f, 0.f, 60.f));
+					PC->SetControlRotation((At - Cam->GetActorLocation()).Rotation());
+					PC->SetViewTarget(Cam);
+					bFreeCamera = true;
+					FollowPRI = 0;
+				}
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: spectate script: frozen view (%d frozen)"), Frozen.Num());
 			}
 			else if (Cmd == TEXT("scores") || Cmd == TEXT("noscores"))
 			{

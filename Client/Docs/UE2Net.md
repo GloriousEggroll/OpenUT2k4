@@ -630,8 +630,18 @@ the player does not have.
   weapon, a mutator's or a map script's pickup) are drawn as their `StaticMesh` with their `Skins` and scale, on their
   `Base` (a player's bone or attach alias: `AttachmentBone`, `RelativeLocation` / `RelativeRotation`) or where they
   are. Actors placed in the map are left to the converted map.
+- **Overlays and Freeze Tag**: a pawn's replicated `OverlayMaterial` / `OverlayTimer` (the server's
+  `SetOverlayMaterial`: spawn protection's `PlayerShieldSh`, a mod's glow) is drawn over the body for that time (0:
+  until replaced), over our own team rim. A pawn class with a replicated `bFrozen` (WS3SPN `Freon_Pawn`, L7's freeze
+  tag and its relatives) does what its client Tick does once it is set: the animation stops in the pose it froze in
+  and the class's `FrostMaterial` is added to the body (UE2 `Combiner` `CO_Add` of the skins and the frost texture;
+  here an additive overlay tinted towards ice blue). The frozen body is not a death (no ragdoll, no gibs); thawing,
+  the server replaces it with a new pawn. With a mod HUD, pawns with `bScriptPostRender` get `PostRender2D` each frame
+  before `HUD.PostRender`, as UE2's renderer does (Pawn's calls the HUD's `DrawCustomBeacon`: Freon's snowflake
+  beacon, "Name (thaw %)" and the thaw bar); a frozen pawn's `bScriptPostRender` is set from its `bFrozen` (the line of
+  its client Tick the mirror does not run).
 - Test hook: `-UE2NetSpectateScript="30:vehicle;34:vehicle"`, the free camera on the next vehicle class not viewed yet
-  (parked ones first).
+  (parked ones first); `vehicle=<Class>` that class; `frozen` the free camera beside the next frozen pawn.
 
 ### NewNet (lag compensated weapons)
 

@@ -87,6 +87,9 @@ namespace ArenaRuntimeContent
 	 * the slot) when changing parameters per actor. Works for any material, with or without runtime content.
 	 */
 	OPENUT2K4_API class UMaterialInstanceDynamic* CreateMaterialInstance(UMaterialInterface* Source, UObject* Outer);
+	/** An additive layer of a texture ("Pkg.Group.Name"; white when it does not load) times Tint, for a mesh's overlay
+	 *  material (UE2 Combiner CO_Add of a skin and a texture: a Freeze Tag frozen body). */
+	OPENUT2K4_API class UMaterialInstanceDynamic* CreateAdditiveLayer(const FString& TextureObjectPath, const FLinearColor& Tint, UObject* Outer);
 
 	/** True for the plain material that UE2 "None" material slots get (the mesh leaves the skin to the actor's Skins). */
 	OPENUT2K4_API bool IsDefaultMaterial(const UMaterialInterface* Material);
