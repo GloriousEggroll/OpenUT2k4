@@ -31,6 +31,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "CollisionQueryParams.h"
 
 AArenaWeapon::AArenaWeapon()
@@ -1565,9 +1566,27 @@ void AArenaWeapon::BuildViewModel()
 // Imported view model
 // ------------------------------------------------------------------------------------------------
 
+void AArenaWeapon::SetNetStandIn(const FArenaNetStandIn& In)
+{
+	NetStandIn = In;
+	NetStandInSkins.Reset();
+	for (UMaterialInterface* M : In.Skins)
+	{
+		NetStandInSkins.Add(M);
+	}
+	for (int32 Mode = 0; Mode < 2; ++Mode)
+	{
+		if (In.FireRate[Mode] > 0.f)
+		{
+			// the mod fire mode's FireRate (WeaponFire.ModeDoFire: NextFireTime += FireRate)
+			FireModes[Mode].RefireTime = In.FireRate[Mode];
+		}
+	}
+}
+
 void AArenaWeapon::SetupImportedViewModel()
 {
-	Art = ArenaArt::FindWeaponArt(GetClass());
+	Art = NetStandIn.Art ? NetStandIn.Art : ArenaArt::FindWeaponArt(GetClass());
 	USkeletalMesh* Mesh = Art && Art->FirstPersonMesh ? ArenaArt::Load<USkeletalMesh>(Art->FirstPersonMesh) : nullptr;
 	if (!Mesh || !ViewRoot)
 	{
@@ -1576,6 +1595,14 @@ void AArenaWeapon::SetupImportedViewModel()
 	ViewMesh = NewObject<USkeletalMeshComponent>(this, TEXT("ViewMesh"));
 	ViewMesh->SetupAttachment(ViewRoot);
 	ViewMesh->SetSkeletalMeshAsset(Mesh);
+	for (int32 i = 0; i < NetStandInSkins.Num(); ++i)
+	{
+		// a mod weapon's Weapon.Skins
+		if (NetStandInSkins[i])
+		{
+			ViewMesh->SetMaterial(i, NetStandInSkins[i]);
+		}
+	}
 	ViewMesh->SetRelativeLocationAndRotation(Art->ViewOffset, Art->ViewRotation);
 	ViewMesh->SetRelativeScale3D(FVector(Art->ViewScale));
 	ViewMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
@@ -1716,7 +1743,7 @@ void AArenaWeapon::ApplyHandToViewModel()
 	AppliedSmall = int8(bSmall);
 	// Weapon.RenderOverlays: PlayerViewOffset (SmallViewOffset with small weapons); Y x Hand, or CenteredOffsetY when
 	// centred; DrawScale3D.Y x Hand and the pivot's yaw / roll x Hand; centred: view yaw + CenteredYaw, roll CenteredRoll
-	const ArenaWeaponHand::FViewParams& P = ArenaWeaponHand::GetViewParams(GetClass());
+	const ArenaWeaponHand::FViewParams& P = NetStandIn.View ? *NetStandIn.View : ArenaWeaponHand::GetViewParams(GetClass());
 	const float ToView = (90.f / FMath::Max(1.f, Art->ViewFOV)) * 2.f; // FWeaponArt::SetViewFromSource
 	FVector Source = P.bValid ? (bSmall ? P.SmallOffset : P.Offset) : Art->ViewOffset / ToView;
 	FRotator Pivot = Art->ViewRotation;

@@ -973,12 +973,37 @@ namespace ArenaRuntimeSkeletalPrivate
 
 		// ---- skeleton (shared per animation set) ----
 		USkeleton* Skeleton = nullptr;
+		// UE2 meshes can name another skeleton's animation set as theirs (the Paladin's ShockTankMesh names the SPMA
+		// cannon's ArtilleryCannonAnims): the set's own mesh (the converter's representative_mesh) owns the set's skeleton
+		const int32* SetIndex = Info.Animation.IsEmpty() ? nullptr : S.SetByObject.Find(Info.Animation);
+		const bool bSetsOwnMesh = SetIndex && S.Sets.IsValidIndex(*SetIndex) && S.Sets[*SetIndex].RepresentativeMesh.Equals(Info.ObjectPath, ESearchCase::IgnoreCase);
+		bool bTakeOver = false;
 		if (TStrongObjectPtr<USkeleton>* Shared = S.Skeletons.Find(GroupKey))
 		{
 			Skeleton = Shared->Get();
 			if (Skeleton && !Skeleton->MergeAllBonesToBoneTree(Mesh, false))
 			{
-				UE_LOG(LogOpenUT2k4, Warning, TEXT("RuntimeSkeletal: %s does not fit skeleton %s, using its own"), *Info.ObjectPath, *Skeleton->GetName());
+				if (bSetsOwnMesh && GroupKey.StartsWith(TEXT("set:")))
+				{
+					// a mesh that only borrowed the set's name built the skeleton first: it keeps that skeleton as its own
+					const TStrongObjectPtr<USkeleton> Borrowed = *Shared;
+					for (TPair<FString, FString>& Owner : S.MeshGroup)
+					{
+						if (Owner.Value == GroupKey)
+						{
+							Owner.Value = TEXT("mesh:") + Owner.Key;
+							S.Skeletons.Add(Owner.Value, Borrowed);
+						}
+					}
+					UE_LOG(LogOpenUT2k4, Log, TEXT("RuntimeSkeletal: %s owns the skeleton of its animation set %s (a mesh that only names the set built one first)"),
+						*Info.ObjectPath, *Info.Animation);
+					bTakeOver = true;
+				}
+				else
+				{
+					UE_LOG(LogOpenUT2k4, Log, TEXT("RuntimeSkeletal: %s does not fit the skeleton of its animation set %s (%s): it uses its own"), *Info.ObjectPath,
+						*Info.Animation, *Skeleton->GetName());
+				}
 				Skeleton = nullptr;
 			}
 		}
@@ -988,7 +1013,11 @@ namespace ArenaRuntimeSkeletalPrivate
 			Skeleton = NewObject<USkeleton>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), USkeleton::StaticClass(),
 				FName(*(AssetName(Rest) + TEXT("_Skeleton")))), RF_Transient);
 			Skeleton->MergeAllBonesToBoneTree(Mesh, false);
-			if (!S.Skeletons.Contains(GroupKey))
+			if (bTakeOver)
+			{
+				S.Skeletons.Add(GroupKey, TStrongObjectPtr<USkeleton>(Skeleton));
+			}
+			else if (!S.Skeletons.Contains(GroupKey))
 			{
 				S.Skeletons.Add(GroupKey, TStrongObjectPtr<USkeleton>(Skeleton));
 			}

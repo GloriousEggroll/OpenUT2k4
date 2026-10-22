@@ -628,6 +628,10 @@ namespace ArenaRuntimeMaterials
 					{
 						Sub->Flags.Add(Flag);
 					}
+					if (Nd.IsA(TEXT("TexEnvMap")))
+					{
+						Sub->Flags.Add(TEXT("envmap")); // (runtime only: BuildMaterial's reflection stand-in)
+					}
 					if (bHasStep)
 					{
 						Sub->UV = Compose(Step, Sub->UV);
@@ -1017,6 +1021,79 @@ namespace ArenaRuntimeMaterials
 		return I;
 	}
 
+	/**
+	 * What UE2 computes per pixel and the masters cannot: a reflection (TexEnvMap, a Cubemap: chrome, glass, a mod
+	 * vehicle's sheen) drawn with mesh UVs shows one face of the cube stretched over the surface. Instead: no texture, the
+	 * reflected image's average colour (towards grey), smooth and shiny. A material with no texture at all (ConstantColor,
+	 * FadeColor) is its colour. Returns false when the material is neither.
+	 */
+	bool StandInColour(const FMaterialInfo& Info, FLinearColor& OutColour, bool& bOutShiny)
+	{
+		bOutShiny = false;
+		if (!Info.bHasParams)
+		{
+			return false;
+		}
+		const FResolution& R = Info.Res;
+		if (R.Flags.Contains(TEXT("envmap")) || R.Flags.Contains(TEXT("cubemap")))
+		{
+			// (darker than the reflected image: chrome under the masters' lighting reads as polished metal, not as paint)
+			FVector3d C(0.4, 0.4, 0.42);
+			const TSharedPtr<FJsonObject> S = R.Base.IsEmpty() ? nullptr : Graph().TexStats(R.Base);
+			const TArray<TSharedPtr<FJsonValue>>* Mean = nullptr;
+			if (S.IsValid() && S->TryGetArrayField(TEXT("mean"), Mean) && Mean->Num() >= 3)
+			{
+				const FVector3d M((*Mean)[0]->AsNumber(), (*Mean)[1]->AsNumber(), (*Mean)[2]->AsNumber());
+				const double MLum = M.X * 0.3 + M.Y * 0.59 + M.Z * 0.11;
+				const double Lum = FMath::Clamp(MLum, 0.2, 0.45);
+				// its tint at that brightness
+				C = FMath::Lerp(FVector3d(Lum), M * (Lum / FMath::Max(MLum, 1e-3)), 0.35);
+			}
+			C = FVector3d(SrgbToLinear(C.X), SrgbToLinear(C.Y), SrgbToLinear(C.Z));
+			if (R.bHasTint)
+			{
+				C *= R.Tint;
+			}
+			OutColour = FLinearColor(float(C.X), float(C.Y), float(C.Z));
+			bOutShiny = true;
+			return true;
+		}
+		if (!Info.Texture.IsEmpty())
+		{
+			return false;
+		}
+		const FNodePtr N = Graph().Node(Info.Path);
+		if (!N.IsValid() || !N->bMaterial)
+		{
+			return false;
+		}
+		auto Colour = [&N](const TCHAR* Key, FVector3d& Out)
+		{
+			const TSharedPtr<FJsonValue> V = Prop(*N, Key);
+			if (!V.IsValid() || V->Type != EJson::Object)
+			{
+				return false;
+			}
+			const TSharedPtr<FJsonObject> O = V->AsObject();
+			Out = FVector3d(SrgbToLinear(Num(O->TryGetField(TEXT("R")), 255.0) / 255.0), SrgbToLinear(Num(O->TryGetField(TEXT("G")), 255.0) / 255.0),
+				SrgbToLinear(Num(O->TryGetField(TEXT("B")), 255.0) / 255.0));
+			return true;
+		};
+		FVector3d A, B;
+		if (N->IsA(TEXT("ConstantColor")) && Colour(TEXT("Color"), A))
+		{
+			OutColour = FLinearColor(float(A.X), float(A.Y), float(A.Z));
+			return true;
+		}
+		if (N->IsA(TEXT("FadeColor")) && Colour(TEXT("Color1"), A) && Colour(TEXT("Color2"), B))
+		{
+			const FVector3d M = (A + B) * 0.5;
+			OutColour = FLinearColor(float(M.X), float(M.Y), float(M.Z));
+			return true;
+		}
+		return false;
+	}
+
 	FString MasterFor(const FString& Blend)
 	{
 		if (Blend == TEXT("masked") || Blend == TEXT("invisible")) return TEXT("M_ImportedMasked");
@@ -1100,7 +1177,10 @@ UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath
 	{
 		return DefaultMaterial();
 	}
-	if (!Info.Texture.IsEmpty())
+	FLinearColor StandIn;
+	bool bShiny = false;
+	const bool bStandIn = StandInColour(Info, StandIn, bShiny);
+	if (!Info.Texture.IsEmpty() && !bStandIn)
 	{
 		if (UTexture2D* Tex = ArenaRuntimeContent::LoadTextureByObjectPath(Info.Texture))
 		{
@@ -1133,6 +1213,19 @@ UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath
 		if (R.bHasTint && (FMath::Abs(R.Tint.X - 1.0) > 1e-3 || FMath::Abs(R.Tint.Y - 1.0) > 1e-3 || FMath::Abs(R.Tint.Z - 1.0) > 1e-3))
 		{
 			MID->SetVectorParameterValue(TEXT("Tint"), FLinearColor(float(R.Tint.X), float(R.Tint.Y), float(R.Tint.Z), 1.f));
+		}
+	}
+	if (bStandIn)
+	{
+		// (the white default texture times the colour; an additive sheen over another layer stays faint, a modulating one
+		// leaves it as it is)
+		const float Scale = Info.Blend == TEXT("additive") ? 0.3f : 1.f;
+		const FLinearColor Tint = Info.Blend == TEXT("modulate") ? FLinearColor::White : StandIn * Scale;
+		MID->SetVectorParameterValue(TEXT("Tint"), FLinearColor(Tint.R, Tint.G, Tint.B, 1.f));
+		if (bShiny && bLit)
+		{
+			MID->SetScalarParameterValue(TEXT("Roughness"), 0.25f);
+			MID->SetScalarParameterValue(TEXT("Specular"), 0.8f);
 		}
 	}
 	++Stats().Materials;

@@ -22,6 +22,7 @@
 #include "UE2NetScriptHUD.h"
 #include "UE2NetMapVote.h"
 #include "UE2NetPlayerAgreement.h"
+#include "../ArenaGameState.h"
 #include "../UScript/UScriptCore.h"
 #include "UE2NetLog.h"
 #include "HAL/FileManager.h"
@@ -858,6 +859,13 @@ namespace ArenaNet
 			{
 				// the server made us a spectator (bOnlySpectator) and has not let us in yet
 				return FString(TEXT("The server keeps you spectating for now - Fire joins once it lets you play")) + NoticeLine;
+			}
+			const AArenaGameState* GS = World->GetGameState<AArenaGameState>();
+			if (GS && GS->Phase == EArenaMatchPhase::Countdown && GNetPlay->HasRequestedRestart())
+			{
+				// before the match: Fire was our ready signal; the server starts the match (StartupMessage: waiting for
+				// other players / ready signals, the count down)
+				return FString(TEXT("You are READY - waiting for the match to begin")) + NoticeLine;
 			}
 			return (GNetPlay->IsWaitingForRound() ? FString(TEXT("You join when the next round starts - Fire: view a player, Alt-Fire: free camera"))
 				: FString(TEXT("Press Fire to join the match"))) + NoticeLine;

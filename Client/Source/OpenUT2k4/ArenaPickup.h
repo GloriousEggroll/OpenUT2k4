@@ -53,6 +53,8 @@ public:
 	 * respawn timer runs afterwards.
 	 */
 	void SetNetAvailable(bool bNewAvailable);
+	/** Net play: a mod pickup's own StaticMesh in place of our item mesh, fitted to its size. */
+	void SetNetItemMesh(class UStaticMesh* Mesh);
 
 	UPROPERTY(VisibleAnywhere) TObjectPtr<USphereComponent> Trigger;
 	UPROPERTY(VisibleAnywhere) TObjectPtr<USceneComponent> ModelRoot;

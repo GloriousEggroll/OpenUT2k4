@@ -39,6 +39,7 @@
 #include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UE2NetActors.h"
+#include "UE2NetModWeapons.h"
 #include "UE2NetConnection.h"
 #include "UE2NetLog.h"
 #include "UE2NetModContent.h"
@@ -772,6 +773,7 @@ void FUE2NetWorld::Apply(FEntity& E, const FUE2NetActor& A, const TArray<FString
 		}
 		break;
 	case EKind::HeldBeam: ApplyHeldBeam(E, A, Changed, bInitial); break;
+	case EKind::Unknown: ApplyDecoration(E, A, Changed, bInitial); break;
 	default:
 		break;
 	}
@@ -1422,15 +1424,149 @@ void FUE2NetWorld::ApplyPickup(FEntity& E, const FUE2NetActor& A, const TArray<F
 		{
 			E.Native = Pickup;
 			++PickupsMatched;
+			// a mod's pickup in place of the stock one (ProSniperPickup for ClassicSniperRiflePickup): its own mesh
+			if (UStaticMesh* ModMesh = UE2NetModWeapons::FindPickupMesh(E.ClassPath))
+			{
+				Pickup->SetNetItemMesh(ModMesh);
+			}
 		}
 		else
 		{
 			++PickupsUnmatched; // dropped weapons, mod pickups
 		}
 	}
+	if (!Pickup)
+	{
+		// not one of the map's: drawn as its static mesh where the server has it (a dropped weapon, a mutator's pickup)
+		ApplyDecoration(E, A, Changed, bInitial);
+		return;
+	}
 	if (Pickup && (bInitial || Changed.Contains(TEXT("bHidden"))))
 	{
 		Pickup->SetNetAvailable(!GetBool(A, TEXT("bHidden")));
+	}
+}
+
+void FUE2NetWorld::ApplyDecoration(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial)
+{
+	using namespace UE2NetWorldLocal;
+	UWorld* W = World.Get();
+	auto Changes = [&](const TCHAR* Key) { return bInitial || Changed.Contains(Key); };
+	// (an actor placed in the map is drawn with the converted map)
+	if (!W || A.bStatic || !(Changes(TEXT("DrawType")) || Changes(TEXT("StaticMesh")) || Changes(TEXT("bHidden")) || Changes(TEXT("Base")) || Changes(TEXT("AttachmentBone"))
+		|| Changes(TEXT("RelativeLocation")) || Changes(TEXT("RelativeRotation")) || Changes(TEXT("Location")) || Changes(TEXT("Rotation"))
+		|| Changes(TEXT("DrawScale")) || Changes(TEXT("DrawScale3D"))))
+	{
+		return;
+	}
+	// what the actor draws: DT_StaticMesh only (meshes and sprites of unknown classes need their code)
+	FString MeshPath = GetObjPath(A, TEXT("StaticMesh"));
+	if (MeshPath.IsEmpty() && !Find(A, TEXT("StaticMesh")))
+	{
+		MeshPath = DefaultText(A.Class, TEXT("StaticMesh"));
+	}
+	const bool bShow = GetInt(A, TEXT("DrawType"), 1) == 8 && !MeshPath.IsEmpty() && !MeshPath.Equals(TEXT("None")) && !GetBool(A, TEXT("bHidden"));
+	AActor* Deco = E.Native.Get();
+	if (!bShow)
+	{
+		if (Deco)
+		{
+			Deco->SetActorHiddenInGame(true);
+		}
+		return;
+	}
+	if (!Deco)
+	{
+		FActorSpawnParameters P;
+		P.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		P.ObjectFlags |= RF_Transient;
+		Deco = W->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, P);
+		if (!Deco)
+		{
+			return;
+		}
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Deco, TEXT("Mesh"));
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetGenerateOverlapEvents(false);
+		C->SetCanEverAffectNavigation(false);
+		Deco->SetRootComponent(C);
+		C->RegisterComponent();
+		E.Native = Deco;
+		E.bOwned = true;
+	}
+	UStaticMeshComponent* C = Cast<UStaticMeshComponent>(Deco->GetRootComponent());
+	if (!C)
+	{
+		return;
+	}
+	UE2NetModContent::EnsureConverted(MeshPath, TEXT("StaticMesh"));
+	UStaticMesh* Mesh = ArenaRuntimeContent::LoadStaticMeshByObjectPath(MeshPath);
+	if (C->GetStaticMesh() != Mesh)
+	{
+		C->SetStaticMesh(Mesh);
+		const TArray<UMaterialInterface*> Skins = UE2NetModWeapons::LoadSkins(UE2NetModWeapons::FindLook(E.ClassPath).Skins);
+		for (int32 i = 0; i < Skins.Num() && i < C->GetNumMaterials(); ++i)
+		{
+			if (Skins[i])
+			{
+				C->SetMaterial(i, Skins[i]);
+			}
+		}
+	}
+	Deco->SetActorHiddenInGame(Mesh == nullptr);
+	auto Rot = [this, &A](const TCHAR* Key)
+	{
+		const FUE2NetValue* V = Find(A, Key);
+		return V ? FRotator(V->R.X * 360.f / 65536.f, V->R.Y * 360.f / 65536.f, V->R.Z * 360.f / 65536.f) : DefaultRotator(A.Class, Key);
+	};
+	const FVector Scale3D = Find(A, TEXT("DrawScale3D")) ? GetVec(A, TEXT("DrawScale3D")) : DefaultVector(A.Class, TEXT("DrawScale3D"));
+	C->SetUsingAbsoluteScale(true);
+	C->SetRelativeScale3D((Scale3D.IsNearlyZero() ? FVector::OneVector : Scale3D) * GetFloat(A, TEXT("DrawScale"), 1.f));
+	// on its Base (a player's bone: AttachToBone), else where it is
+	const FEntity* BaseE = FindEntity(GetRef(A, TEXT("Base")));
+	AActor* BaseActor = BaseE ? BaseE->Native.Get() : nullptr;
+	if (BaseActor)
+	{
+		USceneComponent* Parent = BaseActor->GetRootComponent();
+		if (ACharacter* Ch = Cast<ACharacter>(BaseActor); Ch && Ch->GetMesh())
+		{
+			Parent = Ch->GetMesh();
+		}
+		FName Socket = NAME_None;
+		const FString Bone = GetStr(A, TEXT("AttachmentBone"));
+		if (!Bone.IsEmpty() && Bone != TEXT("None") && Parent && Parent->DoesSocketExist(FName(*Bone)))
+		{
+			Socket = FName(*Bone);
+		}
+		if (C->GetAttachParent() != Parent || C->GetAttachSocketName() != Socket)
+		{
+			Deco->AttachToComponent(Parent, FAttachmentTransformRules::KeepRelativeTransform, Socket);
+		}
+		C->SetRelativeLocationAndRotation(GetVec(A, TEXT("RelativeLocation")) * S, Rot(TEXT("RelativeRotation")));
+	}
+	else
+	{
+		if (C->GetAttachParent())
+		{
+			Deco->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		}
+		Deco->SetActorLocationAndRotation(GetVec(A, TEXT("Location"), ToVec(A.SpawnLocation)) * S, Rot(TEXT("Rotation")));
+	}
+	const FVector PrePivot = (Find(A, TEXT("PrePivot")) ? GetVec(A, TEXT("PrePivot")) : DefaultVector(A.Class, TEXT("PrePivot"))) * S;
+	if (!PrePivot.IsNearlyZero())
+	{
+		PrePivoted.Add(A.Channel, { C, C->GetRelativeLocation(), PrePivot });
+	}
+	else
+	{
+		PrePivoted.Remove(A.Channel);
+	}
+	static TSet<FUSClass*> Logged;
+	if (bInitial && !Logged.Contains(A.Class))
+	{
+		Logged.Add(A.Class);
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: %s drawn as its static mesh %s (%s)%s"), *E.ClassPath, *MeshPath, Mesh ? TEXT("loaded") : TEXT("not converted"),
+			BaseActor ? *FString::Printf(TEXT(", on %s"), *GetStr(A, TEXT("AttachmentBone"))) : TEXT(""));
 	}
 }
 
@@ -1768,8 +1904,17 @@ AUE2NetVehicle* FUE2NetWorld::SpawnVehicle(FEntity& E, const FUE2NetActor& A)
 	const FString Mesh = DrawType == 2 ? Content(DefaultText(A.Class, TEXT("Mesh")), TEXT("SkeletalMeshes")) : FString();
 	const FString SM = DrawType == 8 ? Content(StaticMesh, TEXT("StaticMeshes")) : FString();
 	const float Radius = DrawType == 0 && Mesh.IsEmpty() && SM.IsEmpty() ? -1.f : GetFloat(A, TEXT("CollisionRadius"), 40.f);
-	V->Setup(E.ClassName, Mesh, SM, DefaultText(A.Class, TEXT("RedSkin")), DefaultText(A.Class, TEXT("BlueSkin")),
-		DefaultText(A.Class, TEXT("DestroyedVehicleMesh")), Radius, GetFloat(A, TEXT("CollisionHeight"), 40.f));
+	// a mod's mesh that is not in the cache yet (a mod installed in the UT2004 folder, not downloaded)
+	if (DrawType == 2)
+	{
+		UE2NetModContent::EnsureConverted(DefaultText(A.Class, TEXT("Mesh")), TEXT("SkeletalMesh"));
+	}
+	else if (DrawType == 8)
+	{
+		UE2NetModContent::EnsureConverted(StaticMesh, TEXT("StaticMesh"));
+	}
+	V->Setup(E.ClassName, Mesh, SM, UE2NetModWeapons::FindLook(E.ClassPath), DefaultText(A.Class, TEXT("DestroyedVehicleMesh")), Radius,
+		GetFloat(A, TEXT("CollisionHeight"), 40.f));
 	V->SetNetLocation(Loc, GetVec(A, TEXT("Velocity")), Rot, true);
 	// SVehicle.Wheels: the class's wheel subobjects (BoneName, WheelRadius, SteerType) from the UScript defaults
 	TArray<AUE2NetVehicle::FNetWheel> Wheels;
@@ -1887,6 +2032,11 @@ void FUE2NetWorld::ApplyVehicle(FEntity& E, const FUE2NetActor& A, const TArray<
 	if (Changes(TEXT("bDriving")))
 	{
 		V->SetDriving(GetBool(A, TEXT("bDriving")));
+	}
+	if (Changes(TEXT("bHidden")))
+	{
+		// a stationary turret (ONSStationaryWeaponPawn) is hidden behind its gun until destroyed: then its dead base shows
+		V->SetBodyHidden(GetBool(A, TEXT("bHidden")));
 	}
 	if (Changes(TEXT("AmbientSound")) || Changes(TEXT("SoundVolume")))
 	{
@@ -2046,8 +2196,10 @@ void FUE2NetWorld::ApplyVehicleWeapon(FEntity& E, const FUE2NetActor& A, const T
 			MeshPath = FString::Printf(TEXT("SkeletalMeshes/%s/%s"), *Pkg, *Rest.Replace(TEXT("."), TEXT("_")));
 		}
 		auto NameOf = [this, &A](const TCHAR* Key) { const FString N = GetStr(A, Key); return N.IsEmpty() || N == TEXT("None") ? FName() : FName(*N); };
+		UE2NetModContent::EnsureConverted(MeshObj, TEXT("SkeletalMesh"));
 		V->SetWeapon(A.Channel, MeshPath, NameOf(TEXT("AttachmentBone")), NameOf(TEXT("YawBone")), NameOf(TEXT("PitchBone")), NameOf(TEXT("WeaponFireAttachmentBone")),
-			GetFloat(A, TEXT("WeaponFireOffset")), DefaultText(A.Class, TEXT("RedSkin")), DefaultText(A.Class, TEXT("BlueSkin")));
+			GetFloat(A, TEXT("WeaponFireOffset")), UE2NetModWeapons::FindLook(E.ClassPath));
+		V->SetWeaponAttachments(A.Channel, UE2NetModWeapons::FindClientAttachments(E.ClassPath));
 		// ONSWeapon turning limits (UE2 rotation units): PitchUpLimit / PitchDownLimit, YawStartConstraint ..
 		// YawEndConstraint when bLimitYaw
 		auto Deg = [](float Units) { return FRotator::NormalizeAxis(Units * 360.f / 65536.f); };
@@ -2067,6 +2219,10 @@ void FUE2NetWorld::ApplyVehicleWeapon(FEntity& E, const FUE2NetActor& A, const T
 		bInitial = true;
 	}
 	auto Changes = [&](const TCHAR* Key) { return bInitial || Changed.Contains(Key); };
+	if (Changes(TEXT("bHidden")))
+	{
+		V->SetWeaponHidden(A.Channel, GetBool(A, TEXT("bHidden")));
+	}
 	const FUE2NetValue* Hit = Find(A, TEXT("CurrentHitLocation"));
 	if (Hit && Changes(TEXT("CurrentHitLocation")))
 	{
@@ -3003,6 +3159,18 @@ void FUE2NetWorld::Tick(float DeltaSeconds)
 	{
 		return;
 	}
+	for (auto It = PrePivoted.CreateIterator(); It; ++It)
+	{
+		USceneComponent* C = It.Value().Comp.Get();
+		if (!C)
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		const USceneComponent* P = C->GetAttachParent();
+		const FTransform Frame = P ? P->GetSocketTransform(C->GetAttachSocketName()) : FTransform::Identity;
+		C->SetRelativeLocation(It.Value().Relative + Frame.InverseTransformVector(It.Value().PrePivot));
+	}
 	const double Now = FPlatformTime::Seconds();
 	for (int32 i = PendingShockCores.Num() - 1; i >= 0; --i)
 	{
@@ -3148,6 +3316,45 @@ void FUE2NetWorld::Tick(float DeltaSeconds)
 					}
 					UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: spectate script: ball view (%s)"), Ball->GetCarrier() ? TEXT("carrier") : TEXT("free camera"));
 				}
+			}
+			else if (Cmd == TEXT("vehicle") || Cmd.StartsWith(TEXT("vehicle=")))
+			{
+				// test view of the next vehicle class not viewed yet (parked ones first), or of a class ("vehicle=odinv2omni"):
+				// the free camera in front of it
+				static TSet<FString> Viewed;
+				const FString Only = Cmd.Mid(8);
+				AActor* Pick = nullptr;
+				FString PickClass;
+				for (int32 Pass = 0; Pass < 2 && !Pick; ++Pass)
+				{
+					for (const TPair<int32, FEntity>& P : Entities)
+					{
+						// (vehicles, and stationary turrets: weapon pawns with a vehicle actor of their own)
+						AUE2NetVehicle* V = P.Value.Kind == EKind::Vehicle || (P.Value.Kind == EKind::WeaponPawn && P.Value.bOwned)
+							? Cast<AUE2NetVehicle>(P.Value.Native.Get()) : nullptr;
+						if (V && (Only.IsEmpty() ? !Viewed.Contains(P.Value.ClassName) : P.Value.ClassName.Equals(Only, ESearchCase::IgnoreCase)) && (Pass == 1 || V->GetVelocity().Size() < 50.f) && !V->IsDestroyedAppearance())
+						{
+							Pick = V;
+							PickClass = P.Value.ClassName;
+							break;
+						}
+					}
+				}
+				AActor* Cam = PC->GetSpectatorPawn() ? static_cast<AActor*>(PC->GetSpectatorPawn()) : static_cast<AActor*>(PC);
+				if (Pick)
+				{
+					Viewed.Add(PickClass);
+					FVector Origin, Extent;
+					Pick->GetActorBounds(false, Origin, Extent);
+					const float Dist = FMath::Clamp(float(Extent.Size()) * 1.6f, 300.f, 2500.f);
+					const FVector Dir = (Pick->GetActorForwardVector() * 0.8f + Pick->GetActorRightVector() * 0.6f).GetSafeNormal();
+					Cam->SetActorLocation(Origin + Dir * Dist + FVector(0.f, 0.f, Dist * 0.35f));
+					PC->SetControlRotation((Origin - Cam->GetActorLocation()).Rotation());
+					PC->SetViewTarget(Cam);
+					bFreeCamera = true;
+					FollowPRI = 0;
+				}
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: spectate script: vehicle view %s"), Pick ? *PickClass : TEXT("(none left)"));
 			}
 			else if (Cmd == TEXT("scores") || Cmd == TEXT("noscores"))
 			{

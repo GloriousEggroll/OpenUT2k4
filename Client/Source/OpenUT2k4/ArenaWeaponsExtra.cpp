@@ -702,7 +702,7 @@ FVector AWeap_OrbitalDesignator::GetBeamStart() const
 	{
 		return ArenaOwner->GetActorLocation();
 	}
-	const ArenaWeaponHand::FViewParams& P = ArenaWeaponHand::GetViewParams(GetClass());
+	const ArenaWeaponHand::FViewParams& P = GetNetStandIn().View ? *GetNetStandIn().View : ArenaWeaponHand::GetViewParams(GetClass());
 	if (!P.bValid)
 	{
 		return GetMuzzleLocation();

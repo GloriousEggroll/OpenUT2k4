@@ -17,7 +17,9 @@ namespace UE2NetConnectionLocal
 {
 	/** Engine version we announce. 3369 is the last retail patch; OldUnreal's 3374 servers accept it too. */
 	constexpr int32 ClientVersion = 3369;
-	constexpr int32 ClientMinVersion = 3369;
+	/** The oldest server version we join, as stock clients announce it (ENGINE_MIN_NET_VERSION): a server rejects
+	 *  clients whose MINVER is above its own version, so 3369 here shut out 3339 servers. */
+	constexpr int32 ClientMinVersion = 3180;
 	/** Seconds without any packet from the server before we give up (UT2004 ConnectionTimeout is 20). */
 	constexpr double ReceiveTimeout = 20.0;
 	/** After LOGIN, give up if WELCOME or a rejection has not arrived in this time. */

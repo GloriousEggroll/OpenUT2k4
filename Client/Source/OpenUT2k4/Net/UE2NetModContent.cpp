@@ -31,6 +31,14 @@ namespace UE2NetModContentLocal
 		{
 			return TEXT("textures");
 		}
+		if (ClassName == TEXT("SkeletalMesh"))
+		{
+			return TEXT("skeletalmeshes");
+		}
+		if (ClassName == TEXT("MeshAnimation"))
+		{
+			return TEXT("animations");
+		}
 		// Shader, FinalBlend, Combiner, TexRotator ... (the converter writes them to materials/, their textures to textures/)
 		return TEXT("materials");
 	}
@@ -49,8 +57,15 @@ bool UE2NetModContent::EnsureConverted(const FString& ObjectPath, const FString&
 {
 	using namespace UE2NetModContentLocal;
 	static TSet<FString> Tried;
-	const TCHAR* Kind = KindFolder(ClassName);
-	if (!ArenaRuntimeContent::FindCacheFileByObjectPath(Kind, ObjectPath, TEXT(".json")).IsEmpty())
+	if (ObjectPath.IsEmpty() || ObjectPath.Equals(TEXT("None")))
+	{
+		return false;
+	}
+	// no class: a material of any kind (a texture, or a Shader / FinalBlend / TexEnvMap ...)
+	const bool bAnyMaterial = ClassName.IsEmpty();
+	const TCHAR* Kind = bAnyMaterial ? TEXT("textures") : KindFolder(ClassName);
+	if (!ArenaRuntimeContent::FindCacheFileByObjectPath(Kind, ObjectPath, TEXT(".json")).IsEmpty()
+		|| (bAnyMaterial && !ArenaRuntimeContent::FindCacheFileByObjectPath(TEXT("materials"), ObjectPath, TEXT(".json")).IsEmpty()))
 	{
 		return true;
 	}
@@ -112,7 +127,10 @@ bool UE2NetModContent::EnsureConverted(const FString& ObjectPath, const FString&
 			UE_LOG(LogUE2Net, Warning, TEXT("UE2NetModContent: %s"), *E);
 		}
 	}
+	// a material exports its textures, a mesh its materials
 	ArenaRuntimeContent::OnCacheFilesAdded(Kind);
+	ArenaRuntimeContent::OnCacheFilesAdded(TEXT("textures"));
+	ArenaRuntimeContent::OnCacheFilesAdded(TEXT("materials"));
 	UE_LOG(LogUE2Net, Log, TEXT("UE2NetModContent: converted %s (%s) -> %s in %.0f ms"), *ObjectPath, *ClassName, Result.IsEmpty() ? TEXT("nothing") : *Result,
 		(FPlatformTime::Seconds() - T0) * 1000.0);
 	return !Result.IsEmpty();

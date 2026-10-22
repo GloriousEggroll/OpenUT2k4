@@ -781,7 +781,14 @@ void AArenaHUD::DrawUTWeaponBar(const AArenaCharacter* Char)
 		FSpriteWidget Ammo = Spr(ETex::Hud, 0, 94, 94, 109, 0.53f, DP_LowerLeft, Border.PosX, 1.f, 0, 0, IconTint, IconTint, EAnchor::Center);
 		Ammo.ScaleMode = SM_Right;
 		Ammo.Scale = W->bInfiniteAmmo ? 1.f : W->GetAmmoFraction(); // Weapon.AmmoStatus
-		if (const ArenaArtHUD::FHudSprite* WI = ArenaArtHUD::GetWeaponIcon(W->GetClass()))
+		const FArenaNetStandIn& Mod = W->GetNetStandIn();
+		if (Mod.bIcon)
+		{
+			// a mod weapon's own IconCoords on the stock HUD atlas or on its own texture (Net/UE2NetModWeapons.h)
+			const FVector4f& C = Mod.IconCoords;
+			Icon.Coords = FIntBox{ int32(C.X), int32(C.Y), int32(C.Z), int32(C.W) };
+		}
+		else if (const ArenaArtHUD::FHudSprite* WI = ArenaArtHUD::GetWeaponIcon(W->GetClass()))
 		{
 			Icon.Coords = FIntBox{ int32(WI->X1), int32(WI->Y1), int32(WI->X2), int32(WI->Y2) };
 		}
@@ -809,7 +816,18 @@ void AArenaHUD::DrawUTWeaponBar(const AArenaCharacter* Char)
 		}
 		DrawSprite(F, Border);
 		DrawSprite(F, Ammo);
-		DrawSprite(F, Icon);
+		UTexture2D* ModIcon = Mod.bIcon && !Mod.IconTexture.IsEmpty() ? ArenaArtHUD::GetTexture(*Mod.IconTexture) : nullptr;
+		if (ModIcon && F.D)
+		{
+			const FRect R = SpriteRect(F, Icon);
+			DrawTilePath(*F.D, *Mod.IconTexture, float(FMath::Max(1, ModIcon->GetSizeX())), float(FMath::Max(1, ModIcon->GetSizeY())), R.X, R.Y, R.W, R.H,
+				float(Icon.Coords.X1), float(Icon.Coords.Y1), float(Icon.Coords.X2 - Icon.Coords.X1), float(Icon.Coords.Y2 - Icon.Coords.Y1),
+				FLinearColor(Icon.Tints[F.TeamIndex]));
+		}
+		else
+		{
+			DrawSprite(F, Icon);
+		}
 	}
 }
 

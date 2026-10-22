@@ -176,7 +176,7 @@ Control bunches carry strings, one or more per bunch. The formats below are thos
 (its format strings), confirmed against the local server:
 
 ```
-client: HELLO REVISION=0 MINVER=3369 VER=3369
+client: HELLO REVISION=0 MINVER=3180 VER=3369
 server: CHALLENGE VER=3369 CHALLENGE=<int> STATS=<0|1> SEC=<int> GZ=<int>
         (or UPGRADE MINVER=<n> VER=<n> when our version is not accepted)
 client: AUTH HASH=<identity hash> GM=<gm> USERNAME=[<stats user>] PASSWORD=[<encrypted stats password>]   (see "CD key and AUTH")
@@ -207,7 +207,7 @@ WS3SPN / WSUTComp, the Vehicle CTF profile with NewNet weapons; see "Real client
 
 | Step | 3374 client | Ours |
 |---|---|---|
-| Hello | `HELLO REVISION=0 MINVER=3180 VER=3374` | `MINVER=3369 VER=3369` (the server answers `VER=3369` either way) |
+| Hello | `HELLO REVISION=0 MINVER=3180 VER=3374` | `MINVER=3180 VER=3369` (the server answers `VER=3369` either way; a 3339 server answers `VER=3339`, and a MINVER above its version gets `UPGRADE`) |
 | Login | `AUTH`, `NETSPEED 20000`, `LOGIN RESPONSE=.. URL=:<port>/Index.ut2?Name=..?Class=Engine.Pawn?Character=..?team=255` in one packet | the same three; the URL carries our options without `Class=` |
 | After `WELCOME`, map loaded | every `HAVE` in USES order (one per package whose generation count differs from the server's, older or newer: 145 of 204 on DM-Rankin with the 3374 packages), then `PETE PKT=.. PKG=..`, two `REPEAT <scrambled text>`, `JOIN`, `OPENVOICE 1` | `SKIP` / `HAVE` in USES order, then `JOIN` |
 
@@ -587,6 +587,51 @@ the player does not have.
   `xWeaponAttachment` itself the weapon of its package that hands it out. Mods' copies of a stock hit effect under
   their own name (`ProSniperWallHitEffect`, IK_Stealth's `Stealth_WallHitEffect`, both extending `Effects`) show as the
   stock one (class name ending in `WallHitEffect`).
+- **Mod weapons' own assets** (`Net/UE2NetModWeapons`): the stand-in shows what the mod's class defaults name where
+  they differ from the stock relative's (the class the stand-in reproduces: `UTClassic.ClassicSniperRifle` for
+  ProSniperRifle): the first-person `Mesh` (its animation set from the converted mesh, `SelectAnim` / `PutDownAnim` /
+  `IdleAnim` and the fire modes' `FireAnim`), `Skins`, the view placement (`PlayerViewOffset`, `SmallViewOffset`,
+  `PlayerViewPivot`, `DrawScale` x `DrawScale3D`, `DisplayFOV`, `Centered*`), each fire mode's `FireSound` and
+  `FireRate`, the weapon bar's `IconCoords` (on the stock HUD atlas, or on the mod's own `IconMaterial` texture), the
+  third-person attachment's `Mesh`, `Skins`, `RelativeLocation` / `RelativeRotation` / scale (other players' weapons),
+  and a mod pickup's `StaticMesh`. Every item falls back to the stand-in's own when it is missing, did not convert or
+  does not load; the log line `ModWeapons:` lists what is the mod's and what fell back. The assets come from the
+  downloaded package: the net cache conversion exports a script package's own textures, materials, meshes,
+  animations and sounds, and those it imports from other custom packages (a mod vehicle's skins in its .utx, its mesh
+  in a .ukx), once per package version (`ArenaConvUserContent::ScriptAssetsVersion`, state.json packages' `assets`; a
+  server whose script packages were not exported yet runs the converter on join), into the content cache like a map's
+  content. A map that defines classes of its own (vehicles embedded in the map) exports its classes' assets the same
+  way with the map (its signature carries the version). What is still missing (a mod installed in the UT2004 folder
+  instead of downloaded) is converted on demand (`UE2NetModContent::EnsureConverted`). Our weapon carries the server class it stands in for (`FArenaNetStandIn`), one weapon per
+  server class, so a mod weapon and its stock relative are two. Not taken from the mod: timing its code sets at run
+  time (ProSniperFire.ModeDoFire's 0.14 s / 1.0 s: the default `FireRate`, 0.5 s, is used), `SelectSound` (our
+  weapons play none yet), muzzle flash and hit effect classes, projectile classes (the stock relative's). Reflections
+  (`TexEnvMap`, a `Cubemap`), which our masters cannot compute, are drawn as a smooth shiny surface of the reflected
+  image's average colour, and a `ConstantColor` / `FadeColor` as its colour (`ArenaRuntimeMaterials.cpp`
+  `StandInColour`), not as a cube face stretched over the mesh. Tested on a local 3369 server: ProSniperRifle_20_BETA3
+  (its fire sound and view placement; mesh and skins are the stock ones it names) and AK47Bin2L (an AK47 that extends
+  `ShockRifle`: its own first- and third-person meshes, skins, view placement, fire sounds and rates).
+
+- **Mod vehicles** (`UE2NetModWeapons::FindLook`, `AUE2NetVehicle`): a vehicle, stationary turret or vehicle weapon is
+  drawn with its class's `Skins` and `RedSkin` / `BlueSkin` (the team's on the first slot, as ONSVehicle / ONSWeapon
+  do) and `DrawScale` x `DrawScale3D`; a weapon on a chassis bone keeps its own scale (UE2 attachments do not inherit
+  the chassis's). Our art rig stands in for a stock mesh only when the class looks like its nearest stock ancestor; a
+  mod's Manta or Raptor with its own skins or scale is drawn with the UE2 mesh. `bHidden` hides the body (a stationary
+  turret's base is hidden behind its gun until it is destroyed, then its dead base shows) and a weapon. The wreck has
+  the chassis's scale. `PrePivot` offsets the body, a gun and a decoration along the world axes (UE2 draws an actor at
+  `Location + PrePivot`). What a weapon's client-side code spawns and attaches to its bones is found without running
+  the code (`UE2NetModWeapons::FindClientAttachments`): an instance variable whose type is a client-only (`RemoteRole`
+  `ROLE_None`) actor class with a mesh, passed to `AttachToBone` with a bone name (a `name` variable or constant) in the
+  class's script; it is drawn on that bone of the gun with its class's scale, placement and skins (`RedSkins` /
+  `BlueSkins` per team), so it turns with the gun (OdinV2Omni's ion cannon `IonTurretAttachment` on the invisible
+  `IonTurretDummy` gun's `PitchBone`). Its animations and effects (charge-up beams) are not played.
+- **Decorations and loose pickups**: an actor of a class we do not know that draws a static mesh (`DT_StaticMesh`: a
+  mutator's mask on a player's head, AngelMapperHalloweenMasks) and a pickup that is not one of the map's (a dropped
+  weapon, a mutator's or a map script's pickup) are drawn as their `StaticMesh` with their `Skins` and scale, on their
+  `Base` (a player's bone or attach alias: `AttachmentBone`, `RelativeLocation` / `RelativeRotation`) or where they
+  are. Actors placed in the map are left to the converted map.
+- Test hook: `-UE2NetSpectateScript="30:vehicle;34:vehicle"`, the free camera on the next vehicle class not viewed yet
+  (parked ones first).
 
 ### NewNet (lag compensated weapons)
 
@@ -1005,7 +1050,13 @@ scripts in the player's install (`Engine.PlayerController`, `UnrealGame.UnrealPl
 - **Death**: `bTearOff` on our xPawn. Our pawn is replaced by a ragdoll `AUE2NetPawn` (the death camera, behind the
   body), and the HUD shows "You died. Press Fire to respawn!". Fire sends `ServerReStartPlayer`. The first spawn
   happens the same way: once joined, the client sends `ServerSetReadyToStart` and `ServerReStartPlayer`, as UT2004
-  does when its login menu closes. The server starts a new player in `PlayerWaiting` (`bWaitingPlayer`).
+  does when its login menu closes. The server starts a new player in `PlayerWaiting` (`bWaitingPlayer`). Before the
+  match begins (`DeathMatch.PendingMatch`: waiting for `MinNetPlayers` / `NetWait`, or for ready signals when
+  `bPlayersMustBeReady`), `ServerReStartPlayer` is the ready signal (`bReadyToPlay`): the server's `StartupMessage`
+  stages show as local messages ("Waiting for other players.", the count down) and the spectator bar says "You are
+  READY - waiting for the match to begin"; the match start spawns us. If the server leaves us a pawn without weapons
+  while its controller is in `PlayerWaiting` (a player agreement answered after a match began), Fire sends
+  `ServerReStartPlayer` as `PlayerWaiting.Fire` does, and the restart hands out the inventory.
 - **Waiting for the next round**: round games (3SPN / Freon, `ArenaMaster.PostLogin`) put a player who joins
   mid-round out of lives (`PRI.bOutOfLives`) and into `Spectating`, and spawn them only when the next round starts;
   `ServerReStartPlayer` does nothing until then. Without a pawn the client sends the spectator's `ServerMove`

@@ -124,6 +124,28 @@ UStaticMeshComponent* AArenaPickup::AddModelPart(UStaticMesh* Mesh, const FVecto
 	return Part;
 }
 
+void AArenaPickup::SetNetItemMesh(UStaticMesh* Mesh)
+{
+	if (!bModelBuilt)
+	{
+		BuildModel();
+	}
+	UStaticMeshComponent* Item = bArtModel && ModelParts.Num() > 0 ? ModelParts[0].Get() : nullptr;
+	if (!Mesh || !Item || !Item->GetStaticMesh() || Item->GetStaticMesh() == Mesh)
+	{
+		return;
+	}
+	// the new mesh takes the old one's place and largest dimension
+	const float OldSize = float(Item->GetStaticMesh()->GetBounds().BoxExtent.GetMax());
+	const float NewSize = float(Mesh->GetBounds().BoxExtent.GetMax());
+	Item->SetStaticMesh(Mesh);
+	Item->EmptyOverrideMaterials();
+	if (OldSize > 0.f && NewSize > 0.f)
+	{
+		Item->SetRelativeScale3D(Item->GetRelativeScale3D() * (OldSize / NewSize));
+	}
+}
+
 void AArenaPickup::BuildModel()
 {
 	for (UStaticMeshComponent* Part : ModelParts)

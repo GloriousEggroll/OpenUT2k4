@@ -52,6 +52,14 @@ namespace UE2NetDownloadLocal
 		return FPaths::GetExtension(FileName).Equals(TEXT("u"), ESearchCase::IgnoreCase);
 	}
 
+	/** The net cache conversion exported this script package file's own assets (state.json packages' "assets"). */
+	bool ScriptAssetsExported(const FConvJson& State, const FString& Name, const FString& File)
+	{
+		const FConvJson* Rec = State.Get(TEXT("packages")).Find(Name);
+		return Rec && FPaths::IsSamePath(Rec->GetString(TEXT("file")), File)
+			&& Rec->GetNumber(TEXT("assets"), 0) >= ArenaConvUserContent::ScriptAssetsVersion;
+	}
+
 	FString IndexPath()
 	{
 		return UE2NetDownload::GetNetCacheDir() / TEXT("index.json");
@@ -1098,7 +1106,7 @@ void FUE2NetDownloader::Tick(double Now)
 		UE_LOG(LogUE2Net, Log, TEXT("Downloaded content converted in %.1fs: %s%d maps converted (%s), %d unchanged, %d cannot be played, %d errors%s%s"), Job->Stats.Seconds,
 			Job->bOk ? TEXT("") : TEXT("FAILED, "), Job->Stats.ConvertedMaps.Num(), *FString::Join(Job->Stats.ConvertedMaps, TEXT(", ")), Job->Stats.UnchangedMaps,
 			Job->Stats.UnplayableMaps, Job->Stats.Errors, Job->Stats.FatalError.IsEmpty() ? TEXT("") : TEXT(": "), *Job->Stats.FatalError);
-		if (Job->Stats.ConvertedMaps.Num() || Job->Stats.RemovedMaps.Num())
+		if (Job->Stats.ConvertedMaps.Num() || Job->Stats.RemovedMaps.Num() || Job->Stats.ScriptPackagesExported)
 		{
 			ArenaRuntimeContent::ResetCacheIndex();
 		}
@@ -1115,6 +1123,9 @@ void FUE2NetDownloader::StartConvert()
 	TMap<FString, FString> Chosen; // lower package name -> file
 	TSet<FString> ServerNames;
 	bool bNeeded = false;
+	// a script package needs the converter once, for its own assets (a mod weapon's: Net/UE2NetModWeapons.h)
+	FConvJson NetState;
+	FConvJson::LoadFile(ArenaContent::GetCacheDir() / TEXT("netcache") / TEXT("state.json"), NetState);
 	for (const FUE2PackageInfo& Info : Connection.GetPackageMap().GetList())
 	{
 		if (Info.bGuidMatch && IsUnder(Info.LocalPath, NetDir))
@@ -1122,7 +1133,7 @@ void FUE2NetDownloader::StartConvert()
 			Chosen.Add(Info.Name.ToLower(), Info.LocalPath);
 			ServerNames.Add(Info.Name.ToLower());
 			TouchIndex(Info.Guid, Info.Name, Info.LocalPath, IFileManager::Get().FileSize(*Info.LocalPath), Info.LocalGeneration, false);
-			bNeeded |= !IsScriptFile(Info.LocalPath);
+			bNeeded |= !IsScriptFile(Info.LocalPath) || !ScriptAssetsExported(NetState, Info.Name, Info.LocalPath);
 		}
 	}
 	if (!bNeeded)

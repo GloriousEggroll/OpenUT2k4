@@ -34,6 +34,11 @@ namespace ArenaConvUserContent
 	 *  revision is converted again (state.json "error_retry"; 1: struct arrays stored with a short size, e.g. a static
 	 *  mesh's Materials). */
 	constexpr int32 ErrorRetryVersion = 1;
+	/** Bumped when more of a script package's assets are exported (state.json packages' "assets", and the signature of
+	 *  a map with embedded classes; 1: every texture, material, mesh, animation and sound inside a .u, for mod weapons:
+	 *  Net/UE2NetModWeapons.h; 2: also those it takes from other custom packages, and a map's embedded classes' assets,
+	 *  for mod vehicles). */
+	constexpr int32 ScriptAssetsVersion = 2;
 
 	struct FOptions
 	{
@@ -75,6 +80,8 @@ namespace ArenaConvUserContent
 		TArray<FString> ConvertedMaps;
 		TArray<FString> RemovedMaps;
 		int32 UnchangedMaps = 0;
+		/** Script packages whose own assets were exported (ScriptAssetsVersion). */
+		int32 ScriptPackagesExported = 0;
 		int32 UnplayableMaps = 0;
 		/** Converted maps (stock) that were exported again because their map schema was older. */
 		TArray<FString> UpdatedMaps;

@@ -684,6 +684,8 @@ namespace ArenaConvUserContent
 			FString Error;
 			bool bScript = false;
 			TMap<FString, int32> ScriptClasses; // maps only
+			/** A map that defines classes of its own (embedded script: a map's own vehicles, weapons ...). */
+			bool bEmbeddedClasses = false;
 		};
 		TMap<FString, FPkgInfo> Infos;
 		TArray<FString> UserPkgNames;
@@ -741,6 +743,7 @@ namespace ArenaConvUserContent
 				for (int32 Ei = 0; Ei < Pkg->Exports.Num(); ++Ei)
 				{
 					const int32 Ci = Pkg->Exports[Ei].ClassIndex;
+					Info.bEmbeddedClasses |= Ci == 0;
 					if (Ci > 0)
 					{
 						// an object whose class is defined inside the map (embedded script)
@@ -901,6 +904,11 @@ namespace ArenaConvUserContent
 			}
 			FConvJson Deps = FConvJson::Array();
 			FString Signature = FString::Printf(TEXT("v%d.%d|%s"), StateVersion, ArenaConverterVersions::MapSchemaVersion, *U.Md5);
+			if (Info.bEmbeddedClasses)
+			{
+				// its classes' assets are exported with it (ExportScriptAssets below)
+				Signature += FString::Printf(TEXT("|script_assets=%d"), ScriptAssetsVersion);
+			}
 			for (const FString& D : UserDeps)
 			{
 				Deps.Add(UserPkgs[D]->Name);
@@ -1170,6 +1178,66 @@ namespace ArenaConvUserContent
 			++P.Done;
 		}
 		FString ErrText = ErrTextPre;
+		// The assets of a script package (or of a map's embedded script): its own textures, meshes, sounds ..., and those it
+		// takes from other custom packages (a mod vehicle's skins in its .utx, its mesh in a .ukx). A map exports only what
+		// its level uses; these are what the mod's classes show (Net/UE2NetModWeapons.h, mod vehicles in Docs/UE2Net.md).
+		auto ExportScriptAssets = [&](const FString& Name)
+		{
+			Ex.ExportPackage(Name);
+			FConvPackage* Pkg = Mgr.LoadPackage(Name);
+			for (int32 Ii = 0; Pkg && Ii < Pkg->Imports.Num() && !Cancelled(); ++Ii)
+			{
+				if (Pkg->Imports[Ii].PackageIndex == 0)
+				{
+					continue;
+				}
+				// the top-level package: a stock one is in the cache already
+				int32 Idx = Ii;
+				FString Top;
+				for (int32 Guard = 0; Guard < 64 && Pkg->Imports.IsValidIndex(Idx); ++Guard)
+				{
+					const int32 Outer = Pkg->Imports[Idx].PackageIndex;
+					if (Outer >= 0)
+					{
+						Top = Outer == 0 ? Pkg->Imports[Idx].Name : FString();
+						break;
+					}
+					Idx = -Outer - 1;
+				}
+				if (!Top.IsEmpty() && !StockNames.Contains(Top.ToLower()))
+				{
+					Ex.ExportRef(Pkg->MakeRef(-Ii - 1));
+				}
+			}
+		};
+		// script packages, once per version of the package
+		for (const FString& Key : UserPkgNames)
+		{
+			const FUserFile& U = *UserPkgs[Key];
+			FConvJson* Rec = Packages.Find(U.Name);
+			if (Cancelled() || U.Ext != TEXT(".u") || StockNames.Contains(Key) || !Infos[Key].Error.IsEmpty() || !Rec)
+			{
+				continue;
+			}
+			const FConvJson* Old = PrevPkgs.Find(U.Name);
+			if (!ChangedPkgs.Contains(Key) && Old && Old->GetNumber(TEXT("assets"), 0) >= ScriptAssetsVersion)
+			{
+				Rec->Set(TEXT("assets"), ScriptAssetsVersion);
+				continue;
+			}
+			Report(TEXT("Converting mod content"), U.Name, 0.2f);
+			ExportScriptAssets(U.Name);
+			Mgr.CloseAll();
+			Ex.Flush();
+			for (const FString& E : Ex.TakeNewErrors())
+			{
+				ErrText += U.Name + TEXT("\t") + E + TEXT("\n");
+				++S.Errors;
+			}
+			Ex.TakeNewNotes();
+			Rec->Set(TEXT("assets"), ScriptAssetsVersion);
+			++S.ScriptPackagesExported;
+		}
 		TArray<FString> OkMaps;
 		for (int32 i = 0; i < Todo.Num(); ++i)
 		{
@@ -1181,6 +1249,10 @@ namespace ArenaConvUserContent
 			Report(TEXT("Converting custom maps"), T.Name, 0.2f + 0.7f * float(Outdated.Num() + i) / float(FMath::Max(1, Outdated.Num() + Todo.Num())));
 			const double TM = FPlatformTime::Seconds();
 			const bool bExported = Ex.ExportMap(T.Name);
+			if (bExported && Infos[T.Name.ToLower()].bEmbeddedClasses)
+			{
+				ExportScriptAssets(T.Name);
+			}
 			Mgr.CloseAll();
 			Ex.Flush();
 			const TArray<FString> Errors = Ex.TakeNewErrors();

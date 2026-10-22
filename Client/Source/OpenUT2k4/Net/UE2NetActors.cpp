@@ -47,6 +47,7 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "Sound/SoundBase.h"
 #include "UE2NetLog.h"
+#include "UE2NetModWeapons.h"
 
 bool AUE2NetPawn::bBehindView = true;
 int32 AUE2NetProjectile::NumEnded = 0;
@@ -266,9 +267,11 @@ namespace UE2NetActorsLocal
 		{
 			Short.RightChopInline(Dot + 1);
 		}
+		// a stock class by its name; a mod's by its stock ancestor below (BallisticV25's BallisticAttachment is no BallLauncher)
+		const bool bStockName = Dot == INDEX_NONE || UE2NetModWeapons::IsStockClass(ClassName);
 		for (const FMap& M : Table)
 		{
-			if (Short.StartsWith(M.Prefix, ESearchCase::IgnoreCase))
+			if (bStockName && Short.StartsWith(M.Prefix, ESearchCase::IgnoreCase))
 			{
 				return M.Class();
 			}
@@ -287,6 +290,11 @@ namespace UE2NetActorsLocal
 			{
 				for (; C; C = C->GetSuperClass())
 				{
+					// only UT2004's own classes are stock relatives: a mod's BallisticWeapon is no BallLauncher
+					if (!UE2NetModWeapons::IsStockClass(C->GetPathName()))
+					{
+						continue;
+					}
 					const FString Name = C->Name.ToString();
 					for (const FMap& M : Table)
 					{
@@ -663,7 +671,9 @@ void AUE2NetPawn::SetNetWeapon(const FString& AttachmentClass)
 	}
 	WeaponClassName = AttachmentClass;
 	UClass* WeaponClass = AttachmentClass.IsEmpty() ? nullptr : UE2NetActorsLocal::WeaponForAttachment(AttachmentClass);
-	WeaponArt = WeaponClass ? ArenaArt::FindWeaponArt(WeaponClass) : nullptr;
+	// a mod attachment: its own mesh, skins and placement where they differ from the stock one (Net/UE2NetModWeapons.h)
+	const UE2NetModWeapons::FModAttachment* ModAttachment = WeaponClass ? UE2NetModWeapons::FindAttachment(AttachmentClass) : nullptr;
+	WeaponArt = ModAttachment ? &ModAttachment->Art : WeaponClass ? ArenaArt::FindWeaponArt(WeaponClass) : nullptr;
 	AnimEvents.bHeavyWeapon = WeaponArt && WeaponArt->bHeavy;
 	USkeletalMesh* WeaponMesh = (bSkeletalBody && !bNetDead && WeaponArt && WeaponArt->ThirdPersonMesh) ? ArenaArt::Load<USkeletalMesh>(WeaponArt->ThirdPersonMesh) : nullptr;
 	if (!WeaponMesh)
@@ -687,6 +697,18 @@ void AUE2NetPawn::SetNetWeapon(const FString& AttachmentClass)
 	if (ThirdPersonWeapon->GetSkeletalMeshAsset() != WeaponMesh)
 	{
 		ThirdPersonWeapon->SetSkeletalMeshAsset(WeaponMesh);
+	}
+	ThirdPersonWeapon->EmptyOverrideMaterials();
+	if (ModAttachment)
+	{
+		const TArray<UMaterialInterface*> Skins = UE2NetModWeapons::LoadSkins(ModAttachment->Skins);
+		for (int32 i = 0; i < Skins.Num(); ++i)
+		{
+			if (Skins[i])
+			{
+				ThirdPersonWeapon->SetMaterial(i, Skins[i]);
+			}
+		}
 	}
 	ThirdPersonWeapon->SetRelativeLocationAndRotation(WeaponArt->HandOffset, WeaponArt->HandRotation);
 	ThirdPersonWeapon->SetRelativeScale3D(FVector(WeaponArt->HandScale));
@@ -1437,6 +1459,19 @@ namespace UE2NetVehicleLocal
 		return C;
 	}
 
+	/** UE2 draws an actor at Location + PrePivot along the world axes (not turned with it): the component's offset from its
+	 *  attachment frame for the current orientation. */
+	void PlacePrePivot(USceneComponent* C, const FVector& PrePivotUU)
+	{
+		if (!C || PrePivotUU.IsNearlyZero())
+		{
+			return;
+		}
+		const USceneComponent* P = C->GetAttachParent();
+		const FTransform Frame = P ? P->GetSocketTransform(C->GetAttachSocketName()) : FTransform::Identity;
+		C->SetRelativeLocation(Frame.InverseTransformVector(PrePivotUU * ArenaUE2World::Scale));
+	}
+
 	FLinearColor TeamFlash(int32 Team)
 	{
 		return Team == 0 ? FLinearColor(1.f, 0.55f, 0.35f) : (Team == 1 ? FLinearColor(0.45f, 0.65f, 1.f) : FLinearColor(1.f, 0.85f, 0.5f));
@@ -1451,17 +1486,17 @@ AUE2NetVehicle::AUE2NetVehicle()
 	SetReplicates(false);
 }
 
-void AUE2NetVehicle::Setup(const FString& InLabel, const FString& SkeletalMeshPath, const FString& StaticMeshPath, const FString& RedSkin, const FString& BlueSkin,
+void AUE2NetVehicle::Setup(const FString& InLabel, const FString& SkeletalMeshPath, const FString& StaticMeshPath, const UE2NetModWeapons::FLook& Look,
 	const FString& DestroyedMeshPath, float RadiusUU, float HeightUU)
 {
 	using namespace UE2NetVehicleLocal;
 	Label = InLabel;
-	ChassisRedSkin = RedSkin;
-	ChassisBlueSkin = BlueSkin;
+	ChassisLook = Look;
 	DestroyedMesh = DestroyedMeshPath;
 	// our art rig when the class's mesh is the mesh of one of our vehicle types: its chassis sits on the UE2 actor
-	// origin (the rig places it MeshOffset from the collision box centre)
-	if (!SkeletalMeshPath.IsEmpty() && ArenaArt::IsEnabled())
+	// origin (the rig places it MeshOffset from the collision box centre). A mod class with skins or a scale of its own
+	// (a Manta with other team colours) is drawn with the UE2 mesh and its own look instead.
+	if (!SkeletalMeshPath.IsEmpty() && ArenaArt::IsEnabled() && !Look.bOwn)
 	{
 		for (int32 T = 0; T < int32(EArenaONS_VehicleType::Num) && !bRig; ++T)
 		{
@@ -1503,6 +1538,7 @@ void AUE2NetVehicle::Setup(const FString& InLabel, const FString& SkeletalMeshPa
 		if (USkeletalMesh* M = SkeletalMeshPath.IsEmpty() ? nullptr : ArenaArt::Load<USkeletalMesh>(SkeletalMeshPath))
 		{
 			Chassis = MakePoseable(this, Root, M, NAME_None);
+			Chassis->SetRelativeScale3D(Look.Scale);
 		}
 		else if (RadiusUU >= 0.f) // (negative: DT_None, nothing drawn)
 		{
@@ -1513,6 +1549,7 @@ void AUE2NetVehicle::Setup(const FString& InLabel, const FString& SkeletalMeshPa
 			if (UStaticMesh* SM = StaticMeshPath.IsEmpty() ? nullptr : ArenaArt::Load<UStaticMesh>(StaticMeshPath))
 			{
 				BaseMesh->SetStaticMesh(SM);
+				BaseMesh->SetRelativeScale3D(Look.Scale);
 			}
 			else
 			{
@@ -1582,16 +1619,29 @@ void AUE2NetVehicle::UpdateSuspension(UPoseableMeshComponent* C, float DeltaSeco
 	}
 }
 
-void AUE2NetVehicle::ApplySkins(UMeshComponent* C, const FString& RedSkin, const FString& BlueSkin)
+void AUE2NetVehicle::ApplySkins(UMeshComponent* C, const UE2NetModWeapons::FLook& Look)
 {
-	const FString& Path = (Team == 1 && !BlueSkin.IsEmpty()) ? BlueSkin : RedSkin;
-	if (!C || Path.IsEmpty() || Path.Equals(TEXT("None")))
+	if (!C)
 	{
 		return;
 	}
-	if (UMaterialInterface* M = ArenaRuntimeContent::LoadMaterialByObjectPath(Path))
+	TArray<FString> Skins = Look.Skins;
+	const FString& TeamSkin = (Team == 1 && !Look.BlueSkin.IsEmpty()) ? Look.BlueSkin : Look.RedSkin;
+	if (!TeamSkin.IsEmpty())
 	{
-		C->SetMaterial(0, M);
+		if (Skins.Num() == 0)
+		{
+			Skins.Add(FString());
+		}
+		Skins[0] = TeamSkin;
+	}
+	const TArray<UMaterialInterface*> Materials = UE2NetModWeapons::LoadSkins(Skins);
+	for (int32 i = 0; i < Materials.Num() && i < C->GetNumMaterials(); ++i)
+	{
+		if (Materials[i])
+		{
+			C->SetMaterial(i, Materials[i]);
+		}
 	}
 }
 
@@ -1608,14 +1658,49 @@ void AUE2NetVehicle::SetTeam(int32 InTeam)
 	}
 	else
 	{
-		ApplySkins(Chassis, ChassisRedSkin, ChassisBlueSkin);
+		ApplySkins(Chassis ? static_cast<UMeshComponent*>(Chassis) : BaseMesh.Get(), ChassisLook);
 	}
 	for (TPair<int32, FGun>& P : Guns)
 	{
 		if (P.Value.RigGun == INDEX_NONE)
 		{
-			ApplySkins(P.Value.Comp.Get(), P.Value.RedSkin, P.Value.BlueSkin);
+			ApplySkins(P.Value.Comp.Get(), P.Value.Look);
 		}
+		for (int32 i = 0; i < P.Value.Extras.Num() && i < P.Value.ExtraDefs.Num(); ++i)
+		{
+			ApplyExtraSkins(P.Value.Extras[i].Get(), P.Value.ExtraDefs[i]);
+		}
+	}
+}
+
+void AUE2NetVehicle::SetBodyHidden(bool bInHidden)
+{
+	if (bInHidden == bBodyHidden)
+	{
+		return;
+	}
+	bBodyHidden = bInHidden;
+	// the guns on its bones stay as they are (their own bHidden)
+	for (USceneComponent* C : TArray<USceneComponent*>{ RigRoot, Chassis, BaseMesh })
+	{
+		if (C && !bDestroyed)
+		{
+			C->SetVisibility(!bBodyHidden, C == RigRoot);
+		}
+	}
+}
+
+void AUE2NetVehicle::SetWeaponHidden(int32 Key, bool bInHidden)
+{
+	FGun* G = Guns.Find(Key);
+	if (!G || G->bHidden == bInHidden)
+	{
+		return;
+	}
+	G->bHidden = bInHidden;
+	if (UPoseableMeshComponent* C = G->Comp.Get(); C && !bDestroyed)
+	{
+		C->SetVisibility(!bInHidden, true); // (with what is attached to it)
 	}
 }
 
@@ -1703,7 +1788,7 @@ UPoseableMeshComponent* AUE2NetVehicle::GetGunComponent(const FGun& G) const
 }
 
 void AUE2NetVehicle::SetWeapon(int32 Key, const FString& MeshPath, FName AttachBone, FName YawBone, FName PitchBone, FName FireBone, float FireOffsetUU,
-	const FString& RedSkin, const FString& BlueSkin)
+	const UE2NetModWeapons::FLook& Look)
 {
 	using namespace UE2NetVehicleLocal;
 	if (const FGun* Old = Guns.Find(Key); Old && (Old->Comp.IsValid() || Old->RigGun != INDEX_NONE))
@@ -1713,8 +1798,7 @@ void AUE2NetVehicle::SetWeapon(int32 Key, const FString& MeshPath, FName AttachB
 	FGun G;
 	G.FireBone = FireBone;
 	G.FireOffset = FireOffsetUU * ArenaUE2World::Scale;
-	G.RedSkin = RedSkin;
-	G.BlueSkin = BlueSkin;
+	G.Look = Look;
 	// our rig's gun of the same mesh: aimed through the rig's driver / rear turret slot; a fixed rig gun (the rig has it
 	// as decoration) is replaced by our own aimed copy
 	if (bRig && Rig.Art)
@@ -1750,12 +1834,15 @@ void AUE2NetVehicle::SetWeapon(int32 Key, const FString& MeshPath, FName AttachB
 	const USkinnedMeshComponent* ParentSkin = Cast<USkinnedMeshComponent>(Parent);
 	const FName Socket = (ParentSkin && !AttachBone.IsNone() && ParentSkin->GetBoneIndex(AttachBone) != INDEX_NONE) ? AttachBone : NAME_None;
 	UPoseableMeshComponent* C = MakePoseable(this, Parent, M, Socket);
+	// UE2 attachments keep their own DrawScale (the chassis's scale moves the bone, not the gun's size)
+	C->SetUsingAbsoluteScale(true);
+	C->SetRelativeScale3D(Look.Scale);
 	GunComps.Add(C);
 	G.Comp = C;
 	G.YawBone = YawBone.IsNone() ? INDEX_NONE : C->GetBoneIndex(YawBone);
 	G.PitchBone = PitchBone.IsNone() ? INDEX_NONE : C->GetBoneIndex(PitchBone);
 	Guns.Add(Key, G);
-	ApplySkins(C, RedSkin, BlueSkin);
+	ApplySkins(C, Look);
 	if (bDestroyed)
 	{
 		C->SetVisibility(false);
@@ -1777,6 +1864,66 @@ void AUE2NetVehicle::RemoveWeapon(int32 Key)
 	{
 		GunComps.Remove(C);
 		C->DestroyComponent();
+	}
+	for (const TWeakObjectPtr<UMeshComponent>& X : G.Extras)
+	{
+		if (X.IsValid())
+		{
+			X->DestroyComponent();
+		}
+	}
+}
+
+void AUE2NetVehicle::SetWeaponAttachments(int32 Key, const TArray<UE2NetModWeapons::FClientAttachment>& Attachments)
+{
+	FGun* G = Guns.Find(Key);
+	UPoseableMeshComponent* Gun = G ? G->Comp.Get() : nullptr;
+	if (!Gun || G->ExtraDefs.Num() > 0)
+	{
+		return;
+	}
+	for (const UE2NetModWeapons::FClientAttachment& A : Attachments)
+	{
+		UMeshComponent* C = nullptr;
+		if (A.bSkeletal)
+		{
+			USkeletalMesh* M = ArenaArt::Load<USkeletalMesh>(A.Mesh);
+			C = M ? UE2NetVehicleLocal::MakePoseable(this, Gun, M, Gun->GetBoneIndex(A.Bone) != INDEX_NONE ? A.Bone : NAME_None) : nullptr;
+		}
+		else if (UStaticMesh* M = ArenaArt::Load<UStaticMesh>(A.Mesh))
+		{
+			UStaticMeshComponent* S = NewObject<UStaticMeshComponent>(this);
+			S->SetStaticMesh(M);
+			S->SetupAttachment(Gun, Gun->GetBoneIndex(A.Bone) != INDEX_NONE ? A.Bone : NAME_None);
+			S->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			S->SetGenerateOverlapEvents(false);
+			S->RegisterComponent();
+			C = S;
+		}
+		if (!C)
+		{
+			continue;
+		}
+		C->SetUsingAbsoluteScale(true);
+		C->SetRelativeScale3D(A.Scale);
+		C->SetRelativeLocationAndRotation(A.Offset * ArenaUE2World::Scale, A.Rotation);
+		C->SetVisibility(!G->bHidden && !bDestroyed);
+		ApplyExtraSkins(C, A);
+		G->Extras.Add(C);
+		G->ExtraDefs.Add(A);
+	}
+}
+
+void AUE2NetVehicle::ApplyExtraSkins(UMeshComponent* C, const UE2NetModWeapons::FClientAttachment& A)
+{
+	const TArray<FString>& TeamSkins = Team == 1 ? A.BlueSkins : A.RedSkins;
+	const TArray<UMaterialInterface*> Materials = UE2NetModWeapons::LoadSkins((Team == 0 || Team == 1) && TeamSkins.Num() ? TeamSkins : A.Skins);
+	for (int32 i = 0; C && i < Materials.Num() && i < C->GetNumMaterials(); ++i)
+	{
+		if (Materials[i])
+		{
+			C->SetMaterial(i, Materials[i]);
+		}
 	}
 }
 
@@ -2091,6 +2238,7 @@ void AUE2NetVehicle::SetDestroyed(bool bInDestroyed, bool bDisintegrate)
 		Wreck->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		Wreck->SetGenerateOverlapEvents(false);
 		Wreck->SetStaticMesh(WreckMesh);
+		Wreck->SetRelativeScale3D(ChassisLook.Scale);
 		Wreck->RegisterComponent();
 		++NumWrecks;
 	}
@@ -2124,6 +2272,17 @@ void AUE2NetVehicle::Tick(float DeltaSeconds)
 		const FVector Cur = GetActorLocation() + NetVelocity * DeltaSeconds;
 		const FVector NewLoc = (Target - Cur).SizeSquared() > FMath::Square(500.f) ? Target : Cur + (Target - Cur) * FMath::Min(1.f, DeltaSeconds * 10.f);
 		SetActorLocationAndRotation(NewLoc, FQuat::Slerp(GetActorQuat(), NetRotation, FMath::Min(1.f, DeltaSeconds * 10.f)));
+	}
+	for (USceneComponent* C : TArray<USceneComponent*>{ Chassis, BaseMesh, Wreck })
+	{
+		UE2NetVehicleLocal::PlacePrePivot(C, ChassisLook.PrePivot);
+	}
+	for (const TPair<int32, FGun>& P : Guns)
+	{
+		if (P.Value.RigGun == INDEX_NONE)
+		{
+			UE2NetVehicleLocal::PlacePrePivot(P.Value.Comp.Get(), P.Value.Look.PrePivot);
+		}
 	}
 	const float Dt = FMath::Max(DeltaSeconds, 1e-3f);
 	const FRotator R = GetActorRotation();

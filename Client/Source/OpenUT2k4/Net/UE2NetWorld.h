@@ -119,6 +119,8 @@ private:
 	void ApplyAttachment(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 	void ApplyProjectile(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 	void ApplyPickup(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
+	/** An actor of a class we do not know that draws a static mesh (a mutator's decoration: a mask on a player's head). */
+	void ApplyDecoration(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 	void ApplyMover(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 	void ApplyFlag(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
 	void ApplyDomPoint(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial);
@@ -244,6 +246,15 @@ private:
 	int32 KindOpened[int32(EKind::Num)] = {};
 	int32 KindLive[int32(EKind::Num)] = {};
 	TMap<FString, int32> UnknownClasses;
+	/** Decorations with a PrePivot (UE2 draws them at Location + PrePivot along the world axes): their offset from their
+	 *  Base's frame (cm) and PrePivot (cm), placed each tick. */
+	struct FPrePivoted
+	{
+		TWeakObjectPtr<USceneComponent> Comp;
+		FVector Relative = FVector::ZeroVector;
+		FVector PrePivot = FVector::ZeroVector;
+	};
+	TMap<int32, FPrePivoted> PrePivoted;
 	TMap<FString, int32> UnhandledMessages;
 	int32 PickupsMatched = 0;
 	int32 NodesMatched = 0;

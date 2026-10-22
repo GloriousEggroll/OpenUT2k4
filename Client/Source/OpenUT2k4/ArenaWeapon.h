@@ -10,7 +10,30 @@ class USceneComponent;
 class UStaticMeshComponent;
 class USkeletalMeshComponent;
 class UAnimSequence;
+class UMaterialInterface;
 namespace ArenaArt { struct FWeaponArt; }
+namespace ArenaWeaponHand { struct FViewParams; }
+
+/**
+ * Net play: the server's weapon class this weapon stands in for when it is not a stock one (a mod weapon,
+ * Net/UE2NetModWeapons.h), with what of the mod's own to show instead of ours. Set before the weapon is given out.
+ */
+struct FArenaNetStandIn
+{
+	/** The server's weapon class ("ProSniperRifle_20_BETA3.ProSniperRifle"); empty: none. */
+	FString UE2Class;
+	/** Art (view model, fire sounds) and view placement to use instead of the class's; null: ours. */
+	const ArenaArt::FWeaponArt* Art = nullptr;
+	const ArenaWeaponHand::FViewParams* View = nullptr;
+	/** First-person skins (null entries: the mesh's own). */
+	TArray<UMaterialInterface*> Skins;
+	/** Fire modes' refire times (s); < 0: ours. */
+	float FireRate[2] = { -1.f, -1.f };
+	/** Weapon bar icon (X1, Y1, X2, Y2) on IconTexture (an art path; empty: the stock HUD atlas). */
+	bool bIcon = false;
+	FVector4f IconCoords = FVector4f(0.f);
+	FString IconTexture;
+};
 
 /**
  * Base weapon. Owned by an AArenaCharacter, attached to its first-person weapon root.
@@ -58,6 +81,9 @@ public:
 
 	// ---- state ----
 	UPROPERTY(VisibleInstanceOnly, Category = "Weapon") int32 Ammo = 0;
+	/** Net play: what this weapon stands in for (FArenaNetStandIn); call before GiveTo. */
+	void SetNetStandIn(const FArenaNetStandIn& In);
+	const FArenaNetStandIn& GetNetStandIn() const { return NetStandIn; }
 	UPROPERTY(VisibleInstanceOnly, Category = "Weapon") int32 AltAmmo = 0;
 	/** Set by the owner right before Equip: the previous weapon's put-down time. */
 	float EquipDelay = 0.f;
@@ -271,6 +297,9 @@ protected:
 	UPROPERTY() TObjectPtr<USkeletalMeshComponent> ViewMesh;
 	UPROPERTY() TMap<FName, TObjectPtr<UAnimSequence>> ViewAnims;
 	const ArenaArt::FWeaponArt* Art = nullptr;
+	FArenaNetStandIn NetStandIn;
+	/** Keeps NetStandIn.Skins loaded. */
+	UPROPERTY() TArray<TObjectPtr<UMaterialInterface>> NetStandInSkins;
 	float PutDownEndTime = -1.f;
 	float ShowViewTime = 0.f;
 	bool bViewShown = false;

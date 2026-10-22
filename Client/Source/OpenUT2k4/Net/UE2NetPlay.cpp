@@ -1,5 +1,6 @@
 #include "UE2NetPlay.h"
 #include "UE2NetJoin.h"
+#include "UE2NetModWeapons.h"
 #include "../ArenaHitchLog.h"
 
 #include "../ArenaCharacterMovement.h"
@@ -358,15 +359,21 @@ void AUE2NetLocalPawn::OnMovementModeChanged(EMovementMode PrevMovementMode, uin
 	ApplyNetCollision();
 }
 
-AArenaWeapon* AUE2NetLocalPawn::EnsureNetWeapon(UClass* WeaponClass)
+AArenaWeapon* AUE2NetLocalPawn::EnsureNetWeapon(UClass* WeaponClass, const FString& UE2Class)
 {
 	if (!WeaponClass || !WeaponClass->IsChildOf(AArenaWeapon::StaticClass()))
 	{
 		return nullptr;
 	}
-	if (AArenaWeapon* Have = FindWeapon(WeaponClass))
+	// one weapon per server class: a mod weapon and the stock one it stands in for are two
+	const UE2NetModWeapons::FModWeapon* Mod = UE2NetModWeapons::FindWeapon(UE2Class);
+	const FString Key = Mod ? UE2Class : FString();
+	for (AArenaWeapon* Have : Weapons)
 	{
-		return Have;
+		if (Have && Have->GetClass() == WeaponClass && Have->GetNetStandIn().UE2Class.Equals(Key, ESearchCase::IgnoreCase))
+		{
+			return Have;
+		}
 	}
 	FActorSpawnParameters P;
 	P.Owner = this;
@@ -375,6 +382,20 @@ AArenaWeapon* AUE2NetLocalPawn::EnsureNetWeapon(UClass* WeaponClass)
 	AArenaWeapon* W = GetWorld()->SpawnActor<AArenaWeapon>(WeaponClass, GetActorTransform(), P);
 	if (W)
 	{
+		if (Mod)
+		{
+			FArenaNetStandIn In;
+			In.UE2Class = UE2Class;
+			In.Art = &Mod->Art;
+			In.View = Mod->bView ? &Mod->View : nullptr;
+			In.Skins = UE2NetModWeapons::LoadSkins(Mod->Skins);
+			In.FireRate[0] = Mod->FireRate[0];
+			In.FireRate[1] = Mod->FireRate[1];
+			In.bIcon = Mod->bIcon;
+			In.IconCoords = Mod->IconCoords;
+			In.IconTexture = Mod->IconTexture;
+			W->SetNetStandIn(In);
+		}
 		W->GiveTo(this);
 		Weapons.Add(W);
 	}
@@ -974,7 +995,7 @@ void FUE2NetPlay::ApplyWeapons()
 	FUE2NetWorld* NW = FUE2NetWorld::Get();
 	for (TPair<int32, FWeaponInfo>& W : Weapons)
 	{
-		if (AArenaWeapon* Native = P->EnsureNetWeapon(W.Value.Native))
+		if (AArenaWeapon* Native = P->EnsureNetWeapon(W.Value.Native, W.Value.ClassPath))
 		{
 			Native->Ammo = W.Value.Ammo;
 			// what the weapon shows of the server's weapon: the AVRiL's lock, the translocator's beacon
@@ -991,7 +1012,7 @@ void FUE2NetPlay::ApplyWeapons()
 	}
 	if (const FWeaponInfo* Cur = Weapons.Find(CurrentWeaponChannel))
 	{
-		AArenaWeapon* Native = Cur->Native ? P->FindWeapon(Cur->Native) : nullptr;
+		AArenaWeapon* Native = Cur->Native ? P->EnsureNetWeapon(Cur->Native, Cur->ClassPath) : nullptr;
 		if (Native && P->GetCurrentWeapon() != Native)
 		{
 			P->SwitchToWeapon(Native);
@@ -2353,9 +2374,11 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 			FUE2NetWorld* NW = FUE2NetWorld::Get();
 			return NW && NW->SpectatorFire(PC, Mode == 1);
 		}
-		if (!Pawn)
+		if (!Pawn || (ServerState == TEXT("PlayerWaiting") && !CurrentWeaponChannel))
 		{
-			// dead or waiting: fire restarts (UE2 Dead.Fire / PlayerWaiting.Fire -> ServerReStartPlayer)
+			// dead or waiting: fire restarts (UE2 Dead.Fire / PlayerWaiting.Fire -> ServerReStartPlayer). The server can
+			// leave us a pawn without weapons while its controller waits (a player agreement answered after the match
+			// began): PlayerWaiting.Fire restarts then too, and RestartPlayer gives the inventory
 			if (Mode == 0 || ServerState == TEXT("Dead"))
 			{
 				RequestRestart();
@@ -2418,6 +2441,7 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 void FUE2NetPlay::RequestRestart()
 {
 	Send(PCChannel(), TEXT("ServerReStartPlayer"), {});
+	RestartsRequested = Spawns + 1;
 	UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: ServerReStartPlayer (state %s)"), *ServerState.ToString());
 }
 

@@ -5,6 +5,7 @@
 #include "../ArenaArtVehicles.h"
 #include "../ArenaCharacter.h"
 #include "../ArenaWeaponsExtra.h"
+#include "UE2NetModWeapons.h"
 #include "UE2NetActors.generated.h"
 
 class UStaticMeshComponent;
@@ -267,12 +268,15 @@ public:
 	AUE2NetVehicle();
 
 	/**
-	 * Mesh paths are content paths ("SkeletalMeshes/Pkg/Name", "StaticMeshes/Pkg/Name"); skins UE2 object paths
-	 * ("Pkg.Group.Name", empty for none). StaticMeshPath: a static mesh base when the class has no skeletal mesh.
+	 * Mesh paths are content paths ("SkeletalMeshes/Pkg/Name", "StaticMeshes/Pkg/Name"); Look the class's skins and
+	 * scale. StaticMeshPath: a static mesh base when the class has no skeletal mesh. Our art rig stands in for a stock
+	 * mesh unless the class has a look of its own (a mod vehicle's skins).
 	 */
-	void Setup(const FString& Label, const FString& SkeletalMeshPath, const FString& StaticMeshPath, const FString& RedSkin, const FString& BlueSkin,
+	void Setup(const FString& Label, const FString& SkeletalMeshPath, const FString& StaticMeshPath, const UE2NetModWeapons::FLook& Look,
 		const FString& DestroyedMeshPath, float RadiusUU, float HeightUU);
 	void SetTeam(int32 InTeam);
+	/** Actor.bHidden: the body is not drawn (a stationary turret's base until it is destroyed); the weapons stay. */
+	void SetBodyHidden(bool bInHidden);
 	/** The KRigidBody state (UE2 units; velocity in UU/s). */
 	void SetNetRigidBody(const FVector& LocationUU, const FQuat& Rotation, const FVector& VelocityUU);
 	/** Vehicles without a rigid body state: Location / Velocity / Rotation. */
@@ -287,8 +291,13 @@ public:
 	 * chassis origin). The bones turn to the aim; FireBone + FireOffsetUU (along the aim) is the muzzle.
 	 */
 	void SetWeapon(int32 Key, const FString& MeshPath, FName AttachBone, FName YawBone, FName PitchBone, FName FireBone, float FireOffsetUU,
-		const FString& RedSkin, const FString& BlueSkin);
+		const UE2NetModWeapons::FLook& Look);
 	void RemoveWeapon(int32 Key);
+	/** The weapon's Actor.bHidden (a destroyed stationary turret hides its gun). */
+	void SetWeaponHidden(int32 Key, bool bInHidden);
+	/** What the weapon class's client-side code attaches to its bones (UE2NetModWeapons::FindClientAttachments): they turn
+	 *  with the gun. */
+	void SetWeaponAttachments(int32 Key, const TArray<UE2NetModWeapons::FClientAttachment>& Attachments);
 	bool HasWeapon(int32 Key) const { return Guns.Contains(Key); }
 	/** ONSWeapon turning limits (degrees, relative to the weapon's rest pose): PitchDownLimit .. PitchUpLimit, and the
 	 *  yaw range YawStartConstraint .. YawEndConstraint when bLimitYaw. */
@@ -351,7 +360,11 @@ protected:
 		float Yaw = 0.f;
 		float Pitch = 0.f;
 		int32 Shots = 0;
-		FString RedSkin, BlueSkin;
+		UE2NetModWeapons::FLook Look;
+		bool bHidden = false;
+		/** Client-side attachments on the gun's bones, and their descriptions (team skins). */
+		TArray<TWeakObjectPtr<UMeshComponent>> Extras;
+		TArray<UE2NetModWeapons::FClientAttachment> ExtraDefs;
 		float PitchMin = -60.f;
 		float PitchMax = 80.f;
 		bool bLimitYaw = false;
@@ -396,7 +409,10 @@ protected:
 	void PoseGun(UPoseableMeshComponent* C, int32 YawBone, int32 PitchBone, float Yaw, float Pitch) const;
 	FVector GetMuzzle(const FGun& G, FVector& OutDir) const;
 	void UpdateSeat(FSeat& Seat);
-	void ApplySkins(UMeshComponent* C, const FString& RedSkin, const FString& BlueSkin);
+	/** Look.Skins, then RedSkin / BlueSkin of the team on the first slot (ONSVehicle / ONSWeapon team skins). */
+	void ApplySkins(UMeshComponent* C, const UE2NetModWeapons::FLook& Look);
+	/** A client-side attachment's skins for the team (its RedSkins / BlueSkins, else Skins). */
+	void ApplyExtraSkins(UMeshComponent* C, const UE2NetModWeapons::FClientAttachment& A);
 
 	UPROPERTY() TObjectPtr<USceneComponent> RigRoot;
 	UPROPERTY() FArenaVehicleArtRig Rig;
@@ -409,7 +425,9 @@ protected:
 	TMap<int32, FGun> Guns;
 	TMap<int32, FSeat> Seats;
 	TSet<int32> RigGunsUsed;
-	FString ChassisRedSkin, ChassisBlueSkin, DestroyedMesh;
+	UE2NetModWeapons::FLook ChassisLook;
+	FString DestroyedMesh;
+	bool bBodyHidden = false;
 	FString Label;
 	int32 Team = -2;
 	bool bRig = false;

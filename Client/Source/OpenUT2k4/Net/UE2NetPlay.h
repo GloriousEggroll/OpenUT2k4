@@ -57,8 +57,9 @@ public:
 	/** Driving (UE2 PlayerDriving): the vehicle the camera stays behind; our body is hidden and does not move. */
 	TWeakObjectPtr<AActor> DrivenVehicle;
 	virtual void CalcCamera(float DeltaTime, struct FMinimalViewInfo& OutResult) override;
-	/** Adds a weapon of our inventory (view model and HUD) without the local default inventory or auto switching. */
-	class AArenaWeapon* EnsureNetWeapon(UClass* WeaponClass);
+	/** Adds a weapon of our inventory (view model and HUD) without the local default inventory or auto switching: our
+	 *  WeaponClass standing in for the server's UE2Class (a mod weapon gets the mod's own assets, Net/UE2NetModWeapons.h). */
+	class AArenaWeapon* EnsureNetWeapon(UClass* WeaponClass, const FString& UE2Class);
 
 	/**
 	 * The server's walking xPawn rests NetWalkExtraHeight UU higher above a floor than a pawn of its own collision
@@ -115,6 +116,9 @@ public:
 	bool IsPlaying() const;
 	/** A pawn was given to us at least once on this map. */
 	bool HasSpawned() const { return Spawns > 0; }
+	/** Fire asked the server to start us (ServerReStartPlayer) since our last pawn: before the match begins that is our
+	 *  ready signal (PlayerController.ServerReStartPlayer: bReadyToPlay while bWaitingToStartMatch). */
+	bool HasRequestedRestart() const { return RestartsRequested > Spawns; }
 	/**
 	 * Without a pawn, the server keeps us spectating until something else spawns us: our PRI is out of lives (round
 	 * games such as 3SPN / Freon put players who join mid-round there until the next round starts; LMS) or the
@@ -331,6 +335,7 @@ private:
 	int32 SpectatorAdjustments = 0;
 	int32 Deaths = 0;
 	int32 Spawns = 0;
+	int32 RestartsRequested = 0;
 	int32 FireCommands = 0;
 	int32 WeaponSwitches = 0;
 	double StartTime = 0.0;
