@@ -11,6 +11,7 @@
 #include "ArenaONS_Vehicle.h"
 #include "ArenaRuntimeContent.h"
 #include "ArenaWeaponActors.h"
+#include "ArenaWeaponHand.h"
 #include "ArenaArt.h"
 #include "ArenaArtFX.h"
 #include "ArenaUE2Effects.h"
@@ -51,6 +52,17 @@ namespace ArenaWeaponsExtraLocal
 		ArenaWeaponBeam::Hide(Beam);
 	}
 
+	/** ArenaWeaponBeam::Make: the tag of a beam whose start fades (its FadeParts quads draw the first BeamFadeLength
+	 *  UU, shorter ones nearer the start). 3369, measured: the painter's beam is BeamFadeFloor as bright at its start,
+	 *  closing on full brightness as 1 - exp(-UU along / BeamFadeScale). */
+	const FName BeamFadeTag(TEXT("UE2BeamFade"));
+	constexpr int32 FadeParts = 10;
+	constexpr float BeamFadeLength = 110.f;
+	constexpr float BeamFadeScale = 38.f;
+	constexpr float BeamFadeFloor = 0.12f;
+	/** Where fade part I begins, as a fraction of the faded stretch. */
+	float FadePartFrom(int32 I) { return FMath::Square(float(I) / FadeParts); }
+
 	AArenaBotController* BotOf(const AArenaCharacter* C)
 	{
 		return C ? Cast<AArenaBotController>(C->GetController()) : nullptr;
@@ -68,6 +80,7 @@ UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& 
 		FString Tex = D.Skins.Num() > 0 ? D.Skins[0] : FString();
 		float Width = float(D.Props.Num(TEXT("mSizeRange"), 0.0));
 		FColor Tint = D.Props.Color(TEXT("mColorRange"), FColor::White);
+		bool bEmitter = false;
 		for (const TSharedPtr<FJsonValue>& V : D.Props.Array(TEXT("Emitters")))
 		{
 			FString Cls;
@@ -80,6 +93,7 @@ UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& 
 				P.RangeVector(TEXT("StartSizeRange"), Mn, Mx, FVector(4.0));
 				Width = float(Mx.X + Mn.X) * 0.5f;
 				Tint = FColor::White;
+				bEmitter = true;
 				break;
 			}
 		}
@@ -90,7 +104,9 @@ UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& 
 			SD.Texture = *Path;
 			SD.Blend = ArenaArtFX::EBlend::Additive;
 			SD.Facing = ArenaArtFX::EFacing::Beam;
-			SD.Size = FVector2D(100.f, Width * 2.f * UU);
+			// across: a BeamEmitter's StartSizeRange x 2; an xEmitter PT_Beam measures about 1.5 x mSizeRange in 3369
+			// (PainterBeamEffect, mSizeRange 8: some 12 UU)
+			SD.Size = FVector2D(100.f, Width * (bEmitter ? 2.f : 1.5f) * UU);
 			SD.Tint = FLinearColor(Tint.R / 255.f, Tint.G / 255.f, Tint.B / 255.f) * 2.f;
 			SD.FadePower = 0.f;
 			SD.bRandomRoll = false;
@@ -109,6 +125,31 @@ UStaticMeshComponent* ArenaWeaponBeam::Make(AActor* Holder, const FLinearColor& 
 			{
 				SC->RegisterComponent();
 				SC->SetVisibility(false);
+				// PainterBeamEffect (the one PT_Beam xEmitter with a non-zero mAttenKa, 1.0) is dim at its start in 3369
+				// (measured; the cause is native): quads of rising brightness along that stretch (Place)
+				if (!bEmitter && D.Props.Num(TEXT("mAttenKa"), 0.0) > 0.0)
+				{
+					SC->ComponentTags.Add(BeamFadeTag);
+					for (int32 I = 0; I < FadeParts; ++I)
+					{
+						UArenaSpriteComponent* Part = NewObject<UArenaSpriteComponent>(Holder);
+						Part->SetUsingAbsoluteLocation(true);
+						Part->SetUsingAbsoluteRotation(true);
+						Part->SetUsingAbsoluteScale(true);
+						Part->SetupAttachment(SC);
+						if (Part->SetupSprite(SD))
+						{
+							const float Along = (FadePartFrom(I) + FadePartFrom(I + 1)) * 0.5f * BeamFadeLength;
+							Part->SetIntensityScale(1.f - (1.f - BeamFadeFloor) * FMath::Exp(-Along / BeamFadeScale));
+							Part->RegisterComponent();
+							Part->SetVisibility(false);
+						}
+						else
+						{
+							Part->DestroyComponent();
+						}
+					}
+				}
 				return SC;
 			}
 			SC->DestroyComponent();
@@ -135,8 +176,20 @@ void ArenaWeaponBeam::Place(UStaticMeshComponent* Beam, const FVector& Start, co
 {
 	if (UArenaSpriteComponent* S = Cast<UArenaSpriteComponent>(Beam))
 	{
-		S->SetBeam(Start, End);
+		const TArray<TObjectPtr<USceneComponent>>& Parts = S->GetAttachChildren();
+		// Make's fade parts (if any) draw the first BeamFadeLength of the span (at most half of it)
+		const float Fade = S->ComponentHasTag(BeamFadeTag) && Parts.Num() > 0 ? FMath::Min(BeamFadeLength * UU, float((End - Start).Size()) * 0.5f) : 0.f;
+		const FVector Dir = (End - Start).GetSafeNormal();
+		S->SetBeam(Start + Dir * Fade, End);
 		S->SetComponentTickEnabled(true);
+		for (int32 I = 0; I < Parts.Num(); ++I)
+		{
+			if (UArenaSpriteComponent* Part = Cast<UArenaSpriteComponent>(Parts[I]))
+			{
+				Part->SetBeam(Start + Dir * (Fade * FadePartFrom(I)), Start + Dir * (Fade * FadePartFrom(I + 1)));
+				Part->SetComponentTickEnabled(true);
+			}
+		}
 	}
 	else
 	{
@@ -146,8 +199,15 @@ void ArenaWeaponBeam::Place(UStaticMeshComponent* Beam, const FVector& Start, co
 
 void ArenaWeaponBeam::Hide(UStaticMeshComponent* Beam)
 {
-	Beam->SetVisibility(false);
+	Beam->SetVisibility(false, true);
 	Beam->SetComponentTickEnabled(false);
+	for (USceneComponent* Part : Beam->GetAttachChildren())
+	{
+		if (Part)
+		{
+			Part->SetComponentTickEnabled(false);
+		}
+	}
 }
 
 void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look, uint8 TargetState, float DeltaTime)
@@ -220,6 +280,15 @@ void ArenaWeaponBeam::TickPainter(UStaticMeshComponent* Beam, FPainterLook& Look
 		const float B = Look.Brightness / 255.f * 2.f;
 		S->SetTint(FLinearColor(B, B, B));
 		S->SetWidthScale(Look.Width / DefaultWidth);
+		for (USceneComponent* Child : S->GetAttachChildren())
+		{
+			// Make's fade parts
+			if (UArenaSpriteComponent* Part = Cast<UArenaSpriteComponent>(Child))
+			{
+				Part->SetTint(FLinearColor(B, B, B));
+				Part->SetWidthScale(Look.Width / DefaultWidth);
+			}
+		}
 	}
 }
 
@@ -482,7 +551,7 @@ void AWeap_OrbitalDesignator::Tick(float DeltaSeconds)
 			NetPaintEnd = WeaponTrace(Start, End, Hit) ? FVector(Hit.ImpactPoint) : End;
 		}
 		PaintBeam->SetVisibility(true);
-		PlaceBeam(PaintBeam, GetMuzzleLocation(), NetPaintEnd, 1.5f);
+		PlaceBeam(PaintBeam, GetBeamStart(), NetPaintEnd, 1.5f);
 		// brighter (and wider once acquired) as the server's PainterBeamEffect says the mark holds (TargetState)
 		ArenaWeaponBeam::TickPainter(PaintBeam, NetPaintLook, NetState.PainterTargetState, DeltaSeconds);
 	}
@@ -611,8 +680,42 @@ void AWeap_OrbitalDesignator::PaintTick(float DeltaSeconds)
 	if (PaintBeam)
 	{
 		PaintBeam->SetVisibility(true);
-		PlaceBeam(PaintBeam, GetMuzzleLocation(), EndEffect, bValidMark ? 3.f : 1.5f);
+		PlaceBeam(PaintBeam, GetBeamStart(), EndEffect, bValidMark ? 3.f : 1.5f);
 	}
+}
+
+FVector AWeap_OrbitalDesignator::GetBeamStart() const
+{
+	// PainterBeamEffect.Tick, first person: Instigator.Location + CalcDrawOffset(Weapon) + EffectOffset in the view axes
+	// (Y x Hand); WeaponCentered: Instigator.Location. Seen from outside: Attachment.GetTipLocation
+	if (!ArenaOwner || !ArenaOwner->IsViewedInFirstPerson())
+	{
+		return GetMuzzleLocation();
+	}
+	const float Hand = GetHand();
+	if (Hand > 1.f)
+	{
+		return ArenaOwner->GetActorLocation();
+	}
+	const ArenaWeaponHand::FViewParams& P = ArenaWeaponHand::GetViewParams(GetClass());
+	if (!P.bValid)
+	{
+		return GetMuzzleLocation();
+	}
+	static const FVector EffectOffset = []
+	{
+		FArenaUE2ActorDesc D;
+		return ArenaUE2Effects::GetClassDesc(TEXT("XWeapons.PainterBeamEffect"), D) ? D.Props.Vec(TEXT("EffectOffset")) : FVector::ZeroVector;
+	}();
+	// Weapon.RenderOverlays: PlayerViewOffset (SmallViewOffset), Y x Hand or CenteredOffsetY; Pawn.CalcDrawOffset scales it
+	// by 0.9 / DisplayFOV * 100 from the eye (Location + EyeHeight)
+	FVector Offset = ArenaWeaponHand::UseSmallWeapons(ArenaOwner->GetController()) ? P.SmallOffset : P.Offset;
+	Offset.Y = Hand == 0.f ? P.CenteredOffsetY : Offset.Y * Hand;
+	Offset *= 90.f / P.DisplayFOV;
+	Offset += FVector(EffectOffset.X, EffectOffset.Y * Hand, EffectOffset.Z);
+	FVector Eye, Dir;
+	GetAim(Eye, Dir);
+	return Eye + ArenaOwner->GetViewRotation().RotateVector(Offset * UU);
 }
 
 void AWeap_OrbitalDesignator::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -620,6 +723,14 @@ void AWeap_OrbitalDesignator::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	ArenaWeaponBeam::StopPainter(NetPaintLook);
 	if (PaintBeam)
 	{
+		// the beam and its fade parts live on our holder, which outlives us
+		for (USceneComponent* Part : TArray<TObjectPtr<USceneComponent>>(PaintBeam->GetAttachChildren()))
+		{
+			if (Part)
+			{
+				Part->DestroyComponent();
+			}
+		}
 		PaintBeam->DestroyComponent();
 		PaintBeam = nullptr;
 	}

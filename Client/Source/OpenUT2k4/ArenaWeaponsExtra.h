@@ -78,6 +78,9 @@ protected:
 	virtual void BuildViewModel() override;
 	/** PainterFire.Paint.ModeTick */
 	void PaintTick(float DeltaSeconds);
+	/** Where PainterBeamEffect.Tick starts the beam: in first person off the view (CalcDrawOffset + its EffectOffset),
+	 *  else at the weapon in the holder's hand. */
+	FVector GetBeamStart() const;
 	virtual void NetFireHeldChanged(uint8 Mode, bool bHeld) override;
 	void StopPainting();
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> PaintBeam;
