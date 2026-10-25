@@ -44,6 +44,9 @@ namespace UE2NetModWeapons
 		bool bIcon = false;
 		FVector4f IconCoords = FVector4f(0.f);
 		FString IconTexture;
+		/** Fire modes' FlashEmitterClass where it differs ("Pkg.Class"), SelectSound ("Pkg.Group.Name"). */
+		FString FlashEmitterClass[2];
+		FString SelectSound;
 		/** What is the mod's and what fell back, for the log. */
 		TArray<FString> Notes;
 
@@ -110,6 +113,11 @@ namespace UE2NetModWeapons
 		/** Skins, and per team when the class has RedSkins / BlueSkins arrays (its SetTeam). */
 		TArray<FString> Skins, RedSkins, BlueSkins;
 	};
+	/** "Animations/Pkg/Set_" of a skeletal mesh's animation set (the converter's record), empty when it has none. */
+	OPENUT2K4_API FString AnimPrefixForMesh(const FString& MeshObjectPath);
+	/** "Kind/Pkg/Group_Name": the content cache's art path of a UE2 object ("SkeletalMeshes", "Pkg.Group.Name"). */
+	OPENUT2K4_API FString ArtPathOf(const TCHAR* Kind, const FString& ObjectPath);
+
 	/** The client-side attachments of a class (vehicle weapons), found once per class. */
 	OPENUT2K4_API const TArray<FClientAttachment>& FindClientAttachments(const FString& ClassPath);
 }

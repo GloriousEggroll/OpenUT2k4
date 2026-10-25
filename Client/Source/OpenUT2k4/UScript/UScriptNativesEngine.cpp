@@ -6,6 +6,7 @@
 #include "UScriptRuntime.h"
 #include "UScriptWorld.h"
 #include "UScriptBridge.h"
+#include "UScriptPresentation.h"
 #include "../ArenaCharacter.h"
 #include "../ArenaGameMode.h"
 #include "Engine/World.h"
@@ -28,7 +29,7 @@ namespace
 	UWorld* UW(FUSObject* O)
 	{
 		FUSGameWorld* W = GW(O);
-		return W ? W->GetUWorld() : nullptr;
+		return W ? W->GetUWorld() : (O && O->World ? O->World->GetPresentationWorld() : nullptr);
 	}
 
 	bool IsClass(FUSObject* O)
@@ -297,8 +298,12 @@ namespace USEngineNatives
 		USP_GET_VECTOR(TraceEnd);
 		USP_GET_VECTOR_OPTX(TraceStart, Loc(Self));
 		USP_FINISH;
+		// UE2: world geometry only
+		UWorld* World = UW(Self);
 		FHitResult Hit;
-		US_RESULT(uint32) = LineTrace(Self, TraceStart, TraceEnd, Hit) ? 0u : 1u;
+		const bool bHit = World && World->LineTraceSingleByObjectType(Hit, USUnits::FromUE2(TraceStart), USUnits::FromUE2(TraceEnd),
+			FCollisionObjectQueryParams(ECC_WorldStatic), FCollisionQueryParams(SCENE_QUERY_STAT(UScriptFastTrace), true));
+		US_RESULT(uint32) = bHit ? 0u : 1u;
 	}
 
 	// ---- iterators ----
@@ -488,9 +493,178 @@ namespace USEngineNatives
 		{
 			FUSGameWorld* G = GW(Self);
 			AActor* A = G ? G->GetLinkedActor(Self) : nullptr;
-			const FVector L = A ? A->GetActorLocation() : USUnits::FromUE2(Loc(Self));
+			FVector L = A ? A->GetActorLocation() : USUnits::FromUE2(Loc(Self));
+			if (!G && Self->World)
+			{
+				Self->World->GetPresentationLocation(Self, L);
+			}
 			UGameplayStatics::PlaySoundAtLocation(World, S, L, FMath::Clamp(Volume, 0.f, 2.f), FMath::Clamp(Pitch, 0.25f, 4.f));
 		}
+	}
+
+	// ---- presentation (props script reads back; drawn by whatever shows the actor) ----
+	FUSProperty* ActorProp(const TCHAR* Name)
+	{
+		FUSClass* A = FUSRuntime::Get().ActorClass;
+		return A ? A->FindPropertyByName(FName(Name)) : nullptr;
+	}
+	template <typename T>
+	void SetActorValue(FUSObject* Self, const TCHAR* Name, const T& V)
+	{
+		static TMap<FName, FUSProperty*> Cache;
+		FUSProperty*& P = Cache.FindOrAdd(FName(Name));
+		if (!P)
+		{
+			P = ActorProp(Name);
+		}
+		if (P && Self && Self->Data && (Self->Flags & USF_Actor) && P->ElementSize >= int32(sizeof(T)))
+		{
+			*reinterpret_cast<T*>(Self->Data + P->Offset) = V;
+		}
+	}
+	US_NATIVE(SetDrawType)
+	{
+		USP_GET_BYTE(NewType);
+		USP_FINISH;
+		SetActorValue<uint8>(Self, TEXT("DrawType"), NewType);
+	}
+	US_NATIVE(SetStaticMesh)
+	{
+		USP_GET_OBJECT(NewMesh);
+		USP_FINISH;
+		SetActorValue<FUSObject*>(Self, TEXT("StaticMesh"), NewMesh);
+	}
+	US_NATIVE(LinkMesh)
+	{
+		USP_GET_OBJECT(NewMesh);
+		USP_GET_UBOOL_OPTX(bKeepAnim, false);
+		USP_FINISH;
+		SetActorValue<FUSObject*>(Self, TEXT("Mesh"), NewMesh);
+	}
+	US_NATIVE(SetDrawScale3D)
+	{
+		USP_GET_VECTOR(NewScale);
+		USP_FINISH;
+		SetActorValue<FUSVector>(Self, TEXT("DrawScale3D"), NewScale);
+	}
+	US_NATIVE(SetRelativeLocation)
+	{
+		USP_GET_VECTOR(NewLoc);
+		USP_FINISH;
+		SetActorValue<FUSVector>(Self, TEXT("RelativeLocation"), NewLoc);
+		US_RESULT(uint32) = 1u;
+	}
+	US_NATIVE(SetRelativeRotation)
+	{
+		USP_GET_ROTATOR(NewRot);
+		USP_FINISH;
+		SetActorValue<FUSRotator>(Self, TEXT("RelativeRotation"), NewRot);
+		US_RESULT(uint32) = 1u;
+	}
+	US_NATIVE(AttachToBone)
+	{
+		USP_GET_OBJECT(Attachment);
+		USP_GET_NAME(BoneName);
+		USP_FINISH;
+		Attachment = Live(Attachment);
+		if (Attachment && (Attachment->Flags & USF_Actor) && Self)
+		{
+			USProps().Base.Set<FUSObject*>(Attachment, Self);
+			SetActorValue<FName>(Attachment, TEXT("AttachmentBone"), BoneName);
+		}
+		US_RESULT(uint32) = Attachment ? 1u : 0u;
+	}
+	US_NATIVE(DetachFromBone)
+	{
+		USP_GET_OBJECT(Attachment);
+		USP_FINISH;
+		Attachment = Live(Attachment);
+		const bool bOurs = Attachment && USProps().Base.Get<FUSObject*>(Attachment) == Self;
+		if (bOurs)
+		{
+			USProps().Base.Set<FUSObject*>(Attachment, nullptr);
+			SetActorValue<FName>(Attachment, TEXT("AttachmentBone"), NAME_None);
+		}
+		US_RESULT(uint32) = bOurs ? 1u : 0u;
+	}
+	struct FUSCoords
+	{
+		FUSVector Origin, XAxis, YAxis, ZAxis;
+	};
+	/** The bone's transform where the actor is shown, else the actor's own place. */
+	FTransform BoneTransform(FUSObject* Self, FName Bone)
+	{
+		FTransform T;
+		if (!(Self && Self->World && Self->World->GetPresentationBone(Self, Bone, T)))
+		{
+			T = FTransform(USUnits::FromUE2(USProps().Rotation.Get<FUSRotator>(Self)), USUnits::FromUE2(Loc(Self)));
+		}
+		return T;
+	}
+	US_NATIVE(GetBoneCoords)
+	{
+		USP_GET_NAME(BoneName);
+		USP_FINISH;
+		const FTransform T = BoneTransform(Self, BoneName);
+		FUSCoords C;
+		C.Origin = USUnits::ToUE2(T.GetLocation());
+		C.XAxis = FUSVector(T.GetUnitAxis(EAxis::X));
+		C.YAxis = FUSVector(T.GetUnitAxis(EAxis::Y));
+		C.ZAxis = FUSVector(T.GetUnitAxis(EAxis::Z));
+		if (Result)
+		{
+			*static_cast<FUSCoords*>(Result) = C;
+		}
+	}
+	US_NATIVE(GetBoneRotation)
+	{
+		USP_GET_NAME(BoneName);
+		USP_GET_INT_OPTX(Space, 0);
+		USP_FINISH;
+		US_RESULT(FUSRotator) = USUnits::ToUE2(BoneTransform(Self, BoneName).Rotator());
+	}
+	US_NATIVE(EmitterKill)
+	{
+		USP_FINISH;
+		// Emitter.Kill: no new particles, the emitter goes when they are done (its native body lets them finish)
+		if (Self && Self->World)
+		{
+			Self->World->DestroyActor(Self);
+		}
+	}
+
+	US_NATIVE(PlayAnim)
+	{
+		USP_GET_NAME(Sequence);
+		USP_GET_FLOAT_OPTX(Rate, 1.f);
+		USP_GET_FLOAT_OPTX(TweenTime, 0.f);
+		USP_GET_INT_OPTX(Channel, 0);
+		USP_FINISH;
+		if (Channel == 0)
+		{
+			USPresentation::SetAnim(Self, Sequence, Rate, false, false);
+		}
+		US_RESULT(uint32) = 1u;
+	}
+	US_NATIVE(LoopAnim)
+	{
+		USP_GET_NAME(Sequence);
+		USP_GET_FLOAT_OPTX(Rate, 1.f);
+		USP_GET_FLOAT_OPTX(TweenTime, 0.f);
+		USP_GET_INT_OPTX(Channel, 0);
+		USP_FINISH;
+		if (Channel == 0)
+		{
+			USPresentation::SetAnim(Self, Sequence, Rate, true, false);
+		}
+		US_RESULT(uint32) = 1u;
+	}
+	US_NATIVE(StopAnimating)
+	{
+		USP_GET_UBOOL_OPTX(bClearAllButBase, false);
+		USP_FINISH;
+		const USPresentation::FAnim* A = USPresentation::FindAnim(Self);
+		USPresentation::SetAnim(Self, A ? A->Sequence : NAME_None, 0.f, false, true);
 	}
 
 	// ---- StreamBase (music player paths) ----
@@ -553,21 +727,24 @@ void USNatives::RegisterEngine()
 		{ TEXT("Actor"), TEXT("Add_ColorColor"), &Add_ColorColor }, { TEXT("Actor"), TEXT("Subtract_ColorColor"), &Subtract_ColorColor },
 		{ TEXT("Actor"), TEXT("Multiply_ColorFloat"), &Multiply_ColorFloat }, { TEXT("Actor"), TEXT("Multiply_FloatColor"), &Multiply_FloatColor },
 		{ TEXT("Actor"), TEXT("SetBoneScale"), &SetBoneScale },
+		{ TEXT("Actor"), TEXT("GetBoneCoords"), &GetBoneCoords }, { TEXT("Actor"), TEXT("GetBoneRotation"), &GetBoneRotation },
+		{ TEXT("Emitter"), TEXT("Kill"), &EmitterKill }, { TEXT("Actor"), TEXT("KSetStayUprightParams"), &Quiet },
+		{ TEXT("Actor"), TEXT("KSetStayUpright"), &Quiet },
 		// presentation / physics details without an effect on script logic yet
 		{ TEXT("Actor"), TEXT("PlaySound"), &PlaySound }, { TEXT("Actor"), TEXT("PlayOwnedSound"), &PlaySound }, { TEXT("Actor"), TEXT("DemoPlaySound"), &Quiet },
-		{ TEXT("Actor"), TEXT("MakeNoise"), &Quiet }, { TEXT("Actor"), TEXT("PlayAnim"), &ReturnFalse }, { TEXT("Actor"), TEXT("LoopAnim"), &ReturnFalse },
+		{ TEXT("Actor"), TEXT("MakeNoise"), &Quiet }, { TEXT("Actor"), TEXT("PlayAnim"), &PlayAnim }, { TEXT("Actor"), TEXT("LoopAnim"), &LoopAnim },
 		{ TEXT("Actor"), TEXT("TweenAnim"), &ReturnFalse }, { TEXT("Actor"), TEXT("IsAnimating"), &ReturnFalse }, { TEXT("Actor"), TEXT("HasAnim"), &ReturnFalse },
-		{ TEXT("Actor"), TEXT("StopAnimating"), &Quiet }, { TEXT("Actor"), TEXT("AnimBlendParams"), &Quiet }, { TEXT("Actor"), TEXT("AnimBlendToAlpha"), &Quiet },
-		{ TEXT("Actor"), TEXT("SetDrawType"), &Quiet }, { TEXT("Actor"), TEXT("SetStaticMesh"), &Quiet }, { TEXT("Actor"), TEXT("LinkMesh"), &Quiet },
-		{ TEXT("Actor"), TEXT("LinkSkelAnim"), &Quiet }, { TEXT("Actor"), TEXT("SetDrawScale3D"), &Quiet }, { TEXT("Actor"), TEXT("SetBoneRotation"), &Quiet },
+		{ TEXT("Actor"), TEXT("StopAnimating"), &StopAnimating }, { TEXT("Actor"), TEXT("AnimBlendParams"), &Quiet }, { TEXT("Actor"), TEXT("AnimBlendToAlpha"), &Quiet },
+		{ TEXT("Actor"), TEXT("SetDrawType"), &SetDrawType }, { TEXT("Actor"), TEXT("SetStaticMesh"), &SetStaticMesh }, { TEXT("Actor"), TEXT("LinkMesh"), &LinkMesh },
+		{ TEXT("Actor"), TEXT("LinkSkelAnim"), &Quiet }, { TEXT("Actor"), TEXT("SetDrawScale3D"), &SetDrawScale3D }, { TEXT("Actor"), TEXT("SetBoneRotation"), &Quiet },
 		{ TEXT("Actor"), TEXT("SetBoneDirection"), &Quiet }, { TEXT("Actor"), TEXT("SetBoneLocation"), &Quiet }, { TEXT("Actor"), TEXT("Clock"), &Quiet },
 		{ TEXT("Actor"), TEXT("UnClock"), &Quiet }, { TEXT("Actor"), TEXT("DrawDebugLine"), &Quiet }, { TEXT("Actor"), TEXT("DrawDebugSphere"), &Quiet },
 		{ TEXT("Actor"), TEXT("DrawStayingDebugLine"), &Quiet }, { TEXT("Actor"), TEXT("ClearStayingDebugLines"), &Quiet },
 		{ TEXT("Actor"), TEXT("KAddImpulse"), &Quiet }, { TEXT("Actor"), TEXT("KWake"), &Quiet }, { TEXT("Actor"), TEXT("StopAllMusic"), &Quiet },
 		{ TEXT("Actor"), TEXT("PlayFeedbackEffect"), &Quiet }, { TEXT("Actor"), TEXT("StopFeedbackEffect"), &Quiet },
-		{ TEXT("Actor"), TEXT("PlayerCanSeeMe"), &ReturnFalse }, { TEXT("Actor"), TEXT("AttachToBone"), &ReturnFalse },
-		{ TEXT("Actor"), TEXT("DetachFromBone"), &ReturnFalse }, { TEXT("Actor"), TEXT("AutonomousPhysics"), &Quiet }, { TEXT("Actor"), TEXT("MoveSmooth"), &ReturnFalse },
-		{ TEXT("Actor"), TEXT("SetRelativeLocation"), &ReturnFalse }, { TEXT("Actor"), TEXT("SetRelativeRotation"), &ReturnFalse },
+		{ TEXT("Actor"), TEXT("PlayerCanSeeMe"), &ReturnFalse }, { TEXT("Actor"), TEXT("AttachToBone"), &AttachToBone },
+		{ TEXT("Actor"), TEXT("DetachFromBone"), &DetachFromBone }, { TEXT("Actor"), TEXT("AutonomousPhysics"), &Quiet }, { TEXT("Actor"), TEXT("MoveSmooth"), &ReturnFalse },
+		{ TEXT("Actor"), TEXT("SetRelativeLocation"), &SetRelativeLocation }, { TEXT("Actor"), TEXT("SetRelativeRotation"), &SetRelativeRotation },
 		{ TEXT("Actor"), TEXT("AddToPackageMap"), &Quiet }, { TEXT("Actor"), TEXT("ResetStaticFilterState"), &Quiet },
 		{ TEXT("LevelInfo"), TEXT("IsEntry"), &ReturnFalse }, { TEXT("LevelInfo"), TEXT("IsDemoBuild"), &ReturnFalse },
 		{ TEXT("LevelInfo"), TEXT("DetailChange"), &Quiet }, { TEXT("LevelInfo"), TEXT("IsSoftwareRendering"), &ReturnFalse },
@@ -583,6 +760,39 @@ void USNatives::RegisterEngine()
 		{ TEXT("StreamBase"), TEXT("Multiply_StrStr"), &Multiply_StrStr }, { TEXT("StreamBase"), TEXT("MultiplyEqual_StrStr"), &MultiplyEqual_StrStr },
 	};
 	Register(Entries, UE_ARRAY_COUNT(Entries));
+}
+
+namespace USPresentationLocal
+{
+	TMap<const FUSObject*, USPresentation::FAnim>& Anims()
+	{
+		static TMap<const FUSObject*, USPresentation::FAnim> M;
+		return M;
+	}
+}
+
+const USPresentation::FAnim* USPresentation::FindAnim(const FUSObject* Actor)
+{
+	return USPresentationLocal::Anims().Find(Actor);
+}
+
+void USPresentation::SetAnim(const FUSObject* Actor, FName Sequence, float Rate, bool bLoop, bool bStopped)
+{
+	if (!Actor)
+	{
+		return;
+	}
+	FAnim& A = USPresentationLocal::Anims().FindOrAdd(Actor);
+	A.Sequence = Sequence;
+	A.Rate = Rate;
+	A.bLoop = bLoop;
+	A.bStopped = bStopped;
+	++A.Serial;
+}
+
+void USPresentation::Forget(const FUSObject* Actor)
+{
+	USPresentationLocal::Anims().Remove(Actor);
 }
 
 #endif // OPENUT2K4_USCRIPT_ENABLED

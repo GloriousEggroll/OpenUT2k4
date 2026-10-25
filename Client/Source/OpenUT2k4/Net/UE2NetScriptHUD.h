@@ -51,11 +51,21 @@ public:
 		bool bHud = false;
 		/** The server's scoreboard drew this frame (ours is left out). */
 		bool bScoreboard = false;
+		/** The server's HUD shows the server's messages (its message lists are fed: FeedMessage). */
+		bool bMessages = false;
 	};
 	/** Draws the script HUD / scoreboard on the HUD's canvas (AArenaHUD::DrawHUD). */
 	FDrawResult Draw(AHUD* Hud, UCanvas* Canvas, bool bShowScores);
 
 	FString Describe() const;
+	/**
+	 * A message the server sends our controller (ReceiveLocalizedMessage, ClientMessage, TeamMessage), given to the
+	 * server's script HUD the way UE2's PlayerController does (LocalMessage.ClientReceive -> HUD.LocalizedMessage,
+	 * HUD.Message): true when that HUD draws it (ours then only plays its sounds), false when ours shows it.
+	 */
+	bool FeedMessage(int32 Channel, const FString& Function, const TArray<TPair<FName, FUE2NetValue>>& Params);
+	/** The mirrored actor of Channel runs client code that shows an attachment of that class ("Pkg.Class"). */
+	bool HasClientAttachment(int32 Channel, const FString& ClassPath) const;
 
 	/** The instance of the current connection (game thread), or null. */
 	static FUE2NetScriptHUD* Get();

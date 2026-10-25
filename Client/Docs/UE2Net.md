@@ -604,8 +604,9 @@ the player does not have.
   way with the map (its signature carries the version). What is still missing (a mod installed in the UT2004 folder
   instead of downloaded) is converted on demand (`UE2NetModContent::EnsureConverted`). Our weapon carries the server class it stands in for (`FArenaNetStandIn`), one weapon per
   server class, so a mod weapon and its stock relative are two. Not taken from the mod: timing its code sets at run
-  time (ProSniperFire.ModeDoFire's 0.14 s / 1.0 s: the default `FireRate`, 0.5 s, is used), `SelectSound` (our
-  weapons play none yet), muzzle flash and hit effect classes, projectile classes (the stock relative's). Reflections
+  time (ProSniperFire.ModeDoFire's 0.14 s / 1.0 s: the default `FireRate`, 0.5 s, is used) and projectile classes (the
+  stock relative's; a mod's replicated projectiles run their own client code: "Mods' client code"). Taken: the fire
+  modes' `FlashEmitterClass` (the mod's muzzle flash on our barrel) and `SelectSound`. Reflections
   (`TexEnvMap`, a `Cubemap`), which our masters cannot compute, are drawn as a smooth shiny surface of the reflected
   image's average colour, and a `ConstantColor` / `FadeColor` as its colour (`ArenaRuntimeMaterials.cpp`
   `StandInColour`), not as a cube face stretched over the mesh. Tested on a local 3369 server: ProSniperRifle_20_BETA3
@@ -624,7 +625,8 @@ the player does not have.
   `ROLE_None`) actor class with a mesh, passed to `AttachToBone` with a bone name (a `name` variable or constant) in the
   class's script; it is drawn on that bone of the gun with its class's scale, placement and skins (`RedSkins` /
   `BlueSkins` per team), so it turns with the gun (OdinV2Omni's ion cannon `IonTurretAttachment` on the invisible
-  `IonTurretDummy` gun's `PitchBone`). Its animations and effects (charge-up beams) are not played.
+  `IonTurretDummy` gun's `PitchBone`). This is the fallback for when the mod's client code does not run ("Mods' client
+  code": there the code attaches the cannon itself, plays its animations and spawns its charge beams).
 - **Decorations and loose pickups**: an actor of a class we do not know that draws a static mesh (`DT_StaticMesh`: a
   mutator's mask on a player's head, AngelMapperHalloweenMasks) and a pickup that is not one of the map's (a dropped
   weapon, a mutator's or a map script's pickup) are drawn as their `StaticMesh` with their `Skins` and scale, on their
@@ -761,8 +763,8 @@ them on our canvas, like the real client draws them:
   `GRI.PRIArray`, the controller's `GameReplicationInfo`, `Player` (viewport with an `InteractionMaster`) and
   `ViewTarget` (the pawn we watch), `Pawn.Weapon` (our current weapon), the weapons' fire mode objects and ammo classes
   (`Weapon.InitWeaponFires`), and the GameReplicationInfo's client `Timer` (elapsed / remaining time). Mirrored actors
-  are data: their code does not run, except the local PlayerController's `PostBeginPlay` (mods create their client
-  settings objects there, e.g. UTComp's `HUDSettings`) and the GRI's `Timer`.
+  are data, except the local PlayerController's `PostBeginPlay` (mods create their client settings objects there,
+  e.g. UTComp's `HUDSettings`), the GRI's `Timer` and the mods' client code (below, "Mods' client code").
 - **The HUD**: `ClientSetHUD` from the server runs on the mirrored controller, which spawns the HUD and scoreboard in
   the script world (their spawn events, timers, `Tick` and state code run there). Each frame `HUD.PostRender` draws on
   a script `Canvas` (the scoreboard when the scoreboard key is held: `bShowScoreBoard`), then the viewport's
@@ -790,15 +792,57 @@ them on our canvas, like the real client draws them:
   codes (ESC R G B) as colour runs. What only a mod package has (WS3SPN's scoreboard and flag textures, UTComp's logo,
   mod fonts and materials) is converted on demand from the package (`UE2NetModContent::EnsureConverted`, 15 - 25 ms per
   texture, once per cache).
+- **Messages**: the server's `ReceiveLocalizedMessage`, `ClientMessage` and `TeamMessage` to our controller go to the
+  script HUD the way UE2's PlayerController passes them on (`LocalMessage.static.ClientReceive(PC, Switch, PRI1, PRI2,
+  OptionalObject)`, which a mod's message class may override, and `HUD.Message(PRI, S, Type)`), so its own lists and
+  layout show them (`FUE2NetScriptHUD::FeedMessage`); ours then only plays their sounds (`AArenaPlayerController::
+  MessageDisplayHold`). A message whose script errs, and every message while the script HUD has fallen back, is ours.
 - **What stays ours**: stock HUD classes (the game's own packages) are drawn by our native HUD (`ArenaHUDUT`) unless
-  `-UE2ScriptHUD=all`. With a script HUD our HUD still draws the messages (local messages, kill feed, console and chat
-  lines, pickup messages: the script HUD's message lists are not fed), the join / spectator notice and the mod status
-  line; a stock HUD with a mod scoreboard (VCTF with the RezQ scoreboard) draws ours and runs only the scoreboard's
+  `-UE2ScriptHUD=all`. With a script HUD our HUD still draws the join / spectator notice and the mod status line; a stock HUD with a mod scoreboard (VCTF with the RezQ scoreboard) draws ours and runs only the scoreboard's
   `DrawScoreboard`. Per element (HUD, scoreboard) the script falls back to ours after 5 script errors, 120 (60) frames
   without a draw call or a runaway frame (over 5 M tokens); unsupported natives log once and return zero.
 - **Never run**: anti-cheat and client-check packages (`AntiTCC*`, `itsfake`, `UTSecure`, `ACE*`, ... and
-  `-UE2ScriptDeny=Pkg,Pkg`) are neither mirrored nor run; no other mod actor's code runs on our side (mutators' client
-  `Tick`, menus, `ClientValidate` and the like are not emulated).
+  `-UE2ScriptDeny=Pkg,Pkg`) are neither mirrored nor run, and nothing of them is emulated or answered (`ClientValidate`
+  and the like). Mutators and other `Info` actors, controllers and HUD classes do not run as client code (below);
+  mods' menus are not opened.
+
+### Mods' client code
+
+What a UE2 client runs of a mod's replicated actors runs in the client mirror (`Net/UE2NetScriptHUD.cpp`, `-UE2ScriptClient=0`
+turns it off): for every mirrored actor of a mod's package (not UT2004's own, whose actors our native code shows; not
+an `Info`, controller or HUD) the spawn events (`PreBeginPlay` .. `SetInitialState`, `PostNetBeginPlay`), then each
+frame its timer, `Tick` and state code; `ClientTrigger` when `bClientTrigger` flips, `FlashMuzzleFlash` /
+`ThirdPersonEffects` when `FlashCount` changes, `PostNetReceive` with `bNetNotify`, `Destroyed` when its channel closes.
+The VM follows UE2's role rule (`USVM::IsSkippedOnProxy`): on a simulated proxy only simulated functions and the code
+of simulated states run (natives and static functions always). The mirror's actors are placed where ours show them
+each frame (their channel's component: a pawn, a vehicle's body or gun, a weapon attachment's third-person weapon), so
+script reads the right `Location` / `Rotation` and `GetBoneCoords`.
+
+- **What it spawns** (client-side actors, `Role` Authority on our side) is drawn by `Net/UE2NetScriptVisuals`: meshes
+  (`DT_Mesh`, playing what `PlayAnim` / `LoopAnim` ask: `UScript/UScriptPresentation.h`), static meshes, `Emitter`
+  classes (their own emitters: `ArenaUE2Effects`, also from a mod's package), sprite xEmitters, and mesh xEmitters (a
+  burst each time script triggers them: the weapons' muzzle flashes); with `Skins`, scale, `bHidden`, on its `Base`'s
+  bone (`AttachToBone`) or where it is. `LifeSpan`, `Emitter.Kill` / `AutoDestroy` and xEmitters without `mRegen` end
+  them. The presentation natives (`SetDrawType`, `SetStaticMesh`, `LinkMesh`, `SetDrawScale3D`, `SetRelative*`,
+  `AttachToBone`, `DetachFromBone`, `GetBoneCoords`, `GetBoneRotation`) keep the actor's own UE2 properties;
+  `PlaySound`, traces and `FastTrace` (world geometry) work in the mirror (the map's world).
+- **Budget**: per actor, three script errors or a call over a million tokens stop its client code (its data mirror and
+  our native parts stay); the summary line counts actors started, client-side actors spawned, stopped ones and time.
+- **Stand-ins retired**: what the VM shows replaces a targeted stand-in when it is at least as good: an attachment a
+  vehicle weapon's client code attaches (the Odin's ion cannon) removes the class-defaults stand-in
+  (`FUE2NetWorld::RetireClientAttachmentStandIn`). Kept: Freeze Tag's frozen look (the mod's frozen skins are
+  `Combiner`s made at run time, which our materials cannot draw) and the beacon's `bScriptPostRender` line.
+- **Mod pawns' skins**: a mod pawn's client code setting `Skins` to a mod's own materials (bright skins, a mod's team
+  skins) is shown on our pawn (UT2004's own skins and run-time materials are left out).
+- **Weapons**: for the local player's mod weapons (they play as our stand-in), the fire modes' `FlashEmitterClass`
+  (the mod's muzzle flash on the barrel) and `SelectSound`; other players' mod weapon attachments run their own
+  `ThirdPersonEffects` (muzzle flashes, tracers, shell and hit effects: Ballistic Weapons' `TraceEmitter`s).
+- Results (local 3369.3 servers): ONS-Tek-)o(-Randomizer-V13 with 10 bots, 240 s: 413 replicated mod actors started,
+  701 client-side actors spawned, 0 stopped, about 16 ms of script per second; the Odin's ion cannon spawned by
+  `OdinIonTurret.PostNetBeginPlay` on its gun's `PlasmaGunBarrel` (the stand-in retired). DM-Rankin with AK47Bin2L and
+  3 bots: the AK47's own muzzle flash (`AK47BinPMuzFlash`, mesh particles) on our first-person barrel, the bots'
+  projectiles' smoke rings. Freon (WS3SPN_V30): 73 messages fed to `Freon_HUD` in 110 s, the frozen look and thaw
+  unchanged. Ballistic Weapons V25 with 3 bots: the bots' tracers and impacts (`TraceEmitter_*`, `BG_ShellHit`).
 - Statistics: `-UE2ScriptHUDLog` logs frames, average time and tokens, mirrored actors and resources every 5 s; the
   summary line `UE2NetScriptHUD summary` is logged when the connection ends.
 
@@ -1406,11 +1450,15 @@ Open problems:
 - ClientValidate response not seen live (no server asked); its format is read from the 3374 client. The 3369
   server triggers it natively (`PlayerController.ClientValidate` is a native event); no local server setting that
   sends it was found, so it is still untested.
-- Mod HUDs and scoreboards run in the script VM ("Mod HUDs and scoreboards"). Not run: the mods' local messages
-  (their HUDs' message lists are not fed: messages stay ours), their in-game menus (UTComp's settings menu; the
-  settings come read-only from the player's ini, as for the hit sounds), their client mutators' `Tick`, and
-  interactions other than the ones a controller property holds. First person weapon overlays drawn with
-  `Canvas.DrawActor` (sniper zoom etc. in script) are left to our weapons.
+- Mod HUDs, scoreboards, their message lists and mods' client code run in the script VM ("Mod HUDs and scoreboards",
+  "Mods' client code"). Not done: mods' in-game menus (UTComp's settings menu: UE2's GUI is native C++ in the original
+  engine, so a script GUI runner needs the GUIController / GUIComponent drawing and input natives; the settings come
+  read-only from the player's ini, as for the hit sounds), their client mutators' `Tick`, interactions other than the
+  ones a controller property holds, first-person weapons with no stock relative (Ballistic Weapons: their whole
+  weapon is script), fire timing a mod changes during play (the fire mode objects' code is not run), the effects of
+  script that changes an emitter's properties while it plays (the Odin's charge beam lengths), `Canvas.DrawActor`
+  overlays (sniper zoom in script). Player characters that exist only in a server's packages: UE2 finds a character
+  by its `.upl` record, which is never downloaded, so a stock client shows the default model as we do.
 - The real client reference (see "Real client reference") covers the handshake, moves and NewNet fire. Not compared
   yet: vehicles (`ServerDrive`), spectator moves in the free camera, and the 3374 client against a 3374 server.
 - Downloads: no size limit or eviction for the net cache yet.

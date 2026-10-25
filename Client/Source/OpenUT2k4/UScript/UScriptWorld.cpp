@@ -3,6 +3,7 @@
 #include "UScriptWorld.h"
 #if OPENUT2K4_USCRIPT_ENABLED
 #include "UScriptRuntime.h"
+#include "UScriptPresentation.h"
 
 FUSWorld::FUSWorld() = default;
 
@@ -10,6 +11,7 @@ FUSWorld::~FUSWorld()
 {
 	for (FUSObject* O : Objects)
 	{
+		USPresentation::Forget(O);
 		if (O->Data && O->Class)
 		{
 			O->Class->DestroyValue(O->Data);
@@ -108,6 +110,7 @@ void FUSWorld::CleanupDestroyed()
 		FUSObject* O = Objects[Read];
 		if (O->IsPendingKill())
 		{
+			USPresentation::Forget(O);
 			if (O->Data && O->Class)
 			{
 				O->Class->DestroyValue(O->Data);

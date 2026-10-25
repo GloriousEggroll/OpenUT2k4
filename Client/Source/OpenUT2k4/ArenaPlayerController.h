@@ -63,6 +63,11 @@ public:
 	AArenaPlayerController();
 
 	// ---------------- API ----------------
+	/**
+	 * While above 0 the message adders below keep their messages to themselves: a UT2004 server's own script HUD shows
+	 * them (Net/UE2NetScriptHUD.h feeds its message lists), our HUD only when that HUD falls back.
+	 */
+	static int32 MessageDisplayHold;
 	void AddKillMessage(APlayerState* Killer, APlayerState* Victim, const FString& WeaponName, bool bHeadshot);
 	/** A kill by a killer with no player state (an automatic turret): named killer, ready-made console line. */
 	void AddNamedKillMessage(const FString& KillerName, APlayerState* Victim, const FString& WeaponName, const FString& ConsoleText);

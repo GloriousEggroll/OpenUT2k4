@@ -47,6 +47,15 @@ namespace ArenaUE2Effects
 	 * and LifeSpan, facing the camera, fading out when mAttenuate. Null when unavailable.
 	 */
 	OPENUT2K4_API AActor* SpawnSpriteXEmitter(UWorld* World, const FString& PkgClass, const FVector& Location);
+	/** Makes a mod's script package (a downloaded .u, path on disk) readable for its effect classes (a mod's emitters
+	 *  spawned by its client-side code: Net/UE2NetScriptVisuals.h). */
+	OPENUT2K4_API void AddPackageFile(const FString& File);
+	/**
+	 * An xEmitter of mesh particles (mParticleType PT_Mesh: the weapons' muzzle flashes, e.g. MinigunMuzFlash1st): its
+	 * first mMeshNodes static mesh with the class's Skins[0], DrawScale x mSizeRange, a random roll, for mLifeRange (one
+	 * burst, as its Trigger gives). Null when the class is not one.
+	 */
+	OPENUT2K4_API AActor* SpawnMeshXEmitter(UWorld* World, const FString& PkgClass, const FVector& Location, const FRotator& Rotation);
 	/** Loads the descriptions of every stock effect class the game uses (UArenaUE2EffectsSubsystem). */
 	OPENUT2K4_API void Preload();
 	/** Effects spawned since start (tests). */

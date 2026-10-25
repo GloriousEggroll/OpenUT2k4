@@ -5,6 +5,9 @@
 #include "ArenaContent.h"
 #include "ArenaCharacter.h"
 #include "ArenaEmitters.h"
+#include "ArenaRuntimeContent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Materials/MaterialInterface.h"
 #include "ArenaONS_Vehicle.h"
 #include "ArenaWeaponActors.h"
 #include "Camera/PlayerCameraManager.h"
@@ -155,6 +158,30 @@ bool ArenaUE2Effects::IsAvailable()
 		UE_LOG(LogOpenUT2k4, Log, TEXT("UE2Effects: stock effect classes %s (cache %s)"), bOk ? TEXT("available") : TEXT("not available"), *ArenaContent::GetCacheDir());
 	}
 	return bOk;
+}
+
+void ArenaUE2Effects::AddPackageFile(const FString& File)
+{
+	using namespace ArenaUE2EffectsLocal;
+	if (!IsAvailable() || File.IsEmpty())
+	{
+		return;
+	}
+	FReader& R = Reader();
+	const FString Name = FPaths::GetBaseFilename(File);
+	if (!R.Mgr.IsValid() || !R.Mgr->FindFile(Name).IsEmpty())
+	{
+		return;
+	}
+	R.Mgr->AddPackageFiles({ File });
+	// classes of it that were looked for before
+	for (auto It = DescCache().CreateIterator(); It; ++It)
+	{
+		if (!It.Value().IsValid() && It.Key().StartsWith(Name + TEXT("."), ESearchCase::IgnoreCase))
+		{
+			It.RemoveCurrent();
+		}
+	}
 }
 
 bool ArenaUE2Effects::GetClassDesc(const FString& PkgClass, FArenaUE2ActorDesc& Out)
@@ -357,6 +384,55 @@ AActor* ArenaUE2Effects::SpawnSpriteXEmitter(UWorld* World, const FString& PkgCl
 	}
 	Comp->RegisterComponent();
 	A->SetLifeSpan(Life);
+	++SpawnCounts().FindOrAdd(PkgClass);
+	return A;
+}
+
+AActor* ArenaUE2Effects::SpawnMeshXEmitter(UWorld* World, const FString& PkgClass, const FVector& Location, const FRotator& Rotation)
+{
+	using namespace ArenaUE2EffectsLocal;
+	FArenaUE2ActorDesc D;
+	if (!World || !GetClassDesc(PkgClass, D) || !D.IsA(TEXT("xEmitter")))
+	{
+		return nullptr;
+	}
+	const FString Type = D.Props.Str(TEXT("mParticleType"));
+	const bool bMesh = Type.Contains(TEXT("Mesh")) || int32(D.Props.Num(TEXT("mParticleType"), 0.0)) == 4;
+	const TArray<TSharedPtr<FJsonValue>>& Nodes = D.Props.Array(TEXT("mMeshNodes"));
+	FString MeshPath = Nodes.Num() > 0 ? FArenaUE2Props::ToString(Nodes[0]) : D.Props.Str(TEXT("mMeshNodes"));
+	UStaticMesh* Mesh = bMesh && !MeshPath.IsEmpty() ? ArenaRuntimeContent::LoadStaticMeshByObjectPath(MeshPath) : nullptr;
+	if (!Mesh)
+	{
+		return nullptr;
+	}
+	FActorSpawnParameters SP;
+	SP.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* A = World->SpawnActor<AActor>(AActor::StaticClass(), FTransform(Rotation, Location), SP);
+	if (!A)
+	{
+		return nullptr;
+	}
+	UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(A);
+	A->SetRootComponent(C);
+	C->SetStaticMesh(Mesh);
+	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	C->SetCastShadow(false);
+	if (D.Skins.Num() > 0)
+	{
+		if (UMaterialInterface* M = ArenaRuntimeContent::LoadMaterialByObjectPath(D.Skins[0]))
+		{
+			for (int32 i = 0; i < C->GetNumMaterials(); ++i)
+			{
+				C->SetMaterial(i, M);
+			}
+		}
+	}
+	const FVector2D SizeRange = D.Props.Range(TEXT("mSizeRange"), FVector2D(1.0, 1.0));
+	const float Size = float(FMath::FRandRange(SizeRange.X, FMath::Max(SizeRange.X, SizeRange.Y))) * D.DrawScale;
+	C->SetWorldTransform(FTransform(FRotator(Rotation.Pitch, Rotation.Yaw, FMath::FRandRange(0.f, 360.f)), Location, FVector(FMath::Max(0.01f, Size))));
+	C->RegisterComponent();
+	const FVector2D LifeRange = D.Props.Range(TEXT("mLifeRange"), FVector2D(0.2, 0.2));
+	A->SetLifeSpan(FMath::Clamp(float(LifeRange.X + LifeRange.Y) * 0.5f, 0.05f, 2.f));
 	++SpawnCounts().FindOrAdd(PkgClass);
 	return A;
 }

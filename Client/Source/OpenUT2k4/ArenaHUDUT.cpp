@@ -285,9 +285,9 @@ void AArenaHUD::DrawUTHud(AArenaCharacter* Char, bool bAlive, bool bEnded, bool 
 	const AArenaPlayerState* MyPS = PlayerOwner ? PlayerOwner->GetPlayerState<AArenaPlayerState>() : nullptr;
 	if (Script.bHud)
 	{
-		// the server's HUD drew the player HUD, crosshair, score pass and spectator bar; the pickup messages (its
-		// LocalizedMessage list is not fed) and the join notice / bar text stay ours
-		if (bAlive && !bEnded)
+		// the server's HUD drew the player HUD, crosshair, score pass and spectator bar, and its message lists show the
+		// server's messages (pickup messages among them); the join notice / bar text stay ours
+		if (bAlive && !bEnded && !Script.bMessages)
 		{
 			DrawUTPickupMessage();
 		}

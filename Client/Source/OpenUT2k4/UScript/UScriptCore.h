@@ -72,6 +72,7 @@ namespace USFlags
 	// State flags
 	constexpr uint32 STATE_Editable = 0x00000001;
 	constexpr uint32 STATE_Auto = 0x00000002;
+	constexpr uint32 STATE_Simulated = 0x00000004;
 
 	// Class flags
 	constexpr uint32 CLASS_Abstract = 0x00000001;
@@ -483,6 +484,10 @@ namespace USVM
 	void Init();
 	/** Calls Function on Self with parameters read from the caller's Stack (bytecode call). */
 	void CallFunction(FUSObject* Self, FUSFrame& Stack, void* Result, FUSFunction* Function);
+	/** A non-simulated script function called on a simulated proxy (the UE2 client mirror's replicated actors): not run. */
+	bool IsSkippedOnProxy(const FUSObject* Self, const FUSFunction* Function);
+	/** Role below ROLE_AutonomousProxy (a simulated or dumb proxy of the server's actor). */
+	bool IsProxy(const FUSObject* Self);
 	/** Calls a function with a parameter block laid out like Function's locals (C++ -> script). */
 	void ProcessEvent(FUSObject* Self, FUSFunction* Function, void* Parms);
 	/** Runs Self's state code until it blocks on a latent action or ends (called by the world tick). */

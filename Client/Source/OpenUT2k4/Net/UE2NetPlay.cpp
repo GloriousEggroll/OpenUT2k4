@@ -1,6 +1,8 @@
 #include "UE2NetPlay.h"
 #include "UE2NetJoin.h"
 #include "UE2NetModWeapons.h"
+#include "UE2NetModContent.h"
+#include "../ArenaUE2Effects.h"
 #include "../ArenaHitchLog.h"
 
 #include "../ArenaCharacterMovement.h"
@@ -394,6 +396,17 @@ AArenaWeapon* AUE2NetLocalPawn::EnsureNetWeapon(UClass* WeaponClass, const FStri
 			In.bIcon = Mod->bIcon;
 			In.IconCoords = Mod->IconCoords;
 			In.IconTexture = Mod->IconTexture;
+			In.FlashEmitterClass[0] = Mod->FlashEmitterClass[0];
+			In.FlashEmitterClass[1] = Mod->FlashEmitterClass[1];
+			for (const FString& Flash : In.FlashEmitterClass)
+			{
+				FString Pkg;
+				if (Flash.Split(TEXT("."), &Pkg, nullptr) && !UE2NetModWeapons::IsStockClass(Flash))
+				{
+					ArenaUE2Effects::AddPackageFile(UE2NetModContent::PackageFile(Pkg)); // its emitters are read from the mod's package
+				}
+			}
+			In.SelectSound = Mod->SelectSound.IsEmpty() ? nullptr : UE2NetModContent::LoadSound(Mod->SelectSound);
 			W->SetNetStandIn(In);
 		}
 		W->GiveTo(this);

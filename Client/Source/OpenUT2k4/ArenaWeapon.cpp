@@ -1,4 +1,6 @@
 #include "ArenaWeapon.h"
+#include "ArenaUE2Effects.h"
+#include "ArenaEmitters.h"
 #include "ArenaWeaponHand.h"
 #include "ArenaWeapons.h"
 #include "ArenaViewShake.h"
@@ -125,6 +127,11 @@ void AArenaWeapon::Equip()
 	NextFireTime = FMath::Max(NextFireTime, EquipTime + EquipDelay + BringUpTime);
 	EquipDelay = 0.f;
 	RecoilOffset = 0.f;
+	if (NetStandIn.SelectSound)
+	{
+		// a mod weapon's Weapon.SelectSound (Net/UE2NetModWeapons.h)
+		UGameplayStatics::PlaySoundAtLocation(this, NetStandIn.SelectSound, ArenaOwner->GetActorLocation());
+	}
 	if (ViewRoot)
 	{
 		ViewRoot->SetVisibility(true, true);
@@ -1854,6 +1861,28 @@ void AArenaWeapon::SpawnViewMuzzleFlash(const FLinearColor& Color, float Scale, 
 	}
 
 	const FName Socket = Art && Art->MuzzleSocket ? FName(Art->MuzzleSocket) : NAME_None;
+	if (Mode < 2 && !NetStandIn.FlashEmitterClass[Mode].IsEmpty() && ViewMesh && bViewShown)
+	{
+		// a mod weapon's own muzzle flash (WeaponFire.FlashEmitterClass, its emitters: ArenaUE2Effects) on the barrel
+		static const FName Tip(TEXT("tip"));
+		const FName At = !Socket.IsNone() && ViewMesh->DoesSocketExist(Socket) ? Socket : (ViewMesh->DoesSocketExist(Tip) ? Tip : NAME_None);
+		const FTransform T = At.IsNone() ? ViewMesh->GetComponentTransform() : ViewMesh->GetSocketTransform(At);
+		AActor* E = ArenaUE2Effects::SpawnMeshXEmitter(GetWorld(), NetStandIn.FlashEmitterClass[Mode], T.GetLocation(), T.Rotator());
+		if (!E)
+		{
+			E = ArenaUE2Effects::SpawnEmitter(GetWorld(), NetStandIn.FlashEmitterClass[Mode], T.GetLocation(), T.Rotator(), 1.f);
+		}
+		if (E)
+		{
+			E->AttachToComponent(ViewMesh, FAttachmentTransformRules::KeepWorldTransform, At);
+			TInlineComponentArray<UPrimitiveComponent*> Prims(E);
+			for (UPrimitiveComponent* P : Prims)
+			{
+				P->SetFirstPersonPrimitiveType(EFirstPersonPrimitiveType::FirstPerson);
+			}
+			return;
+		}
+	}
 	if (ViewMesh && bViewShown && !Socket.IsNone() && ViewMesh->DoesSocketExist(Socket))
 	{
 		const FVector Local = ViewMesh->GetSocketTransform(Socket, RTS_Component).GetLocation();

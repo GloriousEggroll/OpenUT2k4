@@ -12,6 +12,8 @@ class USoundBase;
  */
 namespace UE2NetModContent
 {
+	/** The file the script runtime has for a package name (a downloaded or installed mod first), or empty. */
+	OPENUT2K4_API FString PackageFile(const FString& Package);
 	/** "Package.Group.Name" of a Sound: the content cache's sound, converted from its package first when missing. */
 	OPENUT2K4_API USoundBase* LoadSound(const FString& ObjectPath);
 	/** Converts the object (Sound / Texture / Material / Font / StaticMesh / SkeletalMesh ...; ClassName its UE2 class, empty for

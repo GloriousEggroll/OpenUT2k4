@@ -489,8 +489,14 @@ void AArenaPlayerController::PlayerTick(float DeltaTime)
 // Messages API
 // ---------------------------------------------------------------------------------------------
 
+int32 AArenaPlayerController::MessageDisplayHold = 0;
+
 void AArenaPlayerController::AddKillMessage(APlayerState* Killer, APlayerState* Victim, const FString& WeaponName, bool bHeadshot)
 {
+	if (MessageDisplayHold > 0)
+	{
+		return;
+	}
 	const AArenaGameState* GS = GetWorld()->GetGameState<AArenaGameState>();
 	const bool bTeamGame = GS && GS->IsTeamGame();
 
@@ -519,6 +525,10 @@ void AArenaPlayerController::AddKillMessage(APlayerState* Killer, APlayerState* 
 
 void AArenaPlayerController::AddNamedKillMessage(const FString& KillerName, APlayerState* Victim, const FString& WeaponName, const FString& ConsoleText)
 {
+	if (MessageDisplayHold > 0)
+	{
+		return;
+	}
 	const AArenaGameState* GS = GetWorld()->GetGameState<AArenaGameState>();
 	const bool bTeamGame = GS && GS->IsTeamGame();
 
@@ -539,6 +549,10 @@ void AArenaPlayerController::AddNamedKillMessage(const FString& KillerName, APla
 
 void AArenaPlayerController::AddConsoleLine(const FString& Text, const FColor& Color)
 {
+	if (MessageDisplayHold > 0)
+	{
+		return;
+	}
 	if (Text.IsEmpty() || !GetWorld())
 	{
 		return;
@@ -556,6 +570,10 @@ void AArenaPlayerController::AddConsoleLine(const FString& Text, const FColor& C
 
 void AArenaPlayerController::AddLocalMessage(EArenaLocalMessage Kind, int32 Switch, const APlayerState* Name1, const APlayerState* Name2)
 {
+	if (MessageDisplayHold > 0)
+	{
+		return;
+	}
 	using namespace ArenaLocalMessages;
 	if (Kind == EArenaLocalMessage::None || !GetWorld())
 	{
@@ -591,6 +609,10 @@ void AArenaPlayerController::AddLocalMessage(EArenaLocalMessage Kind, int32 Swit
 
 void AArenaPlayerController::AddCustomLocalMessage(const FString& Text, const ArenaLocalMessages::FStyle& Style, int32 FontSize, FName ClassName)
 {
+	if (MessageDisplayHold > 0)
+	{
+		return;
+	}
 	if (Text.IsEmpty() || !GetWorld())
 	{
 		return;
@@ -714,6 +736,10 @@ void AArenaPlayerController::UpdateStartupMessages()
 
 void AArenaPlayerController::AddCenterMessage(const FString& Text, const FLinearColor& Color, float Duration)
 {
+	if (MessageDisplayHold > 0)
+	{
+		return;
+	}
 	if (Text.IsEmpty())
 	{
 		return;

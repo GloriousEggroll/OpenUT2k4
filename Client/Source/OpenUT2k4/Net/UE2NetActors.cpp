@@ -898,6 +898,16 @@ void AUE2NetPawn::SetNetOverlay(UMaterialInterface* Material, float Seconds)
 	UpdateOverlay();
 }
 
+void AUE2NetPawn::SetScriptSkins(const TArray<UMaterialInterface*>& Skins)
+{
+	ScriptSkins.Reset();
+	for (UMaterialInterface* M : Skins)
+	{
+		ScriptSkins.Add(M);
+	}
+	bScriptSkinsApplied = false;
+}
+
 void AUE2NetPawn::SetNetFrozen(bool bFrozen, UMaterialInterface* Ice)
 {
 	if (bFrozen == bNetFrozen && (!bFrozen || Ice == IceOverlay))
@@ -949,6 +959,17 @@ void AUE2NetPawn::Tick(float DeltaSeconds)
 	{
 		UpdateOverlay();
 	}
+	if (!bScriptSkinsApplied && bModelApplied && bSkeletalBody && GetMesh())
+	{
+		bScriptSkinsApplied = true;
+		for (int32 i = 0; i < ScriptSkins.Num() && i < GetMesh()->GetNumMaterials(); ++i)
+		{
+			if (ScriptSkins[i])
+			{
+				GetMesh()->SetMaterial(i, ScriptSkins[i]);
+			}
+		}
+	}
 	// the player model once the PRI named the character (a stock pick when it does not come)
 	if (!bModelApplied && (bCharacterKnown || GetGameTimeSinceCreation() > 1.f))
 	{
@@ -958,6 +979,7 @@ void AUE2NetPawn::Tick(float DeltaSeconds)
 	if (Team != LastTeam && bModelApplied)
 	{
 		LastTeam = Team;
+		bScriptSkinsApplied = false;
 		UpdateTeamColors();
 		ApplyCharacterSkin();
 	}
@@ -1969,6 +1991,35 @@ void AUE2NetVehicle::SetWeaponAttachments(int32 Key, const TArray<UE2NetModWeapo
 		G->Extras.Add(C);
 		G->ExtraDefs.Add(A);
 	}
+}
+
+USceneComponent* AUE2NetVehicle::GetWeaponComponent(int32 Key) const
+{
+	const FGun* G = Guns.Find(Key);
+	return G ? GetGunComponent(*G) : nullptr;
+}
+
+bool AUE2NetVehicle::RemoveWeaponAttachment(int32 Key, const FString& UE2Class)
+{
+	FGun* G = Guns.Find(Key);
+	bool bRemoved = false;
+	for (int32 i = G ? G->ExtraDefs.Num() - 1 : -1; i >= 0; --i)
+	{
+		if (G->ExtraDefs[i].UE2Class.Equals(UE2Class, ESearchCase::IgnoreCase))
+		{
+			if (G->Extras.IsValidIndex(i) && G->Extras[i].IsValid())
+			{
+				G->Extras[i]->DestroyComponent();
+			}
+			if (G->Extras.IsValidIndex(i))
+			{
+				G->Extras.RemoveAt(i);
+			}
+			G->ExtraDefs.RemoveAt(i);
+			bRemoved = true;
+		}
+	}
+	return bRemoved;
 }
 
 void AUE2NetVehicle::ApplyExtraSkins(UMeshComponent* C, const UE2NetModWeapons::FClientAttachment& A)

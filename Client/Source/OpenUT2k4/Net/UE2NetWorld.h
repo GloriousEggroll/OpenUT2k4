@@ -60,6 +60,12 @@ public:
 	/** Removes what we show for an actor without its end effects (our own guided warhead: Net/UE2NetPlay flies it). */
 	void DropNativeActor(int32 Channel);
 	AActor* GetNativeActor(int32 Channel) const { const FEntity* E = Channel ? Entities.Find(Channel) : nullptr; return E ? E->Native.Get() : nullptr; }
+	/** The component that shows an actor channel (a pawn's mesh, a vehicle's body or one of its guns, a decoration's mesh):
+	 *  what the server's client-side script attaches its actors to (Net/UE2NetScriptVisuals.h). Null when not drawn. */
+	class USceneComponent* GetChannelComponent(int32 Channel) const;
+	/** The vehicle weapon of Channel shows an attachment of that class through its own client code: our class-defaults
+	 *  stand-in for it goes (UE2NetModWeapons::FindClientAttachments). True when one was removed or none is left. */
+	bool RetireClientAttachmentStandIn(int32 Channel, const FString& ClassPath);
 	/** The channel whose actor (or a component's owner chain up to it) Actor is, or 0. */
 	int32 FindChannelOf(const AActor* Actor) const;
 	/** Our vehicle actor for a vehicle / turret channel (a gunner seat's: its base vehicle's). */

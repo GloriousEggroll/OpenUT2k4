@@ -73,6 +73,9 @@ public:
 	 *  client Tick: StopAnimating, skins plus its frost material); false thaws it back. */
 	void SetNetFrozen(bool bFrozen, UMaterialInterface* Ice);
 	bool IsNetFrozen() const { return bNetFrozen; }
+	/** Skins a mod's client code gives the pawn (Actor.Skins set by its simulated script: a bright skin, a team skin of
+	 *  its own); null entries keep ours. Applied over the model's materials. */
+	void SetScriptSkins(const TArray<UMaterialInterface*>& Skins);
 	/** Driving a vehicle (Vehicle.Driver): hidden, carried along with the vehicle, the camera behind the vehicle. */
 	void SetNetVehicle(AActor* Vehicle);
 	AActor* GetNetVehicle() const { return NetVehicle.Get(); }
@@ -142,6 +145,8 @@ protected:
 	/** When NetOverlay ends (0: not timed). */
 	double NetOverlayEnd = 0.0;
 	bool bNetFrozen = false;
+	UPROPERTY() TArray<TObjectPtr<UMaterialInterface>> ScriptSkins;
+	bool bScriptSkinsApplied = false;
 	/** Ours before a replicated overlay took over (the team rim of a model without team skins), and whether one did. */
 	TWeakObjectPtr<UMaterialInterface> RestOverlay;
 	bool bNetOverlayShown = false;
@@ -310,11 +315,16 @@ public:
 	void SetWeapon(int32 Key, const FString& MeshPath, FName AttachBone, FName YawBone, FName PitchBone, FName FireBone, float FireOffsetUU,
 		const UE2NetModWeapons::FLook& Look);
 	void RemoveWeapon(int32 Key);
+	/** What shows the vehicle and its weapon Key (UE2 client script attaches to their bones): null when not drawn. */
+	USceneComponent* GetBodyComponent() const { return GetChassisComponent(); }
+	USceneComponent* GetWeaponComponent(int32 Key) const;
 	/** The weapon's Actor.bHidden (a destroyed stationary turret hides its gun). */
 	void SetWeaponHidden(int32 Key, bool bInHidden);
 	/** What the weapon class's client-side code attaches to its bones (UE2NetModWeapons::FindClientAttachments): they turn
 	 *  with the gun. */
 	void SetWeaponAttachments(int32 Key, const TArray<UE2NetModWeapons::FClientAttachment>& Attachments);
+	/** Removes the weapon's stand-in attachment of that class (the mod's own client code shows it). True if one went. */
+	bool RemoveWeaponAttachment(int32 Key, const FString& UE2Class);
 	bool HasWeapon(int32 Key) const { return Guns.Contains(Key); }
 	/** ONSWeapon turning limits (degrees, relative to the weapon's rest pose): PitchDownLimit .. PitchUpLimit, and the
 	 *  yaw range YawStartConstraint .. YawEndConstraint when bLimitYaw. */

@@ -33,6 +33,10 @@ struct FArenaNetStandIn
 	bool bIcon = false;
 	FVector4f IconCoords = FVector4f(0.f);
 	FString IconTexture;
+	/** The mod's fire modes' muzzle flash emitter classes (WeaponFire.FlashEmitterClass, "Pkg.Class"; empty: ours). */
+	FString FlashEmitterClass[2];
+	/** Weapon.SelectSound (a loaded sound; null: none, as ours). */
+	TObjectPtr<class USoundBase> SelectSound = nullptr;
 };
 
 /**

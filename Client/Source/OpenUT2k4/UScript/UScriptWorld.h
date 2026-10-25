@@ -34,6 +34,12 @@ public:
 	virtual class FUSGameWorld* AsGameWorld() { return nullptr; }
 	/** LevelInfo.GetLocalPlayerController of worlds that are not game worlds (the UE2 client mirror). */
 	virtual FUSObject* GetLocalPlayerController() { return nullptr; }
+	/** The UE world sounds, traces and effects of a world that is not a game world go to (the UE2 client mirror's map). */
+	virtual class UWorld* GetPresentationWorld() { return nullptr; }
+	/** Where an actor of such a world is shown (UE coordinates), when it has a native counterpart. */
+	virtual bool GetPresentationLocation(FUSObject* Actor, FVector& OutLocation) { return false; }
+	/** A bone (or attach socket) of what shows an actor of such a world, world space (UE coordinates). */
+	virtual bool GetPresentationBone(FUSObject* Actor, FName Bone, FTransform& OutTransform) { return false; }
 
 	/** Seconds since the world started (Level.TimeSeconds). */
 	float TimeSeconds = 0.f;

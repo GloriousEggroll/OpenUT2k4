@@ -1233,9 +1233,38 @@ static void USProcessInternal(FUSObject* Self, FUSFrame& Stack, void* Result)
 	}
 }
 
+bool USVM::IsSkippedOnProxy(const FUSObject* Self, const FUSFunction* Function)
+{
+	// UE2: on a client, an actor that is only a simulated (or dumb) proxy of the server's runs simulated script functions
+	// only; natives and static functions always run
+	return Function && !(Function->FunctionFlags & (USFlags::FUNC_Simulated | USFlags::FUNC_Static | USFlags::FUNC_Native)) && IsProxy(Self);
+}
+
+bool USVM::IsProxy(const FUSObject* Self)
+{
+	if (!Self || !(Self->Flags & USF_Actor) || !Self->Data)
+	{
+		return false;
+	}
+	static FUSClass* ForClass = nullptr;
+	static FUSProperty* RoleProp = nullptr;
+	FUSClass* ActorClass = FUSRuntime::Get().ActorClass;
+	if (ForClass != ActorClass)
+	{
+		ForClass = ActorClass;
+		RoleProp = ActorClass ? ActorClass->FindPropertyByName(FName(TEXT("Role"))) : nullptr;
+	}
+	return RoleProp && Self->Data[RoleProp->Offset] < 3; // < ROLE_AutonomousProxy
+}
+
 void USVM::CallFunction(FUSObject* Self, FUSFrame& Stack, void* Result, FUSFunction* Function)
 {
 	++GStatCalls;
+	if (IsSkippedOnProxy(Self, Function))
+	{
+		USSkipParmsGeneric(Stack, Function);
+		return;
+	}
 	if (Function->FunctionFlags & USFlags::FUNC_Native)
 	{
 		if (Function->Func)
@@ -1317,7 +1346,7 @@ void USVM::CallFunction(FUSObject* Self, FUSFrame& Stack, void* Result, FUSFunct
 
 void USVM::ProcessEvent(FUSObject* Self, FUSFunction* Function, void* Parms)
 {
-	if (!Self || !Function || Self->IsPendingKill() || !IsProbing(Self, Function->Name))
+	if (!Self || !Function || Self->IsPendingKill() || !IsProbing(Self, Function->Name) || IsSkippedOnProxy(Self, Function))
 	{
 		return;
 	}
@@ -1533,6 +1562,14 @@ void USVM::ProcessState(FUSObject* Self, float DeltaSeconds)
 	if (!SF || !SF->Code || Self->IsPendingKill())
 	{
 		return;
+	}
+	// a simulated proxy runs the code of simulated states only (UE2 client)
+	if (SF->StateNode && SF->StateNode != Self->Class && !(SF->StateNode->StateFlags & USFlags::STATE_Simulated))
+	{
+		if (IsProxy(Self))
+		{
+			return;
+		}
 	}
 	if (SF->LatentAction)
 	{

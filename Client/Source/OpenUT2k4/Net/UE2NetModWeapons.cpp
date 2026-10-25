@@ -237,6 +237,14 @@ namespace UE2NetModWeaponsLocal
 			Note(TEXT("view placement"));
 		}
 
+		// Weapon.SelectSound (UE2 plays it when the weapon is brought up)
+		const FString Select = ObjPath(M, TEXT("SelectSound"));
+		if (!Select.IsEmpty())
+		{
+			W->SelectSound = Select;
+			Note(FString::Printf(TEXT("select sound %s"), *Select));
+		}
+
 		// fire modes: FireSound, FireRate, FireAnim (WeaponFire defaults)
 		for (int32 Mode = 0; Mode < 2; ++Mode)
 		{
@@ -259,6 +267,12 @@ namespace UE2NetModWeaponsLocal
 				{
 					Note(FString::Printf(TEXT("fire %d sound %s not converted: %s's"), Mode, Sound.IsEmpty() ? TEXT("None") : *Sound, *StockClass));
 				}
+			}
+			const FString Flash = ObjPath(MF, TEXT("FlashEmitterClass"));
+			if (!Flash.IsEmpty() && !Flash.Equals(ObjPath(SF, TEXT("FlashEmitterClass")), ESearchCase::IgnoreCase))
+			{
+				W->FlashEmitterClass[Mode] = Flash;
+				Note(FString::Printf(TEXT("fire %d muzzle flash %s"), Mode, *Flash));
 			}
 			const float Rate = Value<float>(MF, TEXT("FireRate"), -1.f);
 			if (Rate > 0.f && Rate != Value<float>(SF, TEXT("FireRate"), -1.f))
@@ -429,6 +443,17 @@ TArray<UMaterialInterface*> UE2NetModWeapons::LoadSkins(const TArray<FString>& S
 		Out.Add(S.IsEmpty() ? nullptr : ArenaRuntimeContent::LoadMaterialByObjectPath(S));
 	}
 	return Out;
+}
+
+FString UE2NetModWeapons::AnimPrefixForMesh(const FString& MeshObjectPath)
+{
+	const FString Anim = MeshAnimation(MeshObjectPath);
+	return Anim.IsEmpty() ? FString() : ArtPath(TEXT("Animations"), Anim) + TEXT("_");
+}
+
+FString UE2NetModWeapons::ArtPathOf(const TCHAR* Kind, const FString& ObjectPath)
+{
+	return ArtPath(Kind, ObjectPath);
 }
 
 const TArray<UE2NetModWeapons::FClientAttachment>& UE2NetModWeapons::FindClientAttachments(const FString& ClassPath)

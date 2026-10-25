@@ -287,8 +287,13 @@ protocol is described in `Docs/UE2Net.md`.
   packages are read to decode the server's mod actors; what their client code does for a player is done natively:
   UTComp's **NewNet** weapons (lag compensated: our client sends their timestamped fire, so hits register where you
   saw the target), **hit sounds** (UTComp, UTPlus; the sounds are converted from the mod's package the first time
-  they play), UTComp's **warmup** (`Ready` / `NotReady` in the console, a warmup line on the HUD). Mod weapons show
-  as their stock weapon. Mod HUDs and scoreboards are not run. A map whose name matches ours but whose GUID differs
+  they play), UTComp's **warmup** (`Ready` / `NotReady` in the console, a warmup line on the HUD). Mod weapons play
+  as our nearest stock weapon with the mod's own meshes, skins, sounds, fire rates, icon and muzzle flash; mod
+  vehicles show their own meshes, skins and scale. Mod HUDs and scoreboards are run (their UnrealScript draws on our
+  canvas, with the server's messages in their own lists), and mods' client-side code runs in the script VM
+  (simulated functions, `Tick`, timers, state code of the mods' replicated actors): what it spawns (emitters, muzzle
+  flashes, attachments such as an Odin's ion cannon) is drawn. Not yet: weapons with no stock relative (Ballistic
+  Weapons in first person), mods' in-game menus. Details in `Docs/UE2Net.md` "Mod servers". A map whose name matches ours but whose GUID differs
   joins without a map rather than showing the wrong level. Packages that cannot be downloaded
   are skipped: actors that need them are not shown. UT2004's own packages (the files in the install's
   `System/Manifest.ini`) are never downloaded: when they are

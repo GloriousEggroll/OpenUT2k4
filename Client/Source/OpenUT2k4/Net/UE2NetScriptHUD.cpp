@@ -31,6 +31,9 @@
 #include "UE2NetLog.h"
 #include "UE2NetModContent.h"
 #include "UE2NetPlay.h"
+#include "UE2NetScriptVisuals.h"
+#include "UE2NetActors.h"
+#include "UE2NetModWeapons.h"
 #include "UE2NetWorld.h"
 
 #if OPENUT2K4_USCRIPT_ENABLED
@@ -200,10 +203,32 @@ public:
 	TArray<FUSObject*> LocalActors;
 	/** Mirrored actors whose client Timer runs like on UE2's client (the GameReplicationInfo's clock). */
 	TArray<FUSObject*> TimerOnly;
+	/** Set while a mod actor's client code runs: what it spawns is a client-side actor of that code. */
+	bool bClientScope = false;
+	TFunction<void(FUSObject*)> OnClientSpawn;
+	/** The map's UE world and where the mirror's actors are shown (sounds, traces and effects of script). */
+	TWeakObjectPtr<UWorld> PresentationWorld;
+	TFunction<bool(FUSObject*, FVector&)> PresentationLocation;
+	TFunction<bool(FUSObject*, FName, FTransform&)> PresentationBone;
 
 	virtual FUSObject* GetLocalPlayerController() override
 	{
 		return LocalPC && !LocalPC->IsPendingKill() ? LocalPC : nullptr;
+	}
+
+	virtual UWorld* GetPresentationWorld() override
+	{
+		return PresentationWorld.Get();
+	}
+
+	virtual bool GetPresentationLocation(FUSObject* Actor, FVector& OutLocation) override
+	{
+		return PresentationLocation && PresentationLocation(Actor, OutLocation);
+	}
+
+	virtual bool GetPresentationBone(FUSObject* Actor, FName Bone, FTransform& OutTransform) override
+	{
+		return PresentationBone && PresentationBone(Actor, Bone, OutTransform);
 	}
 
 	virtual FUSObject* SpawnActor(FUSClass* Class, FUSObject* Owner, FName Tag, const FUSVector* Location, const FUSRotator* Rotation, FUSObject* Spawner) override
@@ -234,6 +259,10 @@ public:
 			P.Rotation.Set<FUSRotator>(A, *Rotation);
 		}
 		LocalActors.Add(A);
+		if (bClientScope && OnClientSpawn)
+		{
+			OnClientSpawn(A);
+		}
 		// UE2 SpawnActor's events
 		static const TCHAR* const Events[] = { TEXT("Spawned"), TEXT("PreBeginPlay"), TEXT("BeginPlay"), TEXT("PostBeginPlay"), TEXT("SetInitialState"),
 			TEXT("PostNetBeginPlay") };
@@ -738,6 +767,25 @@ struct FUE2NetScriptHUD::FImpl
 	bool bLogFrames = false;
 	float TimeSeconds = 0.f;
 
+	// ---- mods' client-side code (Docs/UE2Net.md "Mod client-side code": phase 2) ----
+	/** -UE2ScriptClient=0: the mirror stays data only (mods' simulated code is not run). */
+	bool bClientCode = true;
+	/** A mod actor running its client code: a mirrored (replicated) one, or one its code spawned on our side. */
+	struct FClientRun
+	{
+		int32 Errors = 0;
+		bool bOff = false;
+		bool bMirrored = false;
+		bool bReported = false;
+	};
+	TMap<FUSObject*, FClientRun> ClientRuns;
+	/** Mirror -> its channel (every mirrored actor). */
+	TMap<FUSObject*, int32> ChannelOf;
+	TUniquePtr<FUE2NetScriptVisuals> Visuals;
+	int32 ClientStarted = 0, ClientSpawned = 0, ClientStopped = 0;
+	double NextSummary = FPlatformTime::Seconds() + 30.0;
+	double ClientSeconds = 0.0;
+
 	FImpl(FUE2NetConnection& InConnection, UWorld* InWorld) : Connection(InConnection), World(InWorld)
 	{
 		FString M;
@@ -778,6 +826,51 @@ struct FUE2NetScriptHUD::FImpl
 			SetObj(PlayerObj, TEXT("InteractionMaster"), InteractionMaster);
 		}
 		InitCanvasFonts();
+		{
+			FString C;
+			if (FParse::Value(FCommandLine::Get(), TEXT("UE2ScriptClient="), C))
+			{
+				bClientCode = !(C == TEXT("0") || C.Equals(TEXT("off"), ESearchCase::IgnoreCase));
+			}
+		}
+		Visuals = MakeUnique<FUE2NetScriptVisuals>(InWorld);
+		Script->PresentationWorld = InWorld;
+		Script->OnClientSpawn = [this](FUSObject* A)
+		{
+			ClientRuns.Add(A);
+			++ClientSpawned;
+		};
+		Script->PresentationLocation = [this](FUSObject* A, FVector& Out)
+		{
+			if (USceneComponent* C = ComponentOf(A))
+			{
+				Out = C->GetComponentLocation();
+				return true;
+			}
+			if (AActor* V = Visuals ? Visuals->Find(A) : nullptr)
+			{
+				Out = V->GetActorLocation();
+				return true;
+			}
+			return false;
+		};
+		Script->PresentationBone = [this](FUSObject* A, FName Bone, FTransform& Out)
+		{
+			USceneComponent* C = ComponentOf(A);
+			if (!C && Visuals)
+			{
+				if (AUE2NetScriptVisual* V = Cast<AUE2NetScriptVisual>(Visuals->Find(A)))
+				{
+					C = V->Skeletal ? static_cast<USceneComponent*>(V->Skeletal) : (V->Static ? static_cast<USceneComponent*>(V->Static) : V->Root.Get());
+				}
+			}
+			if (!C)
+			{
+				return false;
+			}
+			Out = !Bone.IsNone() && C->DoesSocketExist(Bone) ? C->GetSocketTransform(Bone) : C->GetComponentTransform();
+			return true;
+		};
 		RT.PlaceholderInit = [this](FUSObject* Obj) { Backend.InitPlaceholder(Obj); };
 		RT.ContentObjectExists = [](const FString& Path, const FString& ClassName)
 		{
@@ -1145,7 +1238,371 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			bPRIsDirty = true;
 		}
+		ChannelOf.Add(O, A.Channel);
+		if (bClientCode && O != Level && ShouldRunClient(A.Class))
+		{
+			// what a UE2 client runs for a new replicated actor: SpawnActor's events (simulated ones only, the role rule
+			// in the VM), then PostNetBeginPlay once the initial properties are in
+			ClientRuns.Add(O).bMirrored = true;
+			++ClientStarted;
+			SyncClientLocations();
+			for (const TCHAR* E : { TEXT("Spawned"), TEXT("PreBeginPlay"), TEXT("BeginPlay"), TEXT("PostBeginPlay"), TEXT("SetInitialState"), TEXT("PostNetBeginPlay") })
+			{
+				CallClientEvent(O, E);
+			}
+		}
 		CheckPlayerController();
+	}
+
+	// ---- mods' client-side code -----------------------------------------------------------------------
+
+	/**
+	 * Mod actors that run their client code: what a UE2 client runs of a replicated actor (simulated functions, its
+	 * Tick / Timer / simulated state code) for classes of a mod's package (not UT2004's own: our native code shows those),
+	 * except Info (replication infos, mutators: their client parts are done in UE2NetModClient / the HUD), controllers and
+	 * HUDs (run by the script HUD).
+	 */
+	static bool ShouldRunClient(FUSClass* C)
+	{
+		const FString Pkg = C ? C->GetPackageName().ToString() : FString();
+		return C && !IsStockPackage(Pkg) && !IsDeniedPackage(Pkg) && !ChainHas(C, TEXT("Info")) && !ChainHas(C, TEXT("Controller")) && !ChainHas(C, TEXT("HUD"));
+	}
+
+	/** The native component that shows a mirrored actor (its channel's), else null. */
+	USceneComponent* ComponentOf(FUSObject* O) const
+	{
+		const int32* Ch = O ? ChannelOf.Find(O) : nullptr;
+		FUE2NetWorld* NW = Ch ? FUE2NetWorld::Get() : nullptr;
+		return NW ? NW->GetChannelComponent(*Ch) : nullptr;
+	}
+
+	/**
+	 * Runs Fn for a client-code actor within its budget: an actor whose code errs three times (script errors, a million
+	 * tokens in one call) stops running (UE2's data mirror and our native parts stay; the per-element fallback).
+	 */
+	bool RunGuarded(FUSObject* O, TFunctionRef<void()> Fn)
+	{
+		FClientRun* R = ClientRuns.Find(O);
+		if (!R || R->bOff || !O || O->IsPendingKill())
+		{
+			return false;
+		}
+		const uint64 Tokens = USVM::GStatTokens, Aborts = USVM::GStatAborts;
+		const double T0 = FPlatformTime::Seconds();
+		const bool bWasClient = Script->bClientScope;
+		Script->bClientScope = true;
+		Fn();
+		Script->bClientScope = bWasClient;
+		ClientSeconds += FPlatformTime::Seconds() - T0;
+		R = ClientRuns.Find(O);
+		if (!R)
+		{
+			return true;
+		}
+		R->Errors += USVM::GStatAborts != Aborts ? 1 : 0;
+		R->Errors += USVM::GStatTokens - Tokens > 1000000 ? 3 : 0;
+		if (R->Errors >= 3 && !R->bOff)
+		{
+			R->bOff = true;
+			++ClientStopped;
+			UE_LOG(LogUE2Net, Warning, TEXT("UE2NetScriptHUD: the client code of %s (%s) stopped after %d script errors or overlong calls: its data mirror and our native parts stay"),
+				*O->GetName(), *O->Class->GetPathName(), R->Errors);
+		}
+		return true;
+	}
+
+	void CallClientEvent(FUSObject* O, const TCHAR* Name)
+	{
+		RunGuarded(O, [&]() { FUE2NetMirrorWorld::CallEvent(O, Name); });
+	}
+
+	/** Forgets client-code actors that are gone (before the world frees them). */
+	void PurgeClientRuns()
+	{
+		for (auto It = ClientRuns.CreateIterator(); It; ++It)
+		{
+			if (!It.Key() || It.Key()->IsPendingKill())
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	/** UE2 moves the replicated actors itself: their mirrors get where ours show them. */
+	void SyncClientLocations()
+	{
+		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			if (!KV.Value.bMirrored || KV.Value.bOff)
+			{
+				continue;
+			}
+			USceneComponent* C = ComponentOf(KV.Key);
+			if (!C)
+			{
+				continue;
+			}
+			AActor* Owner = C->GetOwner();
+			// a pawn's or vehicle's own place (not its mesh's); a gun's component
+			const bool bActorPlace = Owner && (C == Owner->GetRootComponent() || (C->IsA<USkeletalMeshComponent>() && Cast<ACharacter>(Owner)));
+			const FVector L = bActorPlace ? Owner->GetActorLocation() : C->GetComponentLocation();
+			const FRotator R = bActorPlace ? Owner->GetActorRotation() : C->GetComponentRotation();
+			USProps().Location.Set<FUSVector>(KV.Key, USUnits::ToUE2(L));
+			USProps().Rotation.Set<FUSRotator>(KV.Key, USUnits::ToUE2(R));
+		}
+	}
+
+	/** One frame of the mirrored client-code actors (the ones spawned on our side tick with the local actors). */
+	void TickMirroredClients(float DeltaSeconds)
+	{
+		FUSEngineProps& P = USProps();
+		TArray<FUSObject*> Run;
+		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			if (KV.Value.bMirrored && !KV.Value.bOff)
+			{
+				Run.Add(KV.Key);
+			}
+		}
+		for (FUSObject* A : Run)
+		{
+			RunGuarded(A, [&]()
+			{
+				TickActor(A, DeltaSeconds, P);
+			});
+		}
+	}
+
+	/** An actor's timer, Tick and state code (UE2 client). */
+	void TickActor(FUSObject* A, float DeltaSeconds, FUSEngineProps& P)
+	{
+		// Actor.LifeSpan of our own client-side actors (a replicated actor's is the server's)
+		if (const FClientRun* R = ClientRuns.Find(A); R && !R->bMirrored)
+		{
+			if (float* Life = P.LifeSpan.Ptr<float>(A); Life && *Life > 0.f)
+			{
+				*Life -= DeltaSeconds;
+				if (*Life <= 0.f)
+				{
+					*Life = 0.f;
+					if (USVM::FindFunction(A, TEXT("Expired")))
+					{
+						FUE2NetMirrorWorld::CallEvent(A, TEXT("Expired"));
+					}
+					if (!A->IsPendingKill())
+					{
+						Script->DestroyActor(A);
+					}
+					return;
+				}
+			}
+		}
+		float* Rate = P.TimerRate.Ptr<float>(A);
+		float* Counter = P.TimerCounter.Ptr<float>(A);
+		if (Rate && Counter && *Rate > 0.f)
+		{
+			*Counter += DeltaSeconds;
+			if (*Counter >= *Rate)
+			{
+				const int32 Ticks = FMath::Max(1, int32(*Counter / *Rate));
+				*Counter -= *Rate * Ticks;
+				if (!P.bTimerLoop.Get<uint32>(A))
+				{
+					*Rate = 0.f;
+				}
+				FUE2NetMirrorWorld::CallEvent(A, TEXT("Timer"));
+			}
+		}
+		if (A->IsPendingKill())
+		{
+			return;
+		}
+		if (A->Class->bHasTick)
+		{
+			if (FUSFunction* F = USVM::FindFunction(A, TEXT("Tick")))
+			{
+				FUSParms Parms(F);
+				Parms.Float(DeltaSeconds);
+				Parms.Call(A);
+			}
+		}
+		USVM::ProcessState(A, DeltaSeconds);
+	}
+
+	/** Skins of mirrored mod pawns their client code set, by object (paths last applied). */
+	TMap<FUSObject*, TArray<FString>> PawnSkins;
+
+	/**
+	 * A mod pawn's client code setting its Skins to a mod's own materials (a bright skin, a mod's team skins): shown on our
+	 * pawn. Materials made at run time by script (Freon's frozen Combiners) and UT2004's own skins (the character's, which
+	 * ours already show) are left out.
+	 */
+	void SyncPawnSkins()
+	{
+		FUE2NetWorld* NW = FUE2NetWorld::Get();
+		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			FUSObject* O = KV.Key;
+			if (!NW || !KV.Value.bMirrored || !O || O->IsPendingKill() || !RTPawn() || !O->Class->IsChildOf(RTPawn()))
+			{
+				continue;
+			}
+			TArray<FString> Paths;
+			if (FUSProperty* P = O->FindProperty(TEXT("Skins")); P && P->Type == EUSType::Array && P->Inner && P->Inner->Type == EUSType::Object)
+			{
+				const FUSScriptArray& Arr = *reinterpret_cast<const FUSScriptArray*>(O->Data + P->Offset);
+				for (int32 i = 0; i < Arr.Num && Arr.Data; ++i)
+				{
+					const FUSObject* M = *reinterpret_cast<FUSObject* const*>(Arr.Data + i * P->Inner->ElementSize);
+					const FString Path = M ? M->GetPathName() : FString();
+					FString Pkg;
+					Paths.Add(Path.Split(TEXT("."), &Pkg, nullptr) && !IsStockPackage(Pkg) && !UE2NetModWeapons::IsStockClass(Path) ? Path : FString());
+				}
+			}
+			TArray<FString>& Last = PawnSkins.FindOrAdd(O);
+			if (Paths == Last)
+			{
+				continue;
+			}
+			Last = Paths;
+			const int32* Ch = ChannelOf.Find(O);
+			AUE2NetPawn* Pawn = Ch ? Cast<AUE2NetPawn>(NW->GetNativeActor(*Ch)) : nullptr;
+			if (Pawn)
+			{
+				Pawn->SetScriptSkins(UE2NetModWeapons::LoadSkins(Paths));
+			}
+		}
+		for (auto It = PawnSkins.CreateIterator(); It; ++It)
+		{
+			if (!ClientRuns.Contains(It.Key()))
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	/** The client-side actors of mod code that show something: drawn natively. */
+	void SyncClientVisuals()
+	{
+		SyncPawnSkins();
+		if (!Visuals)
+		{
+			return;
+		}
+		TArray<FUSObject*> Spawned;
+		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			if (!KV.Value.bMirrored && KV.Key && !KV.Key->IsPendingKill())
+			{
+				Spawned.Add(KV.Key);
+			}
+		}
+		Visuals->Sync(Spawned, [this](FUSObject* O) { return ComponentOf(O); });
+		for (FUSObject* Done : Visuals->TakeFinished())
+		{
+			Script->DestroyActor(Done);
+		}
+		// what client code attaches to a replicated vehicle weapon replaces our class-defaults stand-in for it
+		FUE2NetWorld* NW = FUE2NetWorld::Get();
+		for (TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			FUSObject* Base = KV.Value.bMirrored || KV.Value.bReported ? nullptr : USProps().Base.Get<FUSObject*>(KV.Key);
+			const int32* Ch = Base ? ChannelOf.Find(Base) : nullptr;
+			if (Ch && NW && Visuals->Find(KV.Key) && NW->RetireClientAttachmentStandIn(*Ch, KV.Key->Class->GetPathName()))
+			{
+				KV.Value.bReported = true;
+			}
+		}
+	}
+
+	int32 MessagesFed = 0, MessagesFailed = 0;
+
+	bool FeedMessage(int32 Channel, const FString& Function, const TArray<TPair<FName, FUE2NetValue>>& Params)
+	{
+		CheckPlayerController();
+		FUSObject* PC = GetPC();
+		FUSObject* Hud = GetHud();
+		if (!bReady || !bModHud || bHudFailed || Channel != PCChannel || !PC || !Hud)
+		{
+			return false;
+		}
+		auto Param = [&](const TCHAR* Key) -> const FUE2NetValue*
+		{
+			for (const TPair<FName, FUE2NetValue>& P : Params)
+			{
+				if (P.Key == Key)
+				{
+					return &P.Value;
+				}
+			}
+			return nullptr;
+		};
+		auto Obj = [&](const TCHAR* Key) -> FUSObject*
+		{
+			const FUE2NetValue* V = Param(Key);
+			return V ? ResolveRef(V->Obj, 0, FString()) : nullptr;
+		};
+		const uint64 Aborts = USVM::GStatAborts;
+		if (Function == TEXT("ReceiveLocalizedMessage"))
+		{
+			// PlayerController.ReceiveLocalizedMessage: Message.static.ClientReceive(Self, Switch, RelatedPRI_1, RelatedPRI_2,
+			// OptionalObject); LocalMessage.ClientReceive puts it in the HUD's LocalizedMessage list (a mod's message
+			// class may do more: sounds, its own HUD calls)
+			FUSObject* C = Obj(TEXT("Message"));
+			FUSClass* MC = C && (C->Flags & USF_Field) ? static_cast<FUSClass*>(C) : nullptr;
+			FUSObject* DO = MC ? MC->GetDefaultObject() : nullptr;
+			FUSFunction* F = DO ? USVM::FindFunction(DO, TEXT("ClientReceive")) : nullptr;
+			if (!F)
+			{
+				return false;
+			}
+			const FUE2NetValue* Switch = Param(TEXT("Switch"));
+			FUSParms P(F);
+			P.Object(PC).Int(Switch ? Switch->I : 0).Object(Obj(TEXT("RelatedPRI_1"))).Object(Obj(TEXT("RelatedPRI_2"))).Object(Obj(TEXT("OptionalObject")));
+			P.Call(DO);
+		}
+		else if (Function == TEXT("ClientMessage") || Function == TEXT("TeamMessage"))
+		{
+			// PlayerController.ClientMessage -> TeamMessage(PlayerReplicationInfo, S, Type) -> myHUD.Message(PRI, S, Type)
+			FUSFunction* F = USVM::FindFunction(Hud, TEXT("Message"));
+			const FUE2NetValue* S = Param(TEXT("S"));
+			const FUE2NetValue* Type = Param(TEXT("Type"));
+			if (!F || !S)
+			{
+				return false;
+			}
+			FUSObject* PRI = Function == TEXT("TeamMessage") ? Obj(TEXT("PRI")) : GetObj(PC, TEXT("PlayerReplicationInfo"));
+			FUSParms P(F);
+			P.Object(PRI).Str(S->S).Name(Type ? (Type->Kind == FUE2NetValue::EKind::Name ? Type->N : FName(*Type->S)) : NAME_None);
+			P.Call(Hud);
+		}
+		else
+		{
+			return false;
+		}
+		if (USVM::GStatAborts != Aborts)
+		{
+			// a script error: this one is ours (the HUD may still draw others)
+			++MessagesFailed;
+			return false;
+		}
+		++MessagesFed;
+		return true;
+	}
+
+	/** True when a mirrored actor's own client code shows an attachment of that class (Net/UE2NetModWeapons stand-in). */
+	bool HasClientAttachment(int32 Channel, const FString& ClassPath) const
+	{
+		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			FUSObject* Base = KV.Value.bMirrored ? nullptr : USProps().Base.Get<FUSObject*>(KV.Key);
+			const int32* Ch = Base ? ChannelOf.Find(Base) : nullptr;
+			if (Ch && *Ch == Channel && KV.Key->Class->GetPathName().Equals(ClassPath, ESearchCase::IgnoreCase) && Visuals && Visuals->Find(KV.Key))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	static FUSClass* RTActor() { return FUSRuntime::Get().ActorClass; }
@@ -1197,6 +1654,24 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			WriteKey(*Hit, A, Key);
 		}
+		if (ClientRuns.Contains(*Hit))
+		{
+			// UE2's replication callbacks: ClientTrigger when bClientTrigger flips, the weapon effects when FlashCount
+			// changes (ONSWeapon.FlashMuzzleFlash, WeaponAttachment.ThirdPersonEffects), PostNetReceive with bNetNotify
+			FUSObject* O = *Hit;
+			if (Changed.Contains(TEXT("bClientTrigger")))
+			{
+				CallClientEvent(O, TEXT("ClientTrigger"));
+			}
+			if (Changed.Contains(TEXT("FlashCount")))
+			{
+				CallClientEvent(O, USVM::FindFunction(O, TEXT("FlashMuzzleFlash")) ? TEXT("FlashMuzzleFlash") : TEXT("ThirdPersonEffects"));
+			}
+			if (FUSProperty* NN = O->FindProperty(TEXT("bNetNotify")); NN && NN->Type == EUSType::Bool && *reinterpret_cast<uint32*>(O->Data + NN->Offset))
+			{
+				CallClientEvent(O, TEXT("PostNetReceive"));
+			}
+		}
 		if (A.Channel == PCChannel && GRI)
 		{
 			SetObj(*Hit, TEXT("GameReplicationInfo"), GRI);
@@ -1210,6 +1685,12 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			return;
 		}
+		if (ClientRuns.Contains(O))
+		{
+			CallClientEvent(O, TEXT("Destroyed"));
+			ClientRuns.Remove(O);
+		}
+		ChannelOf.Remove(O);
 		if (O == GRI)
 		{
 			GRI = nullptr;
@@ -1233,6 +1714,7 @@ struct FUE2NetScriptHUD::FImpl
 		Script->TimerOnly.Remove(O);
 		Script->LocalActors.Remove(O);
 		Script->MarkPendingKill(O);
+		PurgeClientRuns();
 		Script->CleanupDestroyed();
 	}
 
@@ -1461,6 +1943,7 @@ struct FUE2NetScriptHUD::FImpl
 		Script->TimeSeconds = TimeSeconds;
 		Backend.Time = TimeSeconds;
 		FUSEngineProps& P = USProps();
+		SyncClientLocations();
 		TArray<FUSObject*> Actors = Script->LocalActors;
 		const int32 NumLocal = Actors.Num();
 		Actors.Append(Script->TimerOnly);
@@ -1469,6 +1952,12 @@ struct FUE2NetScriptHUD::FImpl
 			FUSObject* A = Actors[Ai];
 			if (A->IsPendingKill())
 			{
+				continue;
+			}
+			if (Ai < NumLocal && ClientRuns.Contains(A))
+			{
+				// spawned by a mod's client code: within its budget
+				RunGuarded(A, [&]() { TickActor(A, DeltaSeconds, P); });
 				continue;
 			}
 			float* Rate = P.TimerRate.Ptr<float>(A);
@@ -1502,7 +1991,15 @@ struct FUE2NetScriptHUD::FImpl
 			}
 			USVM::ProcessState(A, DeltaSeconds);
 		}
+		TickMirroredClients(DeltaSeconds);
+		if (FPlatformTime::Seconds() >= NextSummary)
+		{
+			NextSummary = FPlatformTime::Seconds() + 30.0;
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD summary: %s"), *Describe());
+		}
 		ProcessInteractions(TEXT("Process_Tick"), nullptr, DeltaSeconds);
+		SyncClientVisuals();
+		PurgeClientRuns();
 		Script->CleanupDestroyed();
 		TickSeconds += FPlatformTime::Seconds() - T0;
 	}
@@ -1672,6 +2169,7 @@ struct FUE2NetScriptHUD::FImpl
 			HudSeconds += FPlatformTime::Seconds() - T0;
 			HudTokens += USVM::GStatTokens - Tokens;
 			R.bHud = Draws > 0 && !bError;
+			R.bMessages = R.bHud && MessagesFed > 0;
 			R.bScoreboard = bWantScores && R.bHud;
 			if (HudErrors >= 5 || HudEmptyFrames >= 120 || USVM::GStatTokens - Tokens > 5000000)
 			{
@@ -1707,6 +2205,7 @@ struct FUE2NetScriptHUD::FImpl
 		}
 		USCanvas::SetBackend(nullptr);
 		Backend.Canvas = nullptr;
+		PurgeClientRuns();
 		Script->CleanupDestroyed();
 		const double Now = FPlatformTime::Seconds();
 		if (bLogFrames && Now >= NextLog)
@@ -1730,7 +2229,10 @@ struct FUE2NetScriptHUD::FImpl
 			*HudClassName, bModHud ? (bHudFailed ? TEXT(" (failed: ours)") : TEXT(" (script)")) : TEXT(" (ours)"), *ScoreboardClassName,
 			bModScoreboard ? (bScoreboardFailed ? TEXT(" (failed: ours)") : TEXT(" (script)")) : TEXT(" (ours)"), Mirrored, Skipped, Denied, MapCopies, HudFrames,
 			HudFrames ? HudSeconds * 1000.0 / HudFrames : 0.0, HudFrames ? HudTokens / uint64(HudFrames) : 0ull, ScoreFrames,
-			ScoreFrames ? ScoreSeconds * 1000.0 / ScoreFrames : 0.0, TickSeconds * 1000.0, *Backend.Describe());
+			ScoreFrames ? ScoreSeconds * 1000.0 / ScoreFrames : 0.0, TickSeconds * 1000.0, *Backend.Describe())
+			+ FString::Printf(TEXT("; messages fed to the script HUD %d (%d script errors: ours)"), MessagesFed, MessagesFailed)
+			+ FString::Printf(TEXT("; mods' client code: %s, %d replicated actors started, %d client-side actors spawned, %d stopped, %.1f ms total; visuals %s"),
+				bClientCode ? TEXT("run") : TEXT("off"), ClientStarted, ClientSpawned, ClientStopped, ClientSeconds * 1000.0, Visuals ? *Visuals->Describe() : TEXT("none"));
 	}
 };
 
@@ -1818,6 +2320,16 @@ FString FUE2NetScriptHUD::Describe() const
 	return Impl->Describe();
 }
 
+bool FUE2NetScriptHUD::HasClientAttachment(int32 Channel, const FString& ClassPath) const
+{
+	return Impl->HasClientAttachment(Channel, ClassPath);
+}
+
+bool FUE2NetScriptHUD::FeedMessage(int32 Channel, const FString& Function, const TArray<TPair<FName, FUE2NetValue>>& Params)
+{
+	return Impl->FeedMessage(Channel, Function, Params);
+}
+
 #else // OPENUT2K4_USCRIPT_ENABLED
 
 struct FUE2NetScriptHUD::FImpl {};
@@ -1831,5 +2343,7 @@ void FUE2NetScriptHUD::FunctionCall(const FUE2NetActor&, FUSFunction*, const TAr
 void FUE2NetScriptHUD::Tick(float) {}
 FUE2NetScriptHUD::FDrawResult FUE2NetScriptHUD::Draw(AHUD*, UCanvas*, bool) { return FDrawResult(); }
 FString FUE2NetScriptHUD::Describe() const { return FString(); }
+bool FUE2NetScriptHUD::HasClientAttachment(int32, const FString&) const { return false; }
+bool FUE2NetScriptHUD::FeedMessage(int32, const FString&, const TArray<TPair<FName, FUE2NetValue>>&) { return false; }
 
 #endif // OPENUT2K4_USCRIPT_ENABLED

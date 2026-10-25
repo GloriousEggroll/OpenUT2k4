@@ -136,6 +136,11 @@ bool UE2NetModContent::EnsureConverted(const FString& ObjectPath, const FString&
 	return !Result.IsEmpty();
 }
 
+FString UE2NetModContent::PackageFile(const FString& Package)
+{
+	return UE2NetModContentLocal::PackageFile(Package);
+}
+
 USoundBase* UE2NetModContent::LoadSound(const FString& ObjectPath)
 {
 	if (ObjectPath.IsEmpty() || !EnsureConverted(ObjectPath, TEXT("Sound")))

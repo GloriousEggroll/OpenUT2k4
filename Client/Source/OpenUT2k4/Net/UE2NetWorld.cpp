@@ -44,6 +44,7 @@
 #include "UE2NetLog.h"
 #include "UE2NetModContent.h"
 #include "UE2NetPlay.h"
+#include "UE2NetScriptHUD.h"
 
 namespace UE2NetWorldLocal
 {
@@ -1477,6 +1478,55 @@ void FUE2NetWorld::ApplyPickup(FEntity& E, const FUE2NetActor& A, const TArray<F
 	}
 }
 
+bool FUE2NetWorld::RetireClientAttachmentStandIn(int32 Channel, const FString& ClassPath)
+{
+	const FEntity* E = Channel ? Entities.Find(Channel) : nullptr;
+	AUE2NetVehicle* V = E && E->Kind == EKind::VehicleWeapon ? Cast<AUE2NetVehicle>(E->Native.Get()) : nullptr;
+	if (!V)
+	{
+		return false;
+	}
+	if (V->RemoveWeaponAttachment(Channel, ClassPath))
+	{
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: %s on %s is shown by the mod's client code: the class-defaults stand-in goes"), *ClassPath, *E->ClassName);
+	}
+	return true;
+}
+
+USceneComponent* FUE2NetWorld::GetChannelComponent(int32 Channel) const
+{
+	const FEntity* E = Channel ? Entities.Find(Channel) : nullptr;
+	if (E && E->Kind == EKind::Attachment)
+	{
+		// a weapon attachment: the third-person weapon of its pawn (ours: our pawn's)
+		const FEntity* PE = E->PawnChannel ? Entities.Find(E->PawnChannel) : nullptr;
+		AArenaCharacter* Pawn = PE ? Cast<AArenaCharacter>(PE->Native.Get()) : nullptr;
+		if (const FUE2NetPlay* Play = FUE2NetPlay::Get(); !Pawn && Play && Play->IsOwnPawnChannel(E->PawnChannel))
+		{
+			Pawn = Cast<AArenaCharacter>(Play->GetLocalPawn());
+		}
+		return Pawn ? (Pawn->GetThirdPersonWeapon() ? static_cast<USceneComponent*>(Pawn->GetThirdPersonWeapon()) : Pawn->GetMesh()) : nullptr;
+	}
+	AActor* A = E ? E->Native.Get() : nullptr;
+	if (!A)
+	{
+		return nullptr;
+	}
+	if (AUE2NetVehicle* V = Cast<AUE2NetVehicle>(A))
+	{
+		if (E->Kind == EKind::VehicleWeapon)
+		{
+			return V->GetWeaponComponent(Channel);
+		}
+		return V->GetBodyComponent();
+	}
+	if (ACharacter* C = Cast<ACharacter>(A))
+	{
+		return C->GetMesh();
+	}
+	return A->GetRootComponent();
+}
+
 void FUE2NetWorld::ApplyDecoration(FEntity& E, const FUE2NetActor& A, const TArray<FString>& Changed, bool bInitial)
 {
 	using namespace UE2NetWorldLocal;
@@ -2229,7 +2279,13 @@ void FUE2NetWorld::ApplyVehicleWeapon(FEntity& E, const FUE2NetActor& A, const T
 		UE2NetModContent::EnsureConverted(MeshObj, TEXT("SkeletalMesh"));
 		V->SetWeapon(A.Channel, MeshPath, NameOf(TEXT("AttachmentBone")), NameOf(TEXT("YawBone")), NameOf(TEXT("PitchBone")), NameOf(TEXT("WeaponFireAttachmentBone")),
 			GetFloat(A, TEXT("WeaponFireOffset")), UE2NetModWeapons::FindLook(E.ClassPath));
-		V->SetWeaponAttachments(A.Channel, UE2NetModWeapons::FindClientAttachments(E.ClassPath));
+		// (the attachments the mod's own client code already shows are left to it: Net/UE2NetScriptHUD)
+		TArray<UE2NetModWeapons::FClientAttachment> StandIns = UE2NetModWeapons::FindClientAttachments(E.ClassPath);
+		if (const FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get())
+		{
+			StandIns.RemoveAll([&](const UE2NetModWeapons::FClientAttachment& At) { return SH->HasClientAttachment(A.Channel, At.UE2Class); });
+		}
+		V->SetWeaponAttachments(A.Channel, StandIns);
 		// ONSWeapon turning limits (UE2 rotation units): PitchUpLimit / PitchDownLimit, YawStartConstraint ..
 		// YawEndConstraint when bLimitYaw
 		auto Deg = [](float Units) { return FRotator::NormalizeAxis(Units * 360.f / 65536.f); };
@@ -2763,6 +2819,11 @@ void FUE2NetWorld::FunctionCall(const FUE2NetActor& A, FUSFunction* Function, co
 		UE_LOG(LogUE2Net, Warning, TEXT("UE2NetWorld: no local player controller for %s (world %s, first PC %s)"), *Name, W ? *W->GetName() : TEXT("none"),
 			W && W->GetFirstPlayerController() ? *W->GetFirstPlayerController()->GetClass()->GetName() : TEXT("none"));
 	}
+	// the server's script HUD shows its messages itself (ours then only plays their sounds): Net/UE2NetScriptHUD.h
+	const bool bMessage = Name == TEXT("ReceiveLocalizedMessage") || Name == TEXT("ClientMessage") || Name == TEXT("TeamMessage");
+	FUE2NetScriptHUD* ScriptHud = bMessage ? FUE2NetScriptHUD::Get() : nullptr;
+	TGuardValue<int32> Hold(AArenaPlayerController::MessageDisplayHold,
+		AArenaPlayerController::MessageDisplayHold + (ScriptHud && ScriptHud->FeedMessage(A.Channel, Name, Params) ? 1 : 0));
 	if (Name == TEXT("ReceiveLocalizedMessage"))
 	{
 		ReceiveLocalizedMessage(Params);
