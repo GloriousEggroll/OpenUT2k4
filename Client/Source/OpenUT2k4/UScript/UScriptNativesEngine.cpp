@@ -441,6 +441,12 @@ namespace USEngineNatives
 		USP_GET_STR(Cmd);
 		USP_GET_UBOOL_OPTX(bLog, false);
 		USP_FINISH;
+		FString Out;
+		if (FUSRuntime::Get().ConsoleCommandHook && FUSRuntime::Get().ConsoleCommandHook(Self, Cmd, Out))
+		{
+			US_RESULT(FString) = Out;
+			return;
+		}
 		UE_LOG(LogUScript, Log, TEXT("%s: ConsoleCommand \"%s\" (ignored)"), *Stack.Describe(), *Cmd);
 		US_RESULT(FString) = FString();
 	}
@@ -706,6 +712,7 @@ void USNatives::RegisterEngine()
 {
 	USRegisterBridgeOverrides();
 	RegisterCanvas();
+	RegisterGUI();
 	using namespace USEngineNatives;
 	static const FUSNativeEntry Entries[] = {
 		{ TEXT("Actor"), TEXT("Spawn"), &Spawn }, { TEXT("Actor"), TEXT("Destroy"), &Destroy }, { TEXT("Actor"), TEXT("Error"), &ActorError },

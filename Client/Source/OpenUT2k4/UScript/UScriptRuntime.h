@@ -150,6 +150,15 @@ public:
 	void SaveConfig(FUSClass* Class, const uint8* Data);
 	/** Our per-user ini (where SaveConfig writes). */
 	static FString UserConfigFile();
+	/** One value of our per-user ini (a mod's key bind ...): set, or removed when Value is empty. */
+	void SetUserConfigValue(const FString& Section, const FString& Key, const FString& Value);
+	/** Every key of a section of our per-user ini (lower case keys). */
+	TMap<FString, FString> GetUserConfigSection(const FString& Section);
+	/**
+	 * Set by the game (Net/UE2NetScriptHUD): PlayerController / Actor.ConsoleCommand of script (a mod's "set input F5
+	 * MyMenu", "mutate ...", a menu's "get <class> <property>"). True when handled (Out: the command's result text).
+	 */
+	TFunction<bool(FUSObject*, const FString&, FString&)> ConsoleCommandHook;
 	/** Localized string from System/<Package>.int. */
 	bool GetLocalized(const FString& Package, const FString& Section, const FString& Key, FString& OutValue);
 
@@ -158,6 +167,7 @@ private:
 	void CreateIntrinsics();
 	struct FIniFile { TMap<FString, TMap<FString, TArray<FString>>> Sections; bool bLoaded = false; };
 	FIniFile* LoadIni(const FString& Path);
+	void WriteUserConfig(FIniFile* F);
 
 	FString GameDir;
 	TArray<FString> ExtraFolders;

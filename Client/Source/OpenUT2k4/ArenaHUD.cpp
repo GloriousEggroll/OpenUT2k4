@@ -19,6 +19,7 @@
 #include "ArenaHudFonts.h"
 #include "ArenaLocalMessages.h"
 #include "ArenaMidGameMenu.h"
+#include "Net/UE2NetModMenus.h"
 #include "Net/UE2NetJoin.h"
 
 #include "Engine/Canvas.h"
@@ -627,6 +628,8 @@ void AArenaHUD::DrawHUD()
 		{
 			DrawPauseMenu();
 		}
+		// a UT2004 server mod's own menu (its GUI2K4 pages run as script: Net/UE2NetModMenus.h) over everything
+		UE2NetModMenus::DrawAndUpdate(this, Canvas);
 		return;
 	}
 
@@ -681,6 +684,7 @@ void AArenaHUD::DrawHUD()
 	{
 		DrawPauseMenu();
 	}
+	UE2NetModMenus::DrawAndUpdate(this, Canvas);
 }
 
 // =============================================================================================

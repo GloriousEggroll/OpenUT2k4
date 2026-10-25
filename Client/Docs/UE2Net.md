@@ -34,6 +34,7 @@ Package downloads (custom maps and mod packages: HTTP redirect, file channel, ne
 | `Net/UE2NetModClient.h/.cpp` | Client-side parts of common mods: UTPlus and UTComp hit sounds, UTComp ready-up and warmup |
 | `Net/UE2NetModContent.h/.cpp` | On-demand conversion of single resources (sounds, textures, materials, fonts) from mod packages into the content cache |
 | `Net/UE2NetScriptHUD.h/.cpp` | A modded server's own HUD and scoreboard classes run by the script VM: the client-side script mirror of the replicated actors, `ClientSetHUD`, the canvas backend (see "Mod HUDs and scoreboards") |
+| `Net/UE2NetModMenus.h/.cpp` | Mods' in-game menus on our side: drawing over the HUD, the input pre-processor (mouse, keys, typed characters as UE2 `EInputKey` / `KeyType`), mod key binds (`set input F5 MyMenu`, `ModBind`), test hooks (see "Mod menus") |
 | `Net/UE2NetPlay.h/.cpp` | Step 4, `FUE2NetPlay`: playing. Our pawn (`AUE2NetLocalPawn`, an `AArenaCharacter` with the UE2 movement), saved moves, `ServerMove` / `DualServerMove` / `ShortServerMove`, corrections and replay, firing, weapons, respawn, owner-only HUD values, chat / team / ready / combo commands, the spectator's `ServerMove`; the `-UE2NetPlayScript` test hook |
 | `Net/UE2NetBits.h/.cpp` | Bit reader / writer in the UE2 layout |
 | `Net/UE2NetCDKey.h/.cpp` | login identity: AUTH hash, GM, stats password, CD key challenge response |
@@ -863,6 +864,7 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
 - **Saved settings**: `SaveConfig` / `StaticSaveConfig` write the object's config values to OpenUT2k4's own per-user
   ini (`<Saved>/UE2Config/User.ini`, UT2004's section names), which config reads look at before the player's UT2004 ini
   files; the UT2004 install is never written.
+- **Menus**: see "Mod menus" below.
 - **Mod pawns' skins**: a mod pawn's client code setting `Skins` to a mod's own materials (bright skins, a mod's team
   skins) is shown on our pawn (UT2004's own skins and run-time materials are left out).
 - **Weapons**: for the local player's mod weapons (they play as our stand-in), the fire modes' `FlashEmitterClass`
@@ -889,6 +891,89 @@ Results (local 3369.3 servers, client at 1280x720):
 Compared with the OldUnreal 3374 client on the same TAM server (screenshots of the other test round): HUD layout,
 widget sizes, scoreboard layout, fonts, date line and team scores match; texts the mods show as local messages ("You
 are in warmup, press F5 ...") are ours (the warmup line).
+
+### Mod menus
+
+A mod's in-game menus (UTComp's settings menu, WSUTComp's, a mod's voting or configuration pages: GUI2K4 / XInterface
+`GUIPage` classes) run as the mod's own UnrealScript. In UE2 the menu system is half script, half C++: the script half
+runs in the VM unchanged (`GUIController.OpenMenu` / `ReplaceMenu` / `CloseMenu` / `CreateMenu`, the styles registry,
+focus, every widget's `InitComponent`, value and key handling, the mod's pages and delegates); the C++ half is ours
+(`UScript/UScriptGUI.h/.cpp`, `Net/UE2NetModMenus.h/.cpp`):
+
+- **Controller**: the mirror's viewport gets a `GUI2K4.UT2K4GUIController` (UT2004.ini's `GUIController`) as
+  `Player.GUIController`, with its 60 styles (`STY2*`) and 11 fonts; `PlayerController.ClientOpenMenu` /
+  `ClientReplaceMenu` / `ClientCloseMenu` (from the server, or the mod's own exec function: UTComp's `MyMenu`) open
+  pages through it. `GetMainMenuClass` is empty and `MainNotWanted` set: closing the last page never opens UT2004's
+  main menu. xVoting's pages stay ours (`UE2NetMapVote`, the mid-game menu's Map Voting tab): xVoting's
+  `VotingReplicationInfo` is answered natively and none of its script runs, so the runner does not take it over; a
+  script map vote of another mod (UT2Vote, UTComp's voting pages) runs like any other page.
+- **Instancing**: GUI classes are `instanced` in UE2: an object made with `new` gets its own copies of the component
+  subobjects (`Begin Object` in defaultproperties, loaded from the template exports), recursively, with delegates bound to
+  the copy or to the object that owns it. Delegate defaults are read from packages now (`__OnClick__Delegate`, the class
+  or a subobject as object); `FUSWorld::ConstructObject` binds the ones naming the class to the instance.
+- **Natives**: `GUIComponent` (`ActualLeft / Top / Width / Height`, `Relative*`, `SetTimer` / `KillTimer`,
+  `PlayerOwner`, `AutoPosition` / `AutoPositionOn`, `UpdateOffset`, `GetMenuPath`, `SpecialHit`), `GUIMultiComponent`
+  (`InitializeControls`: the `automated` components, single, static arrays and dynamic arrays, in RenderWeight order;
+  `RemapComponents`; `FindComponentIndex`), `GUIController` (`GetStyle` with AlternateKeyName, `GetMenuFont`,
+  `GetCurrentRes`; the designer, profiles, demo and OGG lists are stubs), `GUIStyles` (`Draw`, `DrawText`, `TextSize`
+  with their `OnDraw` / `OnDrawText` delegates), `GUIList.SortList`, `GUIMultiColumnList` (sort data, `GetListIndex`),
+  `GUIToolTip.SetTip` (kept, not shown), `GUIFont.GetFont` (one font per resolution: 640 / 800 / 1024 / 1280 / more).
+- **Positions**: values in (-2, 2) are relative (to the owner with `bScaleToParent`, else the screen) unless
+  `bNeverScale`; `bBoundToParent` adds the owner's position; `ScalingType` / `BoundingType` per axis. `ClientBounds` are
+  the bounds less the style's `BorderOffsets`. The screen is the whole canvas (UE2 stretched its 4:3 menus too).
+- **Layout UE2 did in C++** (each frame, before drawing): menu options (caption and control by `CaptionWidth`,
+  `ComponentWidth`, `bSquare`, `bFlipped`, `ComponentJustification`, `bVerticalLayout`), combo boxes (edit, button, the
+  list below or above), list boxes (list, scroll bar when needed, multi-column header), scroll bars (buttons, zone, grip
+  from `GripPos` / items per page), numeric edits (edit and spinner), tab controls (buttons in rows as wide as their
+  captions, `bFillSpace`, docked panels, a pending tab made active), lists (`ItemHeight`, `ItemsPerPage`), scroll text
+  (word wrap into `StringElements`), the slider's knob width.
+- **Drawing** (the canvas backend of the mod HUDs): page backgrounds and the darkening under a popup page, labels
+  (style or font, colours, shadow, multi-line), images (all `ISTY_` styles, sub-images, drop shadows), buttons, graphic
+  and check box buttons (`CheckedOverlay`), edit boxes (masked text, caret, selection, scrolling), sliders (bar, fill,
+  knob, caption), lists (rows, selection, sections, hot tracking, `OnDrawItem`), multi-column lists and headers, scroll
+  text (teletype), tab buttons, section backgrounds, scroll zones; the `OnPreDraw` / `OnDraw` / `OnRender` /
+  `OnRendered` delegates around each component; an open combo list drawn over the page; UT2004's mouse cursor.
+- **Input** (`Net/UE2NetModMenus`): while a page is open, an input pre-processor gives it the mouse buttons, the wheel and
+  the keys as UE2 `EInputKey` / `EInputAction` and typed characters as `KeyType`; the console key stays ours; the
+  cursor position comes from our controller each frame; our pawn's fire is released. Routing as UE2's controller:
+  hover (`MSAT_Watched`), press (focus, `MSAT_Pressed`, `OnMousePressed`), release (`OnMouseRelease`, `OnClick` /
+  `OnDblClick`, `bRequireReleaseClick`, `bIgnoreNextRelease`), held repeat buttons, captured moves
+  (`OnCapturedMouseMove`: sliders), right click, clicks on the page background (`OnInvalidate`: open combo lists
+  close), `OnKeyEvent` / `OnKeyType` up the focus chain, Tab / Up / Down move the focus, Escape closes the top page.
+  A multi-component taking input (UTComp's empty tab control over its button row) is hit only where none of its or its
+  siblings' parts is.
+- **Opening a menu**: the mod's own way (UTComp: `mymenu`, F5 once bound). A console command we do not know runs an
+  exec function of a mod's class (`mymenu` in the console); `ModBind <key> <command>` binds a key (`ModBind F5 mymenu`),
+  and a mod's own `ConsoleCommand("set input F5 MyMenu")` does the same. The binds are kept in our per-user ini
+  (`[OpenUT2k4.ModBinds]`) and run only while playing on a UT2004 server, not while typing or in our menus.
+- **ConsoleCommand from script** (menus and mods): `set input`, `set` / `get <class> <property>` (class defaults),
+  `mutate`, `say` / `teamsay`, `getcurrentres`; another command runs a mod exec function of that name, if any.
+- **The controller's info actors**: a controller property typed as a mod's `ReplicationInfo` subclass that is still
+  None (UTComp's `UTCompPRI`, which its client finds in `PlayerTick`; our mirror does not tick the controller) gets the
+  mirrored actor of that class linked from our PRI (`CustomReplicationInfo` chain), owned by us, or the only one.
+- Settings: what the pages save (`SaveConfig`) goes to our per-user ini (see "Mods' client code"), as before.
+- Not done: tool tips (text kept, not shown), context menus, drag and drop between lists, animations (`Animate` /
+  `Resize`), interface sounds, the 3D previews of the pages (`SpinnyWeap` actors: UTComp's skin / model preview),
+  `GUIController.GetMapList` / `GetWeaponList` (empty), a button for the mods' menus in our own mid-game menu.
+- Off with `-UE2ScriptMenus=0`. Test hooks (development builds): `ModMenuOpen <class>`, `ModMenuDump` (the top page's
+  components with captions, values, states and bounds), `ModMenuClick <name or caption>`, `ModMenuKey <EInputKey>`,
+  `ModMenuType <text>`, `ModMenuClose`, `ModDisasm <class> <function>`, `ModRef <hex>`, `ModPCProp <property>`;
+  `-UE2NetPlayScript` takes `exec=<command>` steps (`+` for spaces).
+
+Results (local 3369.3 server, DM-Rankin, utcompv17a, 1 bot, client at 1024x768):
+
+- `mymenu` (console, script step and F5 after `ModBind F5 mymenu`, pressed through the X server) opens
+  `UTComp_Menu_OpenedMenu`: logo, server settings, Ready / Not Ready, the eight page buttons; every page opens
+  (Skins/Models, Colored Names, Team Overlay, Crosshairs, Hitsounds, Voting, Auto Demo/SS, Misc).
+- Real mouse and keyboard (xdotool on the test's own Xvfb display): clicking Misc, then the "Use UTComp enhanced
+  scoreboard" check box, unchecks it; `UTComp_Settings.bUseDefaultScoreboard=True` is written to
+  `<Saved>/UE2Config/User.ini`, and the scoreboard shown after it is UTComp's default style one instead of its enhanced
+  one (screenshots before / after). A Team Overlay slider dragged from 0.003 to 0.41; a combo box list opened and an
+  item picked; "Automatically record a demo" checked, which enables the demo mask box; typing `-x9X` at its end (End,
+  characters, Shift) saved `demorecordingmask=%d-(%t)-%m-%p-x9X`. Escape closes the page.
+- WSUTComp_V30 on DM: its OpenedMenu and Extra, HUD, Team Overlay, Skins/Models and Misc pages open and draw with its
+  own styles.
+- Cost: the GUI controller is made in about 18 ms when joining.
 
 ### Downloads
 
@@ -1481,12 +1566,9 @@ Open problems:
 - ClientValidate response not seen live (no server asked); its format is read from the 3374 client. The 3369
   server triggers it natively (`PlayerController.ClientValidate` is a native event); no local server setting that
   sends it was found, so it is still untested.
-- Mod HUDs, scoreboards, their message lists and mods' client code run in the script VM ("Mod HUDs and scoreboards",
-  "Mods' client code"). Not done: mods' in-game menus (UTComp's settings menu: UE2's GUI is native C++ in the original
-  engine, so a script GUI runner needs GUIController's and GUIComponent's natives (positioning, timers, focus) and the
-  native drawing and input of every widget class (labels, images, buttons, edit and list boxes, sliders, combo boxes,
-  tab panels) and of the styles; not started beyond what it needs around it: `Mutate`, `ModExec`, settings saved to
-  our own ini), their client mutators' `Tick`, interactions other than the ones a controller property holds,
+- Mod HUDs, scoreboards, their message lists, mods' client code and mods' menus run in the script VM ("Mod HUDs and
+  scoreboards", "Mods' client code", "Mod menus"; what the menus leave out is listed there). Not done: their client
+  mutators' `Tick`, interactions other than the ones a controller property holds,
   `Canvas.DrawActor` overlays (a script weapon's own first-person drawing, sniper zoom in script: ours draws the view
   model), other structs than vectors and rotators in calls to the server. The script weapons, the stand-ins' fire timing
   and the emitter changes are not tested yet. Player characters that exist only in a server's packages: UE2 finds a character

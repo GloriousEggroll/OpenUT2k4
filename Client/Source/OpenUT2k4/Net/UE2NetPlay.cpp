@@ -3341,6 +3341,13 @@ void FUE2NetPlay::TickScript(double Now)
 		{
 			LogSummary();
 		}
+#if !UE_BUILD_SHIPPING
+		else if (Key == TEXT("exec") && PC)
+		{
+			// a console command (test runs: ModExec, ModMenuClick ...)
+			PC->ConsoleCommand(Value.Replace(TEXT("+"), TEXT(" ")));
+		}
+#endif
 	}
 }
 

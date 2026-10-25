@@ -36,6 +36,8 @@ public:
 	virtual void GetCamera(FUSVector& OutLocation, FUSRotator& OutRotation) = 0;
 	/** A 1 pixel line. */
 	virtual void DrawLine(float X1, float Y1, float X2, float Y2, const FColor& Color) = 0;
+	/** A solid rectangle (menus: label backgrounds, the edit box caret, the darkening under a popup page). */
+	virtual void DrawRect(float X, float Y, float W, float H, const FColor& Color) {}
 };
 
 namespace USCanvas

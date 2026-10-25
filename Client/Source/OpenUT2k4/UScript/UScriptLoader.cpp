@@ -874,6 +874,16 @@ namespace
 			case EUSType::Object: case EUSType::Class: *reinterpret_cast<FUSObject**>(Addr) = L->IndexToObject(R.Index()); return true;
 			case EUSType::Str: *reinterpret_cast<FString*>(Addr) = R.FString_(); return true;
 			case EUSType::Struct: return ReadStruct(P->Struct, Addr, -1);
+			case EUSType::Delegate:
+			{
+				// UE2 UDelegateProperty: the object (in class defaults the class itself, in a subobject the subobject or
+				// its owner's class; FUSWorld::ConstructObject and USGUI::InstanceSubobjects bind those to the instance)
+				// and the function name
+				FUSDelegate* D = reinterpret_cast<FUSDelegate*>(Addr);
+				D->Object = L->IndexToObject(R.Index());
+				D->FunctionName = L->NameAt(R.Index());
+				return true;
+			}
 			default: return false;
 			}
 		}
@@ -1015,7 +1025,6 @@ namespace
 						{
 						case EUSType::Struct: bOk = SubReader.ReadStruct(P->Struct, Addr, Size); break;
 						case EUSType::Array: bOk = SubReader.ReadArray(P, Addr, ValueEnd); break;
-						case EUSType::Delegate: break;
 						case EUSType::Bool: if (Size == 4) { Sub.Raw(Addr, 4); } break;
 						default: bOk = SubReader.ReadItemBinary(P, Addr); break;
 						}
@@ -2022,6 +2031,50 @@ void FUSRuntime::SaveConfig(FUSClass* Class, const uint8* Data)
 			}
 		}
 	}
+	WriteUserConfig(F);
+}
+
+void FUSRuntime::SetUserConfigValue(const FString& Section, const FString& Key, const FString& Value)
+{
+	FIniFile* F = LoadIni(UserConfigFile());
+	if (!F)
+	{
+		F = &IniFiles.FindOrAdd(UserConfigFile());
+		F->bLoaded = true;
+	}
+	TMap<FString, TArray<FString>>& S = F->Sections.FindOrAdd(Section.ToLower());
+	if (Value.IsEmpty())
+	{
+		S.Remove(Key.ToLower());
+	}
+	else
+	{
+		S.FindOrAdd(Key.ToLower()) = { Value };
+	}
+	WriteUserConfig(F);
+}
+
+TMap<FString, FString> FUSRuntime::GetUserConfigSection(const FString& Section)
+{
+	TMap<FString, FString> Out;
+	if (FIniFile* F = LoadIni(UserConfigFile()))
+	{
+		if (const TMap<FString, TArray<FString>>* S = F->Sections.Find(Section.ToLower()))
+		{
+			for (const TPair<FString, TArray<FString>>& KV : *S)
+			{
+				if (KV.Value.Num())
+				{
+					Out.Add(KV.Key, KV.Value.Last());
+				}
+			}
+		}
+	}
+	return Out;
+}
+
+void FUSRuntime::WriteUserConfig(FIniFile* F)
+{
 	// written whole (section and key names as kept: lower case, which UE2 reads case-insensitively too)
 	FString Out;
 	for (const TPair<FString, TMap<FString, TArray<FString>>>& Sec : F->Sections)

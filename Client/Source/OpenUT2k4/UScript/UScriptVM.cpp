@@ -10,6 +10,7 @@ namespace USVM
 	FUSProperty* GProperty = nullptr;
 	uint8* GPropAddr = nullptr;
 	bool GAbort = false;
+	void (*GOnNewObject)(FUSObject*) = nullptr;
 	FUSNativeFunc GNatives[4096] = {};
 	uint64 GStatCalls = 0;
 	uint64 GStatTokens = 0;
@@ -529,7 +530,7 @@ namespace USExec
 		const FName DefaultName = Stack.ReadName();
 		FUSDelegate* D = (P && Self && Self->Data && P->Offset + int32(sizeof(FUSDelegate)) <= Self->Class->PropertiesSize)
 			? reinterpret_cast<FUSDelegate*>(Self->Data + P->Offset) : nullptr;
-		if (D && LiveObject(D->Object) && D->FunctionName != NAME_None)
+		if (D && LiveObject(D->Object) && D->Object->Data && !(D->Object->Flags & (USF_Field | USF_Placeholder)) && D->FunctionName != NAME_None)
 		{
 			if (FUSFunction* F = FindFunction(D->Object, D->FunctionName))
 			{
@@ -711,11 +712,15 @@ namespace USExec
 		}
 		FUSWorld* W = (Self && Self->World) ? Self->World : &FUSWorld::Transient();
 		FUSObject* Obj = W->ConstructObject(Cls, Outer ? Outer : Self, NameStr.IsEmpty() ? NAME_None : FName(*NameStr));
+		if (Obj && USVM::GOnNewObject)
+		{
+			USVM::GOnNewObject(Obj);
+		}
 		if (Result)
 		{
 			*static_cast<FUSObject**>(Result) = Obj;
 		}
-		if (FUSFunction* Created = FindFunction(Obj, TEXT("Created")))
+		if (FUSFunction* Created = Obj ? FindFunction(Obj, TEXT("Created")) : nullptr)
 		{
 			ProcessEvent(Obj, Created, nullptr);
 		}

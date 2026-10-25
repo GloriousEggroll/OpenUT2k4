@@ -146,6 +146,8 @@ public:
 
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
+	/** Console commands we do not know go to a UT2004 server mod's exec functions (UTComp's "mymenu"): Net/UE2NetModMenus.h. */
+	virtual bool ProcessConsoleExec(const TCHAR* Cmd, FOutputDevice& Ar, UObject* Executor) override;
 	virtual void BeginPlay() override;
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnUnPossess() override;

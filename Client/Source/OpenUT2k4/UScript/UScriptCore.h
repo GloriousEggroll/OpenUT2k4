@@ -477,6 +477,8 @@ namespace USVM
 	extern uint8* GPropAddr;
 	/** Set when the current top-level call must unwind (runaway loop, fatal script error). */
 	extern bool GAbort;
+	/** Called for every object script makes with `new` (UScriptGUI: UE2's instanced GUI subobjects). */
+	extern void (*GOnNewObject)(FUSObject*);
 
 	/** Token/native dispatch table. */
 	extern FUSNativeFunc GNatives[4096];
@@ -662,4 +664,6 @@ namespace USNatives
 	void RegisterEngine();
 	/** Canvas, HUD widget and material natives (UScriptNativesCanvas.cpp, UScriptCanvas.h). */
 	void RegisterCanvas();
+	/** The natives of UE2's menu classes (UScriptGUI.cpp, UScriptGUI.h). */
+	void RegisterGUI();
 }

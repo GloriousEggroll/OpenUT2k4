@@ -59,6 +59,27 @@ FUSObject* FUSWorld::ConstructObject(FUSClass* Class, FUSObject* Outer, FName Na
 		{
 			P->CopyComplete(O->Data + P->Offset, Class->Defaults.GetData() + P->Offset);
 		}
+		// a delegate of the class defaults ("OnClick=GUIButton.InternalOnClick") names the class: UE2 calls it on the instance
+		static FUSClass* ClassClass = FUSRuntime::Get().GetIntrinsicClass(TEXT("Class"));
+		for (FUSProperty* P : Class->RefProps)
+		{
+			if (P->Type != EUSType::Delegate)
+			{
+				continue;
+			}
+			for (int32 i = 0; i < P->ArrayDim; ++i)
+			{
+				FUSDelegate& D = *reinterpret_cast<FUSDelegate*>(O->Data + P->Offset + i * P->ElementSize);
+				if (D.FunctionName == NAME_None)
+				{
+					D.Object = nullptr;
+				}
+				else if (!D.Object || (D.Object->Class == ClassClass && Class->IsChildOf(static_cast<FUSClass*>(D.Object))))
+				{
+					D.Object = O;
+				}
+			}
+		}
 	}
 	O->StateFrame = new FUSStateFrame();
 	O->StateFrame->StateNode = Class;

@@ -10,6 +10,7 @@
 #include "../UScript/UScriptBridge.h"
 #include "../UScript/UScriptCanvas.h"
 #include "../UScript/UScriptCore.h"
+#include "../UScript/UScriptGUI.h"
 #include "../UScript/UScriptRuntime.h"
 #include "../UScript/UScriptWorld.h"
 #include "../UScript/UScriptPresentation.h"
@@ -518,6 +519,16 @@ public:
 		}
 	}
 
+	virtual void DrawRect(float X, float Y, float W, float H, const FColor& Color) override
+	{
+		if (Canvas && W > 0.f && H > 0.f && Color.A > 0)
+		{
+			FCanvasTileItem Item(FVector2D(X, Y), FVector2D(W, H), FLinearColor(Color));
+			Item.BlendMode = SE_BLEND_Translucent;
+			Canvas->DrawItem(Item);
+		}
+	}
+
 	/** UE2 size of a texture or material placeholder (fills Texture.USize / VSize when script reads them). */
 	void InitPlaceholder(FUSObject* Obj)
 	{
@@ -824,6 +835,14 @@ struct FUE2NetScriptHUD::FImpl
 	double NextSummary = FPlatformTime::Seconds() + 30.0;
 	double ClientSeconds = 0.0;
 
+	// ---- mods' menus (UScript/UScriptGUI.h; Docs/UE2Net.md "Mod menus") ----
+	/** -UE2ScriptMenus=0: Player.GUIController stays None (mods' menus do not open). */
+	bool bMenus = true;
+	TUniquePtr<FUSGUI> Gui;
+	/** Keys a mod's code bound for itself (UTComp: "set input F5 MyMenu"): key name (lower case) -> console command. */
+	TMap<FString, FString> ModBinds;
+	static constexpr const TCHAR* ModBindsSection = TEXT("OpenUT2k4.ModBinds");
+
 	FImpl(FUE2NetConnection& InConnection, UWorld* InWorld) : Connection(InConnection), World(InWorld)
 	{
 		FString M;
@@ -832,6 +851,13 @@ struct FUE2NetScriptHUD::FImpl
 			Mode = M.Equals(TEXT("all"), ESearchCase::IgnoreCase) ? 2 : (M == TEXT("0") || M.Equals(TEXT("off"), ESearchCase::IgnoreCase) ? 0 : 1);
 		}
 		bLogFrames = FParse::Param(FCommandLine::Get(), TEXT("UE2ScriptHUDLog"));
+		{
+			FString Menus;
+			if (FParse::Value(FCommandLine::Get(), TEXT("UE2ScriptMenus="), Menus))
+			{
+				bMenus = !(Menus == TEXT("0") || Menus.Equals(TEXT("off"), ESearchCase::IgnoreCase));
+			}
+		}
 		if (Mode == 0 || !ArenaUScript::EnsureRuntime())
 		{
 			return;
@@ -919,6 +945,8 @@ struct FUE2NetScriptHUD::FImpl
 		Script->RemoteFilter = [this](FUSObject* A, FUSFunction* F) { return IsServerCall(A, F); };
 		Script->RemoteSend = [this](FUSObject* A, FUSFunction* F, uint8* Parms) { SendServerCall(A, F, Parms); };
 		RT.PlaceholderInit = [this](FUSObject* Obj) { Backend.InitPlaceholder(Obj); };
+		RT.ConsoleCommandHook = [this](FUSObject* Self, const FString& Cmd, FString& Out) { return ScriptConsoleCommand(Self, Cmd, Out); };
+		ModBinds = RT.GetUserConfigSection(ModBindsSection);
 		RT.ContentObjectExists = [](const FString& Path, const FString& ClassName)
 		{
 			const TCHAR* Kind = ClassName == TEXT("Font") ? TEXT("fonts") : (ClassName == TEXT("Sound") ? TEXT("sounds") : nullptr);
@@ -956,6 +984,8 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			FUSRuntime::Get().PlaceholderInit = nullptr;
 			FUSRuntime::Get().ContentObjectExists = nullptr;
+			FUSRuntime::Get().ConsoleCommandHook = nullptr;
+			Gui.Reset();
 			ClearDefaultsRefs();
 		}
 		Script.Reset();
@@ -2080,7 +2110,7 @@ struct FUE2NetScriptHUD::FImpl
 	}
 
 	/** UE2's console: an exec function of the viewport's interactions' owners: our controller, then its pawn and weapon. */
-	bool ConsoleExecImpl(const FString& Command)
+	bool ConsoleExecImpl(const FString& Command, bool bModOnly = false)
 	{
 		FString Name, Args;
 		if (!Command.TrimStartAndEnd().Split(TEXT(" "), &Name, &Args))
@@ -2094,6 +2124,10 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			FUSFunction* F = Target ? USVM::FindFunction(Target, FName(*Name)) : nullptr;
 			if (!F || !(F->FunctionFlags & USFlags::FUNC_Exec))
+			{
+				continue;
+			}
+			if (bModOnly && (!F->GetOwnerClass() || IsStockPackage(F->GetOwnerClass()->GetPackageName().ToString())))
 			{
 				continue;
 			}
@@ -2342,6 +2376,8 @@ struct FUE2NetScriptHUD::FImpl
 			SetObj(PlayerObj, TEXT("Actor"), PC);
 		}
 		SetObj(CanvasObj, TEXT("Viewport"), PlayerObj);
+		// Player.GUIController before the controller's own code runs (mods open their menus through it)
+		EnsureGui();
 		if (!bPCInitialised)
 		{
 			bPCInitialised = true;
@@ -2392,6 +2428,71 @@ struct FUE2NetScriptHUD::FImpl
 			*reinterpret_cast<FUSObject**>(PC->Data + P->Offset) = I;
 			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: interaction %s added for %s.%s%s"), *P->PropertyClass->GetPathName(), *PC->Class->GetName(),
 				*P->GetName(), I ? TEXT("") : TEXT(" (failed)"));
+		}
+	}
+
+	/**
+	 * A mod's info actor its client code finds for itself in its PlayerTick (UTComp: BS_xPlayer.UTCompPRI, the
+	 * UTComp_PRI of our player, which its menu and HUD read; the mirrored controller does not tick): a controller
+	 * property typed as a mod's ReplicationInfo subclass that is still None gets the mirrored actor of that class owned by
+	 * our controller or our PlayerReplicationInfo (or the only one there is).
+	 */
+	double NextInfoFill = 0.0;
+	void FillModInfoRefs(FUSObject* PC)
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (!PC || Now < NextInfoFill)
+		{
+			return;
+		}
+		NextInfoFill = Now + 0.5;
+		FUSClass* RIClass = FUSRuntime::Get().FindClass(TEXT("Engine.ReplicationInfo"));
+		FUSObject* MyPRI = GetObj(PC, TEXT("PlayerReplicationInfo"));
+		for (FUSProperty* P : PC->Class->AllProps)
+		{
+			if (!RIClass || P->Type != EUSType::Object || P->ArrayDim != 1 || !P->PropertyClass || !P->PropertyClass->IsChildOf(RIClass)
+				|| IsStockPackage(P->PropertyClass->GetPackageName().ToString()) || *reinterpret_cast<FUSObject**>(PC->Data + P->Offset))
+			{
+				continue;
+			}
+			FUSObject* Found = nullptr;
+			int32 Count = 0;
+			for (const TPair<int32, FUSObject*>& KV : Mirrors)
+			{
+				FUSObject* O = KV.Value;
+				if (!O || O->IsPendingKill() || !O->Class->IsChildOf(P->PropertyClass))
+				{
+					continue;
+				}
+				++Count;
+				FUSObject* Owner = USProps().Owner.Get<FUSObject*>(O);
+				// a LinkedReplicationInfo of our PRI (PlayerReplicationInfo.CustomReplicationInfo -> NextReplicationInfo ...)
+				bool bLinked = false;
+				int32 Guard = 0;
+				for (FUSObject* L = GetObj(MyPRI, TEXT("CustomReplicationInfo")); L && Guard < 16 && !bLinked; L = GetObj(L, TEXT("NextReplicationInfo")), ++Guard)
+				{
+					bLinked = L == O;
+				}
+				if (bLinked)
+				{
+					Found = O;
+					Count = 1;
+					break;
+				}
+				if ((Owner && (Owner == PC || Owner == MyPRI)) || (MyPRI && GetObj(O, TEXT("PRI")) == MyPRI))
+				{
+					Found = O;
+				}
+				else if (!Found && Count == 1)
+				{
+					Found = O;
+				}
+			}
+			if (Found && (Count == 1 || USProps().Owner.Get<FUSObject*>(Found) == PC || USProps().Owner.Get<FUSObject*>(Found) == MyPRI || GetObj(Found, TEXT("PRI")) == MyPRI))
+			{
+				*reinterpret_cast<FUSObject**>(PC->Data + P->Offset) = Found;
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: %s.%s is %s"), *PC->Class->GetName(), *P->GetName(), *Found->GetName());
+			}
 		}
 	}
 
@@ -2584,6 +2685,11 @@ struct FUE2NetScriptHUD::FImpl
 		}
 		TickMirroredClients(DeltaSeconds);
 		TickHeldScriptWeapon(DeltaSeconds);
+		FillModInfoRefs(GetPC());
+		if (Gui)
+		{
+			Gui->Tick(DeltaSeconds);
+		}
 		if (FPlatformTime::Seconds() >= NextSummary)
 		{
 			NextSummary = FPlatformTime::Seconds() + 30.0;
@@ -2815,6 +2921,215 @@ struct FUE2NetScriptHUD::FImpl
 		return R;
 	}
 
+	// ---- mods' menus ---------------------------------------------------------------------------------
+
+	/** The viewport's GUIController (UT2004.ini: GUI2K4.UT2K4GUIController), its styles and fonts. */
+	void EnsureGui()
+	{
+		if (Gui || !bMenus || !PlayerObj || !Script)
+		{
+			return;
+		}
+		const double T0 = FPlatformTime::Seconds();
+		Gui = MakeUnique<FUSGUI>(Script.Get());
+		FString Error;
+		if (!Gui->Init(PlayerObj, InteractionMaster, Error))
+		{
+			UE_LOG(LogUE2Net, Warning, TEXT("UE2NetScriptHUD: mods' menus are off (%s)"), *Error);
+			Gui.Reset();
+			bMenus = false;
+			return;
+		}
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: mods' menus ready (%.1f ms)"), (FPlatformTime::Seconds() - T0) * 1000.0);
+	}
+
+	/** xVoting's pages stay ours (Net/UE2NetMapVote: the mid-game menu's Map Voting tab). */
+	static bool IsNativeMenu(const FString& MenuClass)
+	{
+		return MenuClass.StartsWith(TEXT("xVoting."), ESearchCase::IgnoreCase);
+	}
+
+	/**
+	 * PlayerController.ClientOpenMenu / ClientReplaceMenu / ClientCloseMenu from the server: run on our controller's mirror,
+	 * which opens the page through Player.GUIController as UE2's client does.
+	 */
+	bool RunMenuFunction(const FUE2NetActor& A, FUSFunction* Function, const TArray<TPair<FName, FUE2NetValue>>& Params)
+	{
+		const FName N = Function ? Function->Name : NAME_None;
+		if (N != TEXT("ClientOpenMenu") && N != TEXT("ClientReplaceMenu") && N != TEXT("ClientCloseMenu"))
+		{
+			return false;
+		}
+		CheckPlayerController();
+		FUSObject* PC = GetPC();
+		if (!PC || A.Channel != PCChannel || !Gui)
+		{
+			return false;
+		}
+		FUSFunction* F = USVM::FindFunction(PC, N);
+		if (!F)
+		{
+			return false;
+		}
+		const int32 Size = FMath::Max(F->PropertiesSize, 8);
+		uint8* Block = static_cast<uint8*>(FMemory::Malloc(Size, 16));
+		FMemory::Memzero(Block, Size);
+		FString Menu;
+		for (FUSProperty* P : F->Parms)
+		{
+			if (P == F->ReturnProperty)
+			{
+				continue;
+			}
+			for (const TPair<FName, FUE2NetValue>& V : Params)
+			{
+				if (V.Key == P->Name)
+				{
+					WriteValue(P, Block + P->Offset, V.Value, A.Channel, P->Name.ToString());
+					if (P->Type == EUSType::Str && Menu.IsEmpty())
+					{
+						Menu = *reinterpret_cast<const FString*>(Block + P->Offset);
+					}
+					break;
+				}
+			}
+		}
+		const bool bRun = !IsNativeMenu(Menu);
+		if (bRun)
+		{
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: the server's %s %s"), *N.ToString(), *Menu);
+			USVM::ProcessEvent(PC, F, Block);
+		}
+		F->DestroyValue(Block);
+		FMemory::Free(Block);
+		return bRun;
+	}
+
+	/** Script's ConsoleCommand: what a mod's code (or a menu) asks of the console. True when handled. */
+	bool ScriptConsoleCommand(FUSObject* Self, const FString& InCmd, FString& Out)
+	{
+		FString Verb, Rest;
+		const FString Cmd = InCmd.TrimStartAndEnd();
+		if (!Cmd.Split(TEXT(" "), &Verb, &Rest))
+		{
+			Verb = Cmd;
+		}
+		Rest.TrimStartAndEndInline();
+		auto FindClassNamed = [](const FString& Name) -> FUSClass*
+		{
+			FUSRuntime& RT = FUSRuntime::Get();
+			FUSClass* C = Name.Contains(TEXT(".")) ? RT.FindClass(Name) : RT.FindLoadedClass(FName(*Name));
+			return C && C->EnsureLoaded() && C->Defaults.Num() >= C->PropertiesSize ? C : nullptr;
+		};
+		if (Verb.Equals(TEXT("set"), ESearchCase::IgnoreCase) || Verb.Equals(TEXT("setnopersist"), ESearchCase::IgnoreCase))
+		{
+			FString Target, Tail, PropName, Value;
+			Rest.Split(TEXT(" "), &Target, &Tail);
+			Tail.TrimStartAndEndInline();
+			if (!Tail.Split(TEXT(" "), &PropName, &Value))
+			{
+				PropName = Tail;
+			}
+			Value.TrimStartAndEndInline();
+			if (Target.Equals(TEXT("input"), ESearchCase::IgnoreCase))
+			{
+				// a key bind (UE2's User.ini [Engine.Input]): kept in our per-user ini, run while playing on a UT2004 server
+				if (!PropName.IsEmpty())
+				{
+					ModBinds.Add(PropName.ToLower(), Value);
+					FUSRuntime::Get().SetUserConfigValue(ModBindsSection, PropName, Value);
+					UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: the server's mod binds %s to \"%s\""), *PropName, *Value);
+				}
+				return true;
+			}
+			if (FUSClass* C = FindClassNamed(Target))
+			{
+				if (FUSProperty* P = C->FindPropertyByName(FName(*PropName)); P && P->Type != EUSType::Array)
+				{
+					const TCHAR* In = *Value;
+					P->ImportText(In, C->Defaults.GetData() + P->Offset);
+				}
+			}
+			return true;
+		}
+		if (Verb.Equals(TEXT("get"), ESearchCase::IgnoreCase))
+		{
+			FString Target, PropName;
+			if (Rest.Split(TEXT(" "), &Target, &PropName))
+			{
+				if (FUSClass* C = FindClassNamed(Target))
+				{
+					if (FUSProperty* P = C->FindPropertyByName(FName(*PropName.TrimStartAndEnd())); P && P->Type != EUSType::Array)
+					{
+						P->ExportText(Out, C->Defaults.GetData() + P->Offset, true);
+					}
+				}
+			}
+			return true;
+		}
+		if (Verb.Equals(TEXT("getcurrentres"), ESearchCase::IgnoreCase))
+		{
+			Out = Gui ? FString::Printf(TEXT("%dx%d"), int32(Gui->ResX), int32(Gui->ResY)) : FString(TEXT("1024x768"));
+			return true;
+		}
+		if (Verb.Equals(TEXT("mutate"), ESearchCase::IgnoreCase))
+		{
+			if (FUE2NetPlay* P = FUE2NetPlay::Get())
+			{
+				P->Mutate(Rest);
+			}
+			return true;
+		}
+		if (Verb.Equals(TEXT("say"), ESearchCase::IgnoreCase) || Verb.Equals(TEXT("teamsay"), ESearchCase::IgnoreCase))
+		{
+			if (FUE2NetPlay* P = FUE2NetPlay::Get(); P && !Rest.IsEmpty())
+			{
+				P->Say(Rest, Verb.Equals(TEXT("teamsay"), ESearchCase::IgnoreCase));
+			}
+			return true;
+		}
+		if (Verb.Equals(TEXT("toggleime"), ESearchCase::IgnoreCase) || Verb.Equals(TEXT("setmouse"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+		// an exec function of the mod's own code (a menu button that runs "Ready", "mymenu" ...)
+		static int32 Depth = 0;
+		if (!Self || Depth > 2)
+		{
+			return false;
+		}
+		TGuardValue<int32> Guard(Depth, Depth + 1);
+		return ConsoleExecImpl(Cmd);
+	}
+
+	bool IsMenuOpenImpl() const
+	{
+		return Gui && Gui->IsOpen();
+	}
+
+	bool DrawMenusImpl(AHUD* Hud, UCanvas* Canvas)
+	{
+		if (!Gui || !Gui->IsOpen() || !Canvas)
+		{
+			return false;
+		}
+		PrepareCanvas(Canvas);
+		Backend.Canvas = Canvas;
+		Backend.PC = Hud ? Hud->PlayerOwner.Get() : nullptr;
+		USCanvas::SetBackend(&Backend);
+		Gui->Draw(CanvasObj, float(Canvas->SizeX), float(Canvas->SizeY));
+		USCanvas::SetBackend(nullptr);
+		Backend.Canvas = nullptr;
+		Script->CleanupDestroyed();
+		return true;
+	}
+
+	FString ModBindFor(const FString& KeyName) const
+	{
+		const FString* Hit = ModBinds.Find(KeyName.ToLower());
+		return Hit ? *Hit : FString();
+	}
+
 	FString Describe() const
 	{
 		return FString::Printf(TEXT("script HUD %s%s, scoreboard %s%s; %d actors mirrored (%d skipped, %d anti-cheat left out, %d map actors copied); HUD %d frames %.2f ms avg (%llu tokens avg), scoreboard alone %d frames %.2f ms avg; tick %.1f ms total; %s"),
@@ -2824,7 +3139,8 @@ struct FUE2NetScriptHUD::FImpl
 			ScoreFrames ? ScoreSeconds * 1000.0 / ScoreFrames : 0.0, TickSeconds * 1000.0, *Backend.Describe())
 			+ FString::Printf(TEXT("; messages fed to the script HUD %d (%d script errors: ours)"), MessagesFed, MessagesFailed)
 			+ FString::Printf(TEXT("; mods' client code: %s, %d replicated actors started, %d client-side actors spawned, %d stopped, %.1f ms total; visuals %s"),
-				bClientCode ? TEXT("run") : TEXT("off"), ClientStarted, ClientSpawned, ClientStopped, ClientSeconds * 1000.0, Visuals ? *Visuals->Describe() : TEXT("none"));
+				bClientCode ? TEXT("run") : TEXT("off"), ClientStarted, ClientSpawned, ClientStopped, ClientSeconds * 1000.0, Visuals ? *Visuals->Describe() : TEXT("none"))
+			+ FString::Printf(TEXT("; %s"), Gui ? *Gui->Describe() : TEXT("menus off"));
 	}
 };
 
@@ -2882,8 +3198,13 @@ void FUE2NetScriptHUD::FunctionCall(const FUE2NetActor& Actor, FUSFunction* Func
 	{
 		return;
 	}
-	// the HUD setup, and what the server calls on a mod actor running client code (its client functions); everything else
-	// the server calls is ours (UE2NetWorld / UE2NetPlay)
+	// the HUD setup, the menu calls on our controller (PlayerController.ClientOpenMenu ...: mods' menus), and what the
+	// server calls on a mod actor running client code (its client functions); everything else the server calls is ours
+	// (UE2NetWorld / UE2NetPlay)
+	if (Impl->RunMenuFunction(Actor, Function, Params))
+	{
+		return;
+	}
 	if (Function->Name != TEXT("ClientSetHUD"))
 	{
 		Impl->RunClientFunction(Actor, Function, Params);
@@ -2935,7 +3256,68 @@ void FUE2NetScriptHUD::ScriptWeaponAnimEnd(int32 Channel) { if (Impl->bReady) Im
 void FUE2NetScriptHUD::TickStandInWeapon(int32 Channel, bool bHeld0, bool bHeld1, float DeltaSeconds) { if (Impl->bReady) Impl->TickStandInWeaponImpl(Channel, bHeld0, bHeld1, DeltaSeconds); }
 void FUE2NetScriptHUD::StandInFired(int32 Channel, uint8 Mode) { if (Impl->bReady) Impl->StandInFiredImpl(Channel, Mode); }
 float FUE2NetScriptHUD::GetScriptFireRate(int32 Channel, uint8 Mode) const { return Impl->bReady ? Impl->GetScriptFireRateImpl(Channel, Mode) : -1.f; }
-bool FUE2NetScriptHUD::ConsoleExec(const FString& Command) { return Impl->bReady && Impl->ConsoleExecImpl(Command); }
+bool FUE2NetScriptHUD::ConsoleExec(const FString& Command, bool bModOnly) { return Impl->bReady && Impl->ConsoleExecImpl(Command, bModOnly); }
+bool FUE2NetScriptHUD::IsMenuOpen() const { return Impl->bReady && Impl->IsMenuOpenImpl(); }
+FString FUE2NetScriptHUD::GetMenuName() const { return Impl->bReady && Impl->Gui ? Impl->Gui->TopMenuName() : FString(); }
+bool FUE2NetScriptHUD::DrawMenus(AHUD* Hud, UCanvas* Canvas) { return Impl->bReady && Impl->DrawMenusImpl(Hud, Canvas); }
+bool FUE2NetScriptHUD::MenuKey(uint8 Key, uint8 Action, float Delta) { return Impl->bReady && Impl->Gui && Impl->Gui->KeyEvent(Key, Action, Delta); }
+bool FUE2NetScriptHUD::MenuType(uint8 Key, const FString& Unicode) { return Impl->bReady && Impl->Gui && Impl->Gui->KeyType(Key, Unicode); }
+void FUE2NetScriptHUD::MenuMouse(float X, float Y) { if (Impl->bReady && Impl->Gui) { Impl->Gui->MouseMove(X, Y); } }
+void FUE2NetScriptHUD::CloseMenus() { if (Impl->bReady && Impl->Gui) { Impl->Gui->CloseAll(); } }
+bool FUE2NetScriptHUD::OpenMenu(const FString& MenuClass)
+{
+	FUSObject* C = Impl->bReady && Impl->Gui ? Impl->Gui->GetController() : nullptr;
+	FUSFunction* F = C ? USVM::FindFunction(C, TEXT("OpenMenu")) : nullptr;
+	if (!F)
+	{
+		return false;
+	}
+	FUSParms P(F);
+	P.Str(MenuClass);
+	P.Call(C);
+	return P.ReturnBool();
+}
+FString FUE2NetScriptHUD::GetModBind(const FString& KeyName) const { return Impl->bReady ? Impl->ModBindFor(KeyName) : FString(); }
+void FUE2NetScriptHUD::SetModBind(const FString& KeyName, const FString& Command)
+{
+	if (Impl->bReady && !KeyName.IsEmpty())
+	{
+		if (Command.IsEmpty())
+		{
+			Impl->ModBinds.Remove(KeyName.ToLower());
+		}
+		else
+		{
+			Impl->ModBinds.Add(KeyName.ToLower(), Command);
+		}
+		FUSRuntime::Get().SetUserConfigValue(FImpl::ModBindsSection, KeyName, Command);
+	}
+}
+FString FUE2NetScriptHUD::DumpMenus() const { return Impl->bReady && Impl->Gui ? Impl->Gui->DumpTop() : FString(); }
+FString FUE2NetScriptHUD::DescribePCProperty(const FString& Path) const
+{
+	FUSObject* O = Impl->bReady ? Impl->GetPC() : nullptr;
+	TArray<FString> Parts;
+	Path.ParseIntoArray(Parts, TEXT("."));
+	FString Out = TEXT("None");
+	for (int32 i = 0; O && i < Parts.Num(); ++i)
+	{
+		FUSProperty* P = O->Data ? O->FindProperty(FName(*Parts[i])) : nullptr;
+		if (!P)
+		{
+			return FString::Printf(TEXT("(no %s in %s)"), *Parts[i], *O->Class->GetName());
+		}
+		if (i + 1 < Parts.Num())
+		{
+			O = P->Type == EUSType::Object ? *reinterpret_cast<FUSObject**>(O->Data + P->Offset) : nullptr;
+			continue;
+		}
+		Out.Reset();
+		P->ExportText(Out, O->Data + P->Offset, true);
+	}
+	return Out;
+}
+bool FUE2NetScriptHUD::ClickMenu(const FString& Name) { return Impl->bReady && Impl->Gui && Impl->Gui->ClickNamed(Name); }
 
 #else // OPENUT2K4_USCRIPT_ENABLED
 
@@ -2959,6 +3341,19 @@ void FUE2NetScriptHUD::ScriptWeaponAnimEnd(int32) {}
 void FUE2NetScriptHUD::TickStandInWeapon(int32, bool, bool, float) {}
 void FUE2NetScriptHUD::StandInFired(int32, uint8) {}
 float FUE2NetScriptHUD::GetScriptFireRate(int32, uint8) const { return -1.f; }
-bool FUE2NetScriptHUD::ConsoleExec(const FString&) { return false; }
+bool FUE2NetScriptHUD::ConsoleExec(const FString&, bool) { return false; }
+bool FUE2NetScriptHUD::IsMenuOpen() const { return false; }
+FString FUE2NetScriptHUD::GetMenuName() const { return FString(); }
+bool FUE2NetScriptHUD::DrawMenus(AHUD*, UCanvas*) { return false; }
+bool FUE2NetScriptHUD::MenuKey(uint8, uint8, float) { return false; }
+bool FUE2NetScriptHUD::MenuType(uint8, const FString&) { return false; }
+void FUE2NetScriptHUD::MenuMouse(float, float) {}
+void FUE2NetScriptHUD::CloseMenus() {}
+bool FUE2NetScriptHUD::OpenMenu(const FString&) { return false; }
+FString FUE2NetScriptHUD::GetModBind(const FString&) const { return FString(); }
+void FUE2NetScriptHUD::SetModBind(const FString&, const FString&) {}
+FString FUE2NetScriptHUD::DumpMenus() const { return FString(); }
+FString FUE2NetScriptHUD::DescribePCProperty(const FString&) const { return FString(); }
+bool FUE2NetScriptHUD::ClickMenu(const FString&) { return false; }
 
 #endif // OPENUT2K4_USCRIPT_ENABLED

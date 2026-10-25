@@ -31,6 +31,7 @@
 #include "Misc/Parse.h"
 #include "Net/UE2NetWorld.h"
 #include "Net/UE2NetPlay.h"
+#include "Net/UE2NetScriptHUD.h"
 
 namespace ArenaPCLocal
 {
@@ -1590,4 +1591,15 @@ void AArenaPlayerController::TeamTalk()
 	{
 		ArenaChat::OpenTyping(this, true);
 	}
+}
+
+bool AArenaPlayerController::ProcessConsoleExec(const TCHAR* Cmd, FOutputDevice& Ar, UObject* Executor)
+{
+	if (Super::ProcessConsoleExec(Cmd, Ar, Executor))
+	{
+		return true;
+	}
+	// on a UT2004 server: an exec function of the server mod's own classes (UTComp: "mymenu" opens its menu)
+	FUE2NetScriptHUD* S = FUE2NetScriptHUD::Get();
+	return S && Cmd && S->ConsoleExec(Cmd, true);
 }

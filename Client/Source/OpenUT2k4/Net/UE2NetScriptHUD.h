@@ -94,8 +94,33 @@ public:
 	void StandInFired(int32 Channel, uint8 Mode);
 	float GetScriptFireRate(int32 Channel, uint8 Mode) const;
 	/** A console command for the mod's code: an exec function of our controller, pawn or weapon in the mirror (BW's
-	 *  reload / weapon special binds ...). True when one ran. */
-	bool ConsoleExec(const FString& Command);
+	 *  reload / weapon special binds ...). True when one ran. bModOnly: only exec functions a mod's class declares
+	 *  (console commands we do not know: UTComp's "mymenu"). */
+	bool ConsoleExec(const FString& Command, bool bModOnly = false);
+
+	// ---- mods' menus: their GUI2K4 / XInterface pages run as script (UScript/UScriptGUI.h) ----
+	/** A mod menu is open (it takes the mouse and keys: Net/UE2NetModMenus). */
+	bool IsMenuOpen() const;
+	/** Class of the top mod menu ("" when none). */
+	FString GetMenuName() const;
+	/** Draws the open mod menus over everything (AArenaHUD::DrawHUD). True when one is open. */
+	bool DrawMenus(AHUD* Hud, UCanvas* Canvas);
+	/** UE2 EInputKey / EInputAction into the menus; a typed character; the mouse in canvas pixels. */
+	bool MenuKey(uint8 Key, uint8 Action, float Delta = 0.f);
+	bool MenuType(uint8 Key, const FString& Unicode);
+	void MenuMouse(float X, float Y);
+	void CloseMenus();
+	/** GUIController.OpenMenu (test hook / console). */
+	bool OpenMenu(const FString& MenuClass);
+	/** Test hooks: the top menu's component tree; a click on one of its components (object name or caption). */
+	FString DumpMenus() const;
+	/** Debugging: a property of our controller's mirror as text ("Obj.Prop" follows one object reference). */
+	FString DescribePCProperty(const FString& Path) const;
+	bool ClickMenu(const FString& NameOrCaption);
+	/** The console command a mod bound to a key ("F5" -> "MyMenu"), or "". */
+	FString GetModBind(const FString& KeyName) const;
+	/** Binds a key to a mod's console command (kept in our per-user ini; empty Command removes it). */
+	void SetModBind(const FString& KeyName, const FString& Command);
 
 	/** The mirrored actor of Channel runs client code that shows an attachment of that class ("Pkg.Class"). */
 	bool HasClientAttachment(int32 Channel, const FString& ClassPath) const;

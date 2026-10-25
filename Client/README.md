@@ -64,7 +64,7 @@ To remove a map, delete its files from the folder; the game cleans up its conver
 | Custom texture, static mesh, sound and music packages a map needs | Supported |
 | Maps whose objects need custom UnrealScript code (from a `.u` package or embedded in the map) | The game runs the map's own script for triggers, counters, custom health and shield pickups and other scripted map events. Custom weapons, monsters, vehicles, movers, pickup bases and effects still play as their standard UT2004 version (or are left out); such maps are marked **[custom\*]** |
 | Mutators made of UnrealScript (UT2004's own and custom ones) | Rule mutators work: low gravity, InstaGib, quad jump, regeneration, vampire, no adrenaline, big head (heads grow with the score: the head bone is scaled, and the head hit sphere with it), game speed, weapon replacements and more. Pick them on the Instant Action Mutators tab, or start a match with `?Mutator=Package.Class` (several separated by commas) |
-| Mods that add new weapons, game types, HUDs or menus in UnrealScript | Not supported yet in our own matches. On UT2004 servers, a mod's HUD and scoreboard (3SPN / TAM, UTComp, RezQ ...) are drawn by the mod's own UnrealScript, like the real client draws them (`Docs/UE2Net.md`, "Mod HUDs and scoreboards") |
+| Mods that add new weapons, game types, HUDs or menus in UnrealScript | Not supported yet in our own matches. On UT2004 servers, a mod's HUD and scoreboard (3SPN / TAM, UTComp, RezQ ...) are drawn by the mod's own UnrealScript, like the real client draws them, and its in-game menus (UTComp's settings) run as its own script (`Docs/UE2Net.md`, "Mod HUDs and scoreboards", "Mod menus") |
 | Character packs (`.upl` + skins) and `.umx` music | Recognised but not used yet |
 | A custom file with the same name as a UT2004 file | UT2004's own file is used; rename the custom one |
 
@@ -295,8 +295,9 @@ protocol is described in `Docs/UE2Net.md`.
   flashes, attachments such as an Odin's ion cannon) is drawn. Mod weapons with no stock relative (Ballistic Weapons)
   run as the mod's own script in first person (its weapon and fire code, its calls to the server); `ModExec <command>`
   runs a mod's console command (a weapon's reload or special key) and `Mutate <text>` sends UT2004's Mutate; settings a
-  mod saves go to OpenUT2k4's own per-user ini, never the UT2004 install. Not yet: mods' in-game menus (UTComp's
-  settings menu). Details in `Docs/UE2Net.md` "Mod servers". A map whose name matches ours but whose GUID differs
+  mod saves go to OpenUT2k4's own per-user ini, never the UT2004 install. Mods' in-game menus run as their own script
+  too (UTComp's settings menu: type `mymenu` in the console, or `ModBind F5 mymenu` once and press F5; Escape closes
+  it). Details in `Docs/UE2Net.md` "Mod servers". A map whose name matches ours but whose GUID differs
   joins without a map rather than showing the wrong level. Packages that cannot be downloaded
   are skipped: actors that need them are not shown. UT2004's own packages (the files in the install's
   `System/Manifest.ini`) are never downloaded: when they are
@@ -2059,6 +2060,8 @@ UnrealEditor OpenUT2k4.uproject -game -nullrhi ... -UScriptTest -UScriptTestQuit
 # on a modded UT2004 server: the server's HUD / scoreboard classes run in the VM (Docs/UE2Net.md "Mod HUDs and
 # scoreboards"); -UE2ScriptHUD=0 turns that off, =all runs stock HUD classes too; -UE2ScriptHUDLog logs per-frame
 # statistics every 5 s; -UE2ScriptDeny=Pkg,Pkg adds packages that are never mirrored or run
+# mods' menus (Docs/UE2Net.md "Mod menus"): -UE2ScriptMenus=0 turns them off; development builds have ModMenuOpen,
+# ModMenuDump, ModMenuClick <name or caption>, ModMenuKey, ModMenuType, ModMenuClose in the console
 ```
 
 ## Project layout

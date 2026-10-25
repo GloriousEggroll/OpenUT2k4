@@ -1128,14 +1128,15 @@ namespace USCanvasNatives
 		{
 			if (FUSProperty* Names = Self->FindProperty(TEXT("FontArrayNames")))
 			{
-				// GUIFont.GetFont: bScaled fonts pick by width (800 / 1024 / 1280 / 1600 / bigger), else the first
+				// GUIFont.GetFont: one font per resolution (640 / 800 / 1024 / 1280 / bigger: the menus' Verdana 8 to 16),
+				// bFixedSize the first
 				const FUSScriptArray* A = reinterpret_cast<const FUSScriptArray*>(Self->Data + Names->Offset);
-				FUSProperty* ScaledProp = Self->FindProperty(TEXT("bScaled"));
-				const bool bScaled = ScaledProp && (*reinterpret_cast<const uint32*>(Self->Data + ScaledProp->Offset) & 1);
+				FUSProperty* FixedProp = Self->FindProperty(TEXT("bFixedSize"));
+				const bool bFixed = FixedProp && (*reinterpret_cast<const uint32*>(Self->Data + FixedProp->Offset) & 1);
 				int32 Index = 0;
-				if (bScaled)
+				if (!bFixed)
 				{
-					Index = XRes < 640 ? 0 : XRes < 800 ? 1 : XRes < 1024 ? 2 : XRes < 1280 ? 3 : 4;
+					Index = XRes <= 640 ? 0 : XRes <= 800 ? 1 : XRes <= 1024 ? 2 : XRes <= 1280 ? 3 : 4;
 				}
 				if (Names->Type == EUSType::Array && A->Num > 0 && Names->Inner && Names->Inner->Type == EUSType::Str)
 				{
