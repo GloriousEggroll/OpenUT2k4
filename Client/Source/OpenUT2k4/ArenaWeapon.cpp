@@ -1591,6 +1591,15 @@ void AArenaWeapon::SetNetStandIn(const FArenaNetStandIn& In)
 	}
 }
 
+void AArenaWeapon::SetNetFireRate(uint8 Mode, float Rate)
+{
+	if (Mode < 2 && Rate > 0.f && FMath::Abs(FireModes[Mode].RefireTime - Rate) > 1e-4f)
+	{
+		FireModes[Mode].RefireTime = Rate;
+		NetStandIn.FireRate[Mode] = Rate;
+	}
+}
+
 void AArenaWeapon::SetupImportedViewModel()
 {
 	Art = NetStandIn.Art ? NetStandIn.Art : ArenaArt::FindWeaponArt(GetClass());

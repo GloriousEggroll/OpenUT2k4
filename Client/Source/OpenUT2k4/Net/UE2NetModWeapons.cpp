@@ -4,6 +4,7 @@
 #include "UE2NetActors.h"
 #include "UE2NetLog.h"
 #include "UE2NetModContent.h"
+#include "UE2NetScriptWeapon.h"
 #include "../ArenaArt.h"
 #include "../ArenaContent.h"
 #include "../ArenaRuntimeContent.h"
@@ -166,7 +167,22 @@ namespace UE2NetModWeaponsLocal
 		FString StockClass;
 		UClass* Native = StandIn(UE2Class, StockClass);
 		const ArenaArt::FWeaponArt* Base = Native ? ArenaArt::FindWeaponArt(Native) : nullptr;
-		const FDefaults M = Defaults(UE2Class);
+		FDefaults M = Defaults(UE2Class);
+		if (!Native && M && M.Class->IsChildOf(FUSRuntime::Get().FindClass(TEXT("Engine.Weapon"))))
+		{
+			// no stock relative (Ballistic Weapons ...): the weapon runs as the mod's script (Net/UE2NetScriptWeapon.h); its
+			// view model is all the mod's own, against Engine.Weapon's defaults
+			static const ArenaArt::FWeaponArt Empty = []()
+			{
+				ArenaArt::FWeaponArt A;
+				A.ClassName = TEXT("Weap_UE2Script");
+				A.FireAnim[0] = A.FireAnim[1] = nullptr; // the script plays its own
+				return A;
+			}();
+			Native = AWeap_UE2Script::StaticClass();
+			StockClass = TEXT("Engine.Weapon");
+			Base = &Empty;
+		}
 		const FDefaults S = Defaults(StockClass);
 		if (!Native || !Base || !M || !S)
 		{

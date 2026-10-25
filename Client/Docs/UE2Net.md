@@ -832,6 +832,37 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
   vehicle weapon's client code attaches (the Odin's ion cannon) removes the class-defaults stand-in
   (`FUE2NetWorld::RetireClientAttachmentStandIn`). Kept: Freeze Tag's frozen look (the mod's frozen skins are
   `Combiner`s made at run time, which our materials cannot draw) and the beacon's `bScriptPostRender` line.
+- **Calls to the server**: a replicated function client script calls on an actor our connection owns (its `Owner`
+  chain reaches our controller: our pawn, weapons, inventory) is sent to the server as UE2's `ProcessRemoteFunction`
+  does (`FUSWorld::IsRemoteCall` / `CallRemote`, `USVM::IsNetFunction`: the first declaration's `FUNC_Net`), its
+  parameters converted to the wire values (objects to their channels); functions named `Client...` (and any with a
+  return value) run here instead, standing in for the replication condition UE2 evaluates. The other way, what the
+  server calls on a mod actor running client code (`ClientWeaponSet`, `ClientForceAmmoUpdate`, a mod's own client
+  functions) runs in the mirror (`RunClientFunction`).
+- **Mod weapons without a stock relative** (Ballistic Weapons: `Net/UE2NetScriptWeapon.h`, `AWeap_UE2Script`): our
+  player holds an actor that shows the mod's weapon (its first-person mesh, skins and placement from the class
+  defaults, against `Engine.Weapon`'s; its icon on the weapon bar under its `InventoryGroup`) while the mirror runs the
+  weapon itself: equipping calls `BringUp` / `PutDown`, fire presses `ClientStartFire` / `ClientStopFire` (which call the
+  server through the bridge above), and each frame `WeaponTick` and the fire modes as UE2's native weapon code runs them
+  on the owning client (`ModeTick`, the fire mode's own timer, while `WS_ReadyToFire` the shots: `ModeDoFire` each time
+  `NextFireTime` passes, `bWaitForRelease` once per press, `bFireOnRelease` modes `ModeHoldFire` then fire on release).
+  The animations the script plays on the weapon play on our view model (and `AnimEnd(0)` goes back when one ends,
+  `HasAnim` answers from the converted animation set), its ammo (`AmmoAmount` / `MaxAmmo`) is our HUD's, and what its
+  fire modes attach to the weapon (`FlashEmitter` on `tip`) is drawn on the first-person view model. `Pawn.IsLocallyControlled`
+  holds for our pawn (its controller's `Player` is a `Viewport`).
+- **Mod fire timing for stand-ins**: for a mod weapon our stand-in plays (it has a stock relative), its fire modes run
+  alongside ours (`ModeTick` each frame with `bIsFiring` as held, `ModeDoFire` for each shot ours plays) and their
+  `FireRate` after that is our stand-in's refire time (a spin-up, ProSniperFire's rate set in `ModeDoFire`).
+- **Emitters script changes while they play** (the Odin's charge beams: `IonTurretAttachment.UpdateChargeBeam`): a
+  client-side `Emitter` gets its own copies of its `ParticleEmitters` (the class defaults hold shared shells), and each
+  frame their `StartSizeRange`, `StartLocationOffset`, `BeamDistanceRange`, `Opacity`, `ParticlesPerSecond` and
+  `Disabled` go to our emitter when script changed them.
+- **Console**: `ModExec <command> [args]` runs an exec function of the mod's code (our controller, pawn or weapon in the
+  mirror, as UE2's console does: a weapon's reload or special bind); `Mutate <text>` is UT2004's (the controller's
+  `Mutate` exec, else `ServerMutate`).
+- **Saved settings**: `SaveConfig` / `StaticSaveConfig` write the object's config values to OpenUT2k4's own per-user
+  ini (`<Saved>/UE2Config/User.ini`, UT2004's section names), which config reads look at before the player's UT2004 ini
+  files; the UT2004 install is never written.
 - **Mod pawns' skins**: a mod pawn's client code setting `Skins` to a mod's own materials (bright skins, a mod's team
   skins) is shown on our pawn (UT2004's own skins and run-time materials are left out).
 - **Weapons**: for the local player's mod weapons (they play as our stand-in), the fire modes' `FlashEmitterClass`
@@ -1452,12 +1483,13 @@ Open problems:
   sends it was found, so it is still untested.
 - Mod HUDs, scoreboards, their message lists and mods' client code run in the script VM ("Mod HUDs and scoreboards",
   "Mods' client code"). Not done: mods' in-game menus (UTComp's settings menu: UE2's GUI is native C++ in the original
-  engine, so a script GUI runner needs the GUIController / GUIComponent drawing and input natives; the settings come
-  read-only from the player's ini, as for the hit sounds), their client mutators' `Tick`, interactions other than the
-  ones a controller property holds, first-person weapons with no stock relative (Ballistic Weapons: their whole
-  weapon is script), fire timing a mod changes during play (the fire mode objects' code is not run), the effects of
-  script that changes an emitter's properties while it plays (the Odin's charge beam lengths), `Canvas.DrawActor`
-  overlays (sniper zoom in script). Player characters that exist only in a server's packages: UE2 finds a character
+  engine, so a script GUI runner needs GUIController's and GUIComponent's natives (positioning, timers, focus) and the
+  native drawing and input of every widget class (labels, images, buttons, edit and list boxes, sliders, combo boxes,
+  tab panels) and of the styles; not started beyond what it needs around it: `Mutate`, `ModExec`, settings saved to
+  our own ini), their client mutators' `Tick`, interactions other than the ones a controller property holds,
+  `Canvas.DrawActor` overlays (a script weapon's own first-person drawing, sniper zoom in script: ours draws the view
+  model), other structs than vectors and rotators in calls to the server. The script weapons, the stand-ins' fire timing
+  and the emitter changes are not tested yet. Player characters that exist only in a server's packages: UE2 finds a character
   by its `.upl` record, which is never downloaded, so a stock client shows the default model as we do.
 - The real client reference (see "Real client reference") covers the handshake, moves and NewNet fire. Not compared
   yet: vehicles (`ServerDrive`), spectator moves in the free camera, and the 3374 client against a 3374 server.

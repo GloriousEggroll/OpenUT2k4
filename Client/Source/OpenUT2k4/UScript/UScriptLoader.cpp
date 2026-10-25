@@ -1961,8 +1961,98 @@ FUSRuntime::FIniFile* FUSRuntime::LoadIni(const FString& Path)
 	return &F;
 }
 
+FString FUSRuntime::UserConfigFile()
+{
+	return FPaths::ProjectSavedDir() / TEXT("UE2Config") / TEXT("User.ini");
+}
+
+void FUSRuntime::SaveConfig(FUSClass* Class, const uint8* Data)
+{
+	if (!Class || !Data)
+	{
+		return;
+	}
+	FIniFile* F = LoadIni(UserConfigFile());
+	if (!F)
+	{
+		F = &IniFiles.FindOrAdd(UserConfigFile()); // the first save makes it
+		F->bLoaded = true;
+	}
+	const FString ClassPath = Class->GetPathName();
+	for (FUSProperty* P : Class->AllProps)
+	{
+		if (!(P->PropertyFlags & USFlags::CPF_Config))
+		{
+			continue;
+		}
+		FString Section = ClassPath;
+		if (P->PropertyFlags & USFlags::CPF_GlobalConfig)
+		{
+			for (FUSObject* O = P->Outer; O; O = O->Outer)
+			{
+				if (O->Class && O->Class->Name == TEXT("Class"))
+				{
+					Section = O->GetPathName();
+					break;
+				}
+			}
+		}
+		TMap<FString, TArray<FString>>& S = F->Sections.FindOrAdd(Section.ToLower());
+		const uint8* Addr = Data + P->Offset;
+		if (P->Type == EUSType::Array && P->Inner)
+		{
+			const FUSScriptArray& A = *reinterpret_cast<const FUSScriptArray*>(Addr);
+			TArray<FString>& V = S.FindOrAdd(P->GetName().ToLower());
+			V.Reset();
+			for (int32 i = 0; i < A.Num && A.Data; ++i)
+			{
+				FString T;
+				P->Inner->ExportText(T, A.Data + i * P->Inner->ElementSize, true);
+				V.Add(T);
+			}
+		}
+		else
+		{
+			for (int32 i = 0; i < P->ArrayDim; ++i)
+			{
+				FString T;
+				P->ExportText(T, Addr + i * P->ElementSize, true);
+				const FString Key = P->ArrayDim > 1 ? FString::Printf(TEXT("%s[%d]"), *P->GetName(), i) : P->GetName();
+				S.FindOrAdd(Key.ToLower()) = { T };
+			}
+		}
+	}
+	// written whole (section and key names as kept: lower case, which UE2 reads case-insensitively too)
+	FString Out;
+	for (const TPair<FString, TMap<FString, TArray<FString>>>& Sec : F->Sections)
+	{
+		Out += TEXT("[") + Sec.Key + TEXT("]\n");
+		for (const TPair<FString, TArray<FString>>& KV : Sec.Value)
+		{
+			for (const FString& V : KV.Value)
+			{
+				Out += KV.Key + TEXT("=") + V + TEXT("\n");
+			}
+		}
+		Out += TEXT("\n");
+	}
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(UserConfigFile()), true);
+	FFileHelper::SaveStringToFile(Out, *UserConfigFile());
+}
+
 bool FUSRuntime::GetConfigValue(const FString& Section, const FString& Key, TArray<FString>& OutValues)
 {
+	if (FIniFile* U = LoadIni(UserConfigFile()))
+	{
+		if (const TMap<FString, TArray<FString>>* S = U->Sections.Find(Section.ToLower()))
+		{
+			if (const TArray<FString>* V = S->Find(Key.ToLower()))
+			{
+				OutValues = *V;
+				return true;
+			}
+		}
+	}
 	const FString System = GameDir / TEXT("System");
 	for (const TCHAR* File : { TEXT("UT2004.ini"), TEXT("Default.ini"), TEXT("User.ini"), TEXT("DefUser.ini") })
 	{

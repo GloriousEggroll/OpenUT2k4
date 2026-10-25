@@ -38,6 +38,13 @@ public:
 	virtual class UWorld* GetPresentationWorld() { return nullptr; }
 	/** Where an actor of such a world is shown (UE coordinates), when it has a native counterpart. */
 	virtual bool GetPresentationLocation(FUSObject* Actor, FVector& OutLocation) { return false; }
+	/** A replicated function script calls on Actor goes to the other side (the UE2 client mirror: a server function on an
+	 *  actor our connection owns) instead of running here. */
+	virtual bool IsRemoteCall(FUSObject* Actor, FUSFunction* Function) { return false; }
+	/** Sends it; Parms is the function's parameter block. */
+	virtual void CallRemote(FUSObject* Actor, FUSFunction* Function, uint8* Parms) {}
+	/** Actor.HasAnim: the actor's mesh has that animation (its converted animation set). */
+	virtual bool HasPresentationAnim(FUSObject* Actor, FName Sequence) { return false; }
 	/** A bone (or attach socket) of what shows an actor of such a world, world space (UE coordinates). */
 	virtual bool GetPresentationBone(FUSObject* Actor, FName Bone, FTransform& OutTransform) { return false; }
 

@@ -2,6 +2,8 @@
 #include "UE2NetJoin.h"
 #include "UE2NetModWeapons.h"
 #include "UE2NetModContent.h"
+#include "UE2NetScriptWeapon.h"
+#include "UE2NetScriptHUD.h"
 #include "../ArenaUE2Effects.h"
 #include "../ArenaHitchLog.h"
 
@@ -418,6 +420,23 @@ AArenaWeapon* AUE2NetLocalPawn::EnsureNetWeapon(UClass* WeaponClass, const FStri
 // =================================================================================================
 // FUE2NetPlay
 // =================================================================================================
+
+USceneComponent* FUE2NetPlay::GetScriptWeaponComponent(int32 WeaponChannel) const
+{
+	const AUE2NetLocalPawn* P = LocalPawn.Get();
+	if (!P)
+	{
+		return nullptr;
+	}
+	for (AArenaWeapon* W : P->GetWeapons())
+	{
+		if (const AWeap_UE2Script* SW = Cast<AWeap_UE2Script>(W); SW && SW->GetScriptChannel() == WeaponChannel)
+		{
+			return SW->GetViewMesh();
+		}
+	}
+	return nullptr;
+}
 
 FString FUE2NetPlay::GetServerAddress() const
 {
@@ -1006,10 +1025,23 @@ void FUE2NetPlay::ApplyWeapons()
 		return;
 	}
 	FUE2NetWorld* NW = FUE2NetWorld::Get();
+	FUE2NetScriptHUD* ScriptHud = FUE2NetScriptHUD::Get();
 	for (TPair<int32, FWeaponInfo>& W : Weapons)
 	{
+		if (!W.Value.Native && ScriptHud && ScriptHud->IsScriptWeapon(W.Key))
+		{
+			// no stock relative: the mod's own script runs it (Net/UE2NetScriptWeapon.h)
+			const UE2NetModWeapons::FModWeapon* Mod = UE2NetModWeapons::FindWeapon(W.Value.ClassPath);
+			W.Value.Native = Mod && Mod->Native == AWeap_UE2Script::StaticClass() ? Mod->Native : nullptr;
+			UE_CLOG(W.Value.Native != nullptr, LogUE2Net, Log, TEXT("UE2NetPlay: %s runs as the mod's script"), *W.Value.ClassPath);
+		}
 		if (AArenaWeapon* Native = P->EnsureNetWeapon(W.Value.Native, W.Value.ClassPath))
 		{
+			if (AWeap_UE2Script* SW = Cast<AWeap_UE2Script>(Native))
+			{
+				SW->SetScriptChannel(W.Key);
+				SW->Slot = W.Value.Group;
+			}
 			Native->Ammo = W.Value.Ammo;
 			// what the weapon shows of the server's weapon: the AVRiL's lock, the translocator's beacon
 			AArenaWeapon::FNetWeaponState& NS = Native->NetState;
@@ -1927,6 +1959,22 @@ void FUE2NetPlay::TickFireEffects()
 		return;
 	}
 	const float Now = float(World->GetTimeSeconds());
+	if (W->IsA<AWeap_UE2Script>())
+	{
+		return; // the mod's own script fires it (Net/UE2NetScriptWeapon.h)
+	}
+	// a mod weapon our stand-in plays: its fire modes' client code runs alongside, so its fire timing follows the mod's
+	// (a spin-up in ModeTick, a FireRate set by ModeDoFire)
+	FUE2NetScriptHUD* ScriptHud = W->GetNetStandIn().UE2Class.IsEmpty() ? nullptr : FUE2NetScriptHUD::Get();
+	if (ScriptHud)
+	{
+		ScriptHud->TickStandInWeapon(CurrentWeaponChannel, bFireHeld[0], bFireHeld[1], FMath::Max(0.f, Now - LastStandInTick));
+		for (uint8 Mode = 0; Mode < 2; ++Mode)
+		{
+			W->SetNetFireRate(Mode, ScriptHud->GetScriptFireRate(CurrentWeaponChannel, Mode));
+		}
+	}
+	LastStandInTick = Now;
 	// the translocator's presses count without charges too (TransRecall's failed sound)
 	const bool bAmmo = Info->Ammo > 0 || W->bInfiniteAmmo || W->IsA<AWeap_Translocator>();
 	for (uint8 Mode = 0; Mode < 2; ++Mode)
@@ -1962,6 +2010,10 @@ void FUE2NetPlay::TickFireEffects()
 		}
 		if (bShot)
 		{
+			if (ScriptHud)
+			{
+				ScriptHud->StandInFired(CurrentWeaponChannel, Mode);
+			}
 			NextFireEffect[Mode] = Now + Refire;
 			if (W->bSharedFireMode)
 			{
@@ -2407,6 +2459,14 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 			return true;
 		}
 		bFireHeld[Mode] = true;
+		if (FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get(); SH && CurrentWeaponChannel && SH->IsScriptWeapon(CurrentWeaponChannel)
+			&& Cast<AWeap_UE2Script>(Pawn->GetCurrentWeapon()))
+		{
+			// a mod weapon running as script: its ClientStartFire (it calls the server itself)
+			SH->ScriptWeaponCommand(CurrentWeaponChannel, FUE2NetScriptHUD::EWeaponCommand::StartFire, Mode);
+			++FireCommands;
+			return true;
+		}
 		NextFireEffect[Mode] = World.IsValid() ? FMath::Max(NextFireEffect[Mode], float(World->GetTimeSeconds())) : 0.f;
 		if (CurrentWeaponChannel && !bNoNewNet && NewNet->IsNewNetWeapon(CurrentWeaponChannel))
 		{
@@ -2432,6 +2492,13 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 			return true;
 		}
 		bNewNetFirePending[Mode] = false;
+		if (FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get(); bFireHeld[Mode] && SH && CurrentWeaponChannel && SH->IsScriptWeapon(CurrentWeaponChannel)
+			&& LocalPawn.IsValid() && Cast<AWeap_UE2Script>(LocalPawn->GetCurrentWeapon()))
+		{
+			bFireHeld[Mode] = false;
+			SH->ScriptWeaponCommand(CurrentWeaponChannel, FUE2NetScriptHUD::EWeaponCommand::StopFire, Mode);
+			return true;
+		}
 		if (bFireHeld[Mode])
 		{
 			bFireHeld[Mode] = false;
@@ -2449,6 +2516,12 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 	case EInput::Suicide: Suicide(); return true;
 	default: return false;
 	}
+}
+
+void FUE2NetPlay::Mutate(const FString& Text)
+{
+	Send(PCChannel(), TEXT("ServerMutate"), { UE2NetPlayLocal::VStr(Text) });
+	UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: ServerMutate %s"), *Text);
 }
 
 void FUE2NetPlay::RequestRestart()
@@ -3284,6 +3357,30 @@ namespace UE2NetPlayLocal
 			if (FUE2NetPlay* P = FUE2NetPlay::Get())
 			{
 				P->ChangeTeam(Args.Num() > 0 ? FCString::Atoi(*Args[0]) : -1);
+			}
+		}));
+	FAutoConsoleCommand CmdModExec(TEXT("ModExec"), TEXT("ModExec <command> [args]: run an exec command of the UT2004 server's mod code (its controller, pawn or weapon): a mod weapon's reload or special key, a mod's menu command."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			FUE2NetScriptHUD* S = FUE2NetScriptHUD::Get();
+			const FString Line = FString::Join(Args, TEXT(" "));
+			if (!S || !S->ConsoleExec(Line))
+			{
+				UE_LOG(LogUE2Net, Log, TEXT("ModExec %s: no exec function of that name in the server's mod code"), *Line);
+			}
+		}));
+	FAutoConsoleCommand CmdMutate(TEXT("Mutate"), TEXT("Mutate <text>: UT2004's Mutate console command (PlayerController.ServerMutate): mods' commands, e.g. UTComp's menu."),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const FString Line = FString::Join(Args, TEXT(" "));
+			FUE2NetScriptHUD* S = FUE2NetScriptHUD::Get();
+			if (S && S->ConsoleExec(TEXT("Mutate ") + Line))
+			{
+				return;
+			}
+			if (FUE2NetPlay* P = FUE2NetPlay::Get())
+			{
+				P->Mutate(Line);
 			}
 		}));
 	FAutoConsoleCommand CmdReady(TEXT("Ready"), TEXT("Ready: tell the UT2004 server you are ready to start."),

@@ -488,6 +488,8 @@ namespace USVM
 	bool IsSkippedOnProxy(const FUSObject* Self, const FUSFunction* Function);
 	/** Role below ROLE_AutonomousProxy (a simulated or dumb proxy of the server's actor). */
 	bool IsProxy(const FUSObject* Self);
+	/** A replicated function (its first declaration has FUNC_Net). */
+	bool IsNetFunction(const FUSFunction* Function);
 	/** Calls a function with a parameter block laid out like Function's locals (C++ -> script). */
 	void ProcessEvent(FUSObject* Self, FUSFunction* Function, void* Parms);
 	/** Runs Self's state code until it blocks on a latent action or ends (called by the world tick). */

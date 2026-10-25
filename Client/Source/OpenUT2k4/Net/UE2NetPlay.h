@@ -150,6 +150,9 @@ public:
 	void DoCombo(FUSClass* ComboClass);
 	/** Our predicted pawn (null while dead, waiting or spectating). */
 	AUE2NetLocalPawn* GetLocalPawn() const { return LocalPawn.Get(); }
+	/** The first-person view model of our weapon of that channel when the mod's script runs it (its client-side effects
+	 *  attach there), else null. */
+	class USceneComponent* GetScriptWeaponComponent(int32 WeaponChannel) const;
 
 	/** "Health 100, ...": state line for logs and the spectator bar. */
 	FString DescribeState() const;
@@ -208,6 +211,12 @@ private:
 	void ExitVehicle(bool bToFoot);
 	void SendDrive();
 	void TickFireEffects();
+public:
+	/** PlayerController.Mutate's server call (ServerMutate). */
+	void Mutate(const FString& Text);
+private:
+	/** World time of the last stand-in fire-mode tick (Net/UE2NetScriptHUD: the mod's fire timing). */
+	float LastStandInTick = 0.f;
 	// guided Redeemer (UE2 PlayerController.PlayerRocketing: the RedeemerWarhead the server made our pawn)
 	void StartWarhead(const FUE2NetActor& A);
 	void EndWarhead();

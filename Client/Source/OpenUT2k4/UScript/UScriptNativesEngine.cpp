@@ -623,6 +623,12 @@ namespace USEngineNatives
 		USP_FINISH;
 		US_RESULT(FUSRotator) = USUnits::ToUE2(BoneTransform(Self, BoneName).Rotator());
 	}
+	US_NATIVE(HasAnim)
+	{
+		USP_GET_NAME(Sequence);
+		USP_FINISH;
+		US_RESULT(uint32) = Self && Self->World && Self->World->HasPresentationAnim(Self, Sequence) ? 1u : 0u;
+	}
 	US_NATIVE(EmitterKill)
 	{
 		USP_FINISH;
@@ -733,7 +739,7 @@ void USNatives::RegisterEngine()
 		// presentation / physics details without an effect on script logic yet
 		{ TEXT("Actor"), TEXT("PlaySound"), &PlaySound }, { TEXT("Actor"), TEXT("PlayOwnedSound"), &PlaySound }, { TEXT("Actor"), TEXT("DemoPlaySound"), &Quiet },
 		{ TEXT("Actor"), TEXT("MakeNoise"), &Quiet }, { TEXT("Actor"), TEXT("PlayAnim"), &PlayAnim }, { TEXT("Actor"), TEXT("LoopAnim"), &LoopAnim },
-		{ TEXT("Actor"), TEXT("TweenAnim"), &ReturnFalse }, { TEXT("Actor"), TEXT("IsAnimating"), &ReturnFalse }, { TEXT("Actor"), TEXT("HasAnim"), &ReturnFalse },
+		{ TEXT("Actor"), TEXT("TweenAnim"), &ReturnFalse }, { TEXT("Actor"), TEXT("IsAnimating"), &ReturnFalse }, { TEXT("Actor"), TEXT("HasAnim"), &HasAnim },
 		{ TEXT("Actor"), TEXT("StopAnimating"), &StopAnimating }, { TEXT("Actor"), TEXT("AnimBlendParams"), &Quiet }, { TEXT("Actor"), TEXT("AnimBlendToAlpha"), &Quiet },
 		{ TEXT("Actor"), TEXT("SetDrawType"), &SetDrawType }, { TEXT("Actor"), TEXT("SetStaticMesh"), &SetStaticMesh }, { TEXT("Actor"), TEXT("LinkMesh"), &LinkMesh },
 		{ TEXT("Actor"), TEXT("LinkSkelAnim"), &Quiet }, { TEXT("Actor"), TEXT("SetDrawScale3D"), &SetDrawScale3D }, { TEXT("Actor"), TEXT("SetBoneRotation"), &Quiet },

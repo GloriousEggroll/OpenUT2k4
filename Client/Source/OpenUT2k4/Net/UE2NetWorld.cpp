@@ -1510,7 +1510,9 @@ USceneComponent* FUE2NetWorld::GetChannelComponent(int32 Channel) const
 	AActor* A = E ? E->Native.Get() : nullptr;
 	if (!A)
 	{
-		return nullptr;
+		// our own weapon (inventory, not a world entity) run by the mod's script: its first-person view model
+		const FUE2NetPlay* Play = FUE2NetPlay::Get();
+		return Play ? Play->GetScriptWeaponComponent(Channel) : nullptr;
 	}
 	if (AUE2NetVehicle* V = Cast<AUE2NetVehicle>(A))
 	{

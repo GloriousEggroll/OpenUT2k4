@@ -91,6 +91,91 @@ namespace UE2NetScriptVisualsLocal
 
 using namespace UE2NetScriptVisualsLocal;
 
+namespace UE2NetScriptVisualsLocal
+{
+	/** Reads Count floats of a property (a float, vector, Range or RangeVector struct), false when it has none. */
+	bool ReadFloats(FUSObject* O, const TCHAR* Name, int32 Count, float* Out)
+	{
+		FUSProperty* P = Prop(O, Name);
+		if (!P || P->ElementSize < int32(Count * sizeof(float)))
+		{
+			return false;
+		}
+		FMemory::Memcpy(Out, O->Data + P->Offset, Count * sizeof(float));
+		return true;
+	}
+
+	/**
+	 * What script changes on an emitter's ParticleEmitters while it plays (IonTurretAttachment.UpdateChargeBeam: the beam's
+	 * BeamDistanceRange and the sprites' StartSizeRange / StartLocationOffset growing with the charge; Disabled; Opacity;
+	 * the spawn rate) goes to our emitter's particle parameters.
+	 */
+	void SyncEmitterValues(FUSObject* O, AArenaEmitter* Native, TArray<TArray<float>>& Last)
+	{
+		FUSProperty* P = Prop(O, TEXT("Emitters"));
+		if (!P || P->Type != EUSType::Array || !P->Inner || P->Inner->Type != EUSType::Object)
+		{
+			return;
+		}
+		const FUSScriptArray& Arr = *reinterpret_cast<const FUSScriptArray*>(O->Data + P->Offset);
+		const int32 Num = FMath::Min(Arr.Num, Native->NumEmitters());
+		Last.SetNum(Num);
+		constexpr float S = ArenaUE2World::Scale;
+		for (int32 i = 0; i < Num && Arr.Data; ++i)
+		{
+			FUSObject* E = *reinterpret_cast<FUSObject* const*>(Arr.Data + i * P->Inner->ElementSize);
+			FArenaParticleParams* PP = E && E->Data ? Native->GetEmitterParams(i) : nullptr;
+			if (!PP)
+			{
+				continue;
+			}
+			// StartSizeRange (6), StartLocationOffset (3), BeamDistanceRange (2), Opacity, ParticlesPerSecond, Disabled
+			float V[14] = {};
+			const bool bSize = ReadFloats(E, TEXT("StartSizeRange"), 6, V);
+			const bool bOffset = ReadFloats(E, TEXT("StartLocationOffset"), 3, V + 6);
+			const bool bBeam = ReadFloats(E, TEXT("BeamDistanceRange"), 2, V + 9);
+			const bool bOpacity = ReadFloats(E, TEXT("Opacity"), 1, V + 11);
+			const bool bRate = ReadFloats(E, TEXT("ParticlesPerSecond"), 1, V + 12);
+			const uint32 Disabled = Get<uint32>(E, TEXT("Disabled"));
+			V[13] = Disabled ? 1.f : 0.f;
+			TArray<float>& L = Last[i];
+			if (L.Num() == 0)
+			{
+				L.Append(V, 14); // the first values are what our emitter was built from
+				continue;
+			}
+			if (FMemory::Memcmp(L.GetData(), V, sizeof(V)) == 0)
+			{
+				continue;
+			}
+			if (bSize)
+			{
+				PP->StartSizeMin = FVector(V[0], V[2], V[4]);
+				PP->StartSizeMax = FVector(V[1], V[3], V[5]);
+			}
+			if (bOffset)
+			{
+				PP->StartLocationOffset = FVector(V[6], V[7], V[8]) * S;
+			}
+			if (bBeam && PP->Kind == FArenaParticleParams::EKind::Beam && PP->BeamSegments < 0)
+			{
+				PP->BeamEndMin = FVector(V[9] * S, 0.f, 0.f);
+				PP->BeamEndMax = FVector(V[10] * S, 0.f, 0.f);
+			}
+			if (bOpacity)
+			{
+				PP->Opacity = V[11];
+			}
+			if (bRate)
+			{
+				PP->ParticlesPerSecond = V[12];
+			}
+			PP->bDisabled = Disabled != 0;
+			FMemory::Memcpy(L.GetData(), V, sizeof(V));
+		}
+	}
+}
+
 struct FUE2NetScriptVisuals::FVisual
 {
 	TWeakObjectPtr<AUE2NetScriptVisual> Actor;
@@ -104,6 +189,8 @@ struct FUE2NetScriptVisuals::FVisual
 	/** A mesh-particle xEmitter: one burst each time script raises its mStartParticles (its Trigger). */
 	bool bMeshBursts = false;
 	int32 LastStartParticles = 0;
+	/** The script emitter's ParticleEmitters' changeable values last applied (per emitter). */
+	TArray<TArray<float>> EmitterValues;
 };
 
 AUE2NetScriptVisual::AUE2NetScriptVisual()
@@ -350,6 +437,18 @@ void FUE2NetScriptVisuals::Sync(const TArray<FUSObject*>& Actors, TFunctionRef<U
 			if (A->Root->GetAttachParent() != Parent || A->Root->GetAttachSocketName() != Socket)
 			{
 				A->Root->AttachToComponent(Parent, FAttachmentTransformRules::KeepRelativeTransform, Socket);
+				// on a first-person view model (a weapon running as script): drawn with it, in its field of view
+				const UPrimitiveComponent* PP = Cast<UPrimitiveComponent>(Parent);
+				const bool bFirstPerson = PP && PP->IsFirstPersonRelevant();
+				TInlineComponentArray<UPrimitiveComponent*> Prims(A);
+				if (A->Emitter)
+				{
+					A->Emitter->GetComponents(Prims, true);
+				}
+				for (UPrimitiveComponent* Prim : Prims)
+				{
+					Prim->SetFirstPersonPrimitiveType(bFirstPerson ? EFirstPersonPrimitiveType::FirstPerson : EFirstPersonPrimitiveType::None);
+				}
 			}
 			const FUSVector RL = Get<FUSVector>(O, TEXT("RelativeLocation"));
 			A->Root->SetRelativeLocationAndRotation(FVector(RL.X, RL.Y, RL.Z) * S, USUnits::FromUE2(Get<FUSRotator>(O, TEXT("RelativeRotation"))));
@@ -366,6 +465,10 @@ void FUE2NetScriptVisuals::Sync(const TArray<FUSObject*>& Actors, TFunctionRef<U
 			A->SetActorLocationAndRotation(USUnits::FromUE2(P.Location.Get<FUSVector>(O)), USUnits::FromUE2(P.Rotation.Get<FUSRotator>(O)));
 		}
 		A->SetActorHiddenInGame(P.bHidden.Get<uint32>(O) != 0);
+		if (AArenaEmitter* NE = Cast<AArenaEmitter>(A->Emitter.Get()))
+		{
+			SyncEmitterValues(O, NE, V.EmitterValues);
+		}
 		// its particles are done: UE2 Emitter.AutoDestroy, an xEmitter without mRegen (native AutoDestroy too)
 		if (V.bEmitter && !IsValid(A->Emitter) && ((O->IsA(FName(TEXT("Emitter"))) && Get<uint32>(O, TEXT("AutoDestroy")) != 0) || (O->IsA(FName(TEXT("xEmitter"))) && Get<uint32>(O, TEXT("mRegen")) == 0)))
 		{

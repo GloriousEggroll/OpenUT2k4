@@ -87,6 +87,10 @@ public:
 	UPROPERTY(VisibleInstanceOnly, Category = "Weapon") int32 Ammo = 0;
 	/** Net play: what this weapon stands in for (FArenaNetStandIn); call before GiveTo. */
 	void SetNetStandIn(const FArenaNetStandIn& In);
+	/** The mod fire mode's FireRate as its client code has it now (a spin-up, a rate set by ModeDoFire): Net/UE2NetScriptHUD. */
+	void SetNetFireRate(uint8 Mode, float Rate);
+	/** The first-person view model (null: the procedural one). */
+	USkeletalMeshComponent* GetViewMesh() const { return ViewMesh; }
 	const FArenaNetStandIn& GetNetStandIn() const { return NetStandIn; }
 	UPROPERTY(VisibleInstanceOnly, Category = "Weapon") int32 AltAmmo = 0;
 	/** Set by the owner right before Equip: the previous weapon's put-down time. */

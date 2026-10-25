@@ -139,8 +139,17 @@ public:
 	/** All loaded linkers by lower-case package name. */
 	TMap<FName, FUSLinker*> Linkers;
 
-	/** Reads a value from the player's UT2004 ini files (System/UT2004.ini then User.ini). */
+	/** Reads a value: our own per-user copy first (what script saved: SaveConfig), then the player's UT2004 ini files
+	 *  (System/UT2004.ini then User.ini, read only). */
 	bool GetConfigValue(const FString& Section, const FString& Key, TArray<FString>& OutValues);
+	/**
+	 * Object.SaveConfig / StaticSaveConfig: the config properties of Obj (or of the class defaults, Obj null) into our own
+	 * per-user ini (<Saved>/UE2Config/User.ini, sections as UT2004's: the class path, globalconfig ones under the declaring
+	 * class). The player's UT2004 install is never written.
+	 */
+	void SaveConfig(FUSClass* Class, const uint8* Data);
+	/** Our per-user ini (where SaveConfig writes). */
+	static FString UserConfigFile();
 	/** Localized string from System/<Package>.int. */
 	bool GetLocalized(const FString& Package, const FString& Section, const FString& Key, FString& OutValue);
 

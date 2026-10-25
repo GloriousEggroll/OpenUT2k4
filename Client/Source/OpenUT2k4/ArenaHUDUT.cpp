@@ -735,20 +735,23 @@ void AArenaHUD::DrawUTWeaponBar(const AArenaCharacter* Char)
 	const float T = Now();
 	const AArenaWeapon* Weapons[NumBarSlots] = {};
 	const AArenaWeapon* Pending = Char->GetCurrentWeapon();
+	// a mod weapon running as script (Net/UE2NetScriptWeapon.h) has its server InventoryGroup and its own icon
+	auto GroupOf = [](const AArenaWeapon* W) { return W->GetNetStandIn().bIcon && !ArenaArtHUD::GetWeaponIcon(W->GetClass()) ? W->Slot : ArenaArtHUD::GetWeaponGroup(W->GetClass()); };
+	auto OnBar = [](const AArenaWeapon* W) { return ArenaArtHUD::GetWeaponIcon(W->GetClass()) || W->GetNetStandIn().bIcon; };
 	for (const AArenaWeapon* W : Char->GetWeapons())
 	{
-		const int32 G = W ? ArenaArtHUD::GetWeaponGroup(W->GetClass()) : 0;
+		const int32 G = W ? GroupOf(W) : 0;
 		// InventoryGroup 1..9 -> slot 0..8 (0 -> 8); others (ball launcher, group 15) are not on the bar
 		const int32 Pos = G == 0 ? 8 : G - 1;
-		if (W && G < 10 && ArenaArtHUD::GetWeaponIcon(W->GetClass()) && !Weapons[Pos])
+		if (W && G >= 0 && G < 10 && OnBar(W) && !Weapons[Pos])
 		{
 			Weapons[Pos] = W;
 		}
 	}
 	if (Pending)
 	{
-		const int32 G = ArenaArtHUD::GetWeaponGroup(Pending->GetClass());
-		if (G < 10 && ArenaArtHUD::GetWeaponIcon(Pending->GetClass()))
+		const int32 G = GroupOf(Pending);
+		if (G >= 0 && G < 10 && OnBar(Pending))
 		{
 			Weapons[G == 0 ? 8 : G - 1] = Pending;
 		}

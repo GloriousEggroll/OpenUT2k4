@@ -700,6 +700,25 @@ namespace USCoreNatives
 
 	// ---- config (never written: the player's install is read only) ----
 	US_NATIVE(NoOp) { USP_FINISH; }
+	/** Object.SaveConfig: this object's config values into our own per-user ini (FUSRuntime::SaveConfig). */
+	US_NATIVE(SaveConfig)
+	{
+		USP_FINISH;
+		if (Self && Self->Class && Self->Data)
+		{
+			FUSRuntime::Get().SaveConfig(Self->Class, Self->Data);
+		}
+	}
+	/** Object.StaticSaveConfig: the class defaults' config values. */
+	US_NATIVE(StaticSaveConfig)
+	{
+		USP_FINISH;
+		FUSClass* C = Self && (Self->Flags & USF_Field) ? static_cast<FUSClass*>(Self) : (Self ? Self->Class : nullptr);
+		if (C && C->Defaults.Num() >= C->PropertiesSize)
+		{
+			FUSRuntime::Get().SaveConfig(C, C->Defaults.GetData());
+		}
+	}
 	US_NATIVE(NoOpStr) { USP_GET_STR_OPTX(S, FString()); USP_FINISH; }
 	US_NATIVE(StopWatch) { USP_GET_UBOOL_OPTX(B, false); USP_FINISH; }
 	US_NATIVE(ReturnFalse) { USP_FINISH; US_RESULT(uint32) = 0; }
@@ -780,7 +799,7 @@ void USNatives::RegisterCore()
 		N(ClassIsChildOf), N(IsA), N(GetPropertyText), N(SetPropertyText), N(GetEnum), N(DynamicLoadObject), N(FindObject),
 		N(StopWatch), N(PlatformIs64Bit), N(PlatformIsWindows), N(PlatformIsUnix), N(PlatformIsMacOS), N(GetPerObjectNames),
 		N(GetReferencers), N(AllObjects),
-		{ TEXT("Object"), TEXT("SaveConfig"), &NoOp }, { TEXT("Object"), TEXT("StaticSaveConfig"), &NoOp },
+		{ TEXT("Object"), TEXT("SaveConfig"), &SaveConfig }, { TEXT("Object"), TEXT("StaticSaveConfig"), &StaticSaveConfig },
 		{ TEXT("Object"), TEXT("ResetConfig"), &NoOpStr }, { TEXT("Object"), TEXT("ClearConfig"), &NoOpStr },
 		{ TEXT("Object"), TEXT("StaticClearConfig"), &NoOpStr }, { TEXT("Object"), TEXT("IsOnConsole"), &ReturnFalse },
 		{ TEXT("Object"), TEXT("IsSoaking"), &ReturnFalse },

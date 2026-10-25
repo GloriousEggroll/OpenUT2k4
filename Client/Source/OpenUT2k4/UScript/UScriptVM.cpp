@@ -1240,6 +1240,20 @@ bool USVM::IsSkippedOnProxy(const FUSObject* Self, const FUSFunction* Function)
 	return Function && !(Function->FunctionFlags & (USFlags::FUNC_Simulated | USFlags::FUNC_Static | USFlags::FUNC_Native)) && IsProxy(Self);
 }
 
+bool USVM::IsNetFunction(const FUSFunction* Function)
+{
+	// the replication of a function is declared on its first declaration: overrides inherit it
+	int32 Guard = 0;
+	for (const FUSField* F = Function; F && Guard < 32; F = F->SuperField, ++Guard)
+	{
+		if (static_cast<const FUSFunction*>(F)->FunctionFlags & USFlags::FUNC_Net)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool USVM::IsProxy(const FUSObject* Self)
 {
 	if (!Self || !(Self->Flags & USF_Actor) || !Self->Data)
@@ -1260,7 +1274,10 @@ bool USVM::IsProxy(const FUSObject* Self)
 void USVM::CallFunction(FUSObject* Self, FUSFrame& Stack, void* Result, FUSFunction* Function)
 {
 	++GStatCalls;
-	if (IsSkippedOnProxy(Self, Function))
+	// a replicated function the world sends to the other side (the UE2 client mirror: ServerStartFire ... on actors our
+	// connection owns) instead of running it here
+	const bool bRemote = Self && Self->World && IsNetFunction(Function) && Self->World->IsRemoteCall(Self, Function);
+	if (!bRemote && IsSkippedOnProxy(Self, Function))
 	{
 		USSkipParmsGeneric(Stack, Function);
 		return;
@@ -1327,7 +1344,14 @@ void USVM::CallFunction(FUSObject* Self, FUSFrame& Stack, void* Result, FUSFunct
 		++ParmIndex;
 	}
 	Stack.Code++;
-	if (!GAbort)
+	if (bRemote)
+	{
+		if (!GAbort)
+		{
+			Self->World->CallRemote(Self, Function, Locals);
+		}
+	}
+	else if (!GAbort)
 	{
 		FUSFrame NewStack(Self, Function, Function->Script.GetData(), Locals, &Stack);
 		++GCallDepth;
@@ -1346,7 +1370,16 @@ void USVM::CallFunction(FUSObject* Self, FUSFrame& Stack, void* Result, FUSFunct
 
 void USVM::ProcessEvent(FUSObject* Self, FUSFunction* Function, void* Parms)
 {
-	if (!Self || !Function || Self->IsPendingKill() || !IsProbing(Self, Function->Name) || IsSkippedOnProxy(Self, Function))
+	if (!Self || !Function || Self->IsPendingKill() || !IsProbing(Self, Function->Name))
+	{
+		return;
+	}
+	if (Self->World && Parms && IsNetFunction(Function) && Self->World->IsRemoteCall(Self, Function))
+	{
+		Self->World->CallRemote(Self, Function, static_cast<uint8*>(Parms));
+		return;
+	}
+	if (IsSkippedOnProxy(Self, Function))
 	{
 		return;
 	}

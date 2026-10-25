@@ -64,6 +64,39 @@ public:
 	 * HUD.Message): true when that HUD draws it (ours then only plays its sounds), false when ours shows it.
 	 */
 	bool FeedMessage(int32 Channel, const FString& Function, const TArray<TPair<FName, FUE2NetValue>>& Params);
+	// ---- the local player's mod weapons run as script (Net/UE2NetScriptWeapon.h) ----
+	enum class EWeaponCommand : uint8 { BringUp, PutDown, StartFire, StopFire };
+	struct FScriptWeaponState
+	{
+		/** Weapon.AmmoAmount(0) / MaxAmmo(0). */
+		int32 Ammo = 0;
+		int32 MaxAmmo = 0;
+		/** What the script last asked the weapon to play (Actor.PlayAnim / LoopAnim / StopAnimating). */
+		FName Anim;
+		float AnimRate = 1.f;
+		bool bAnimLoop = false;
+		bool bAnimStopped = false;
+		uint32 AnimSerial = 0;
+	};
+	/** The weapon of Channel (ours) runs its own client code in the mirror. */
+	bool IsScriptWeapon(int32 Channel) const;
+	/** Weapon.BringUp / PutDown, ClientStartFire / ClientStopFire(Mode) of the script weapon. */
+	void ScriptWeaponCommand(int32 Channel, EWeaponCommand Command, uint8 Mode);
+	bool GetScriptWeaponState(int32 Channel, FScriptWeaponState& Out) const;
+	/** The weapon's animation ended: its AnimEnd(0). */
+	void ScriptWeaponAnimEnd(int32 Channel);
+	/**
+	 * A mod weapon our stand-in plays (it has a stock relative): its fire modes' client code runs alongside ours so the fire
+	 * timing follows it (ModeTick each frame with bIsFiring as held; ModeDoFire for each shot ours plays). The current
+	 * FireRate of mode Mode afterwards, or a negative value.
+	 */
+	void TickStandInWeapon(int32 Channel, bool bHeld0, bool bHeld1, float DeltaSeconds);
+	void StandInFired(int32 Channel, uint8 Mode);
+	float GetScriptFireRate(int32 Channel, uint8 Mode) const;
+	/** A console command for the mod's code: an exec function of our controller, pawn or weapon in the mirror (BW's
+	 *  reload / weapon special binds ...). True when one ran. */
+	bool ConsoleExec(const FString& Command);
+
 	/** The mirrored actor of Channel runs client code that shows an attachment of that class ("Pkg.Class"). */
 	bool HasClientAttachment(int32 Channel, const FString& ClassPath) const;
 

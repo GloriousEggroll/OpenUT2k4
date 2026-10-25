@@ -180,6 +180,8 @@ public:
 	/** Adds a ParticleEmitter (before BeginPlay). */
 	void AddEmitter(const FArenaParticleParams& Params);
 	int32 NumEmitters() const { return Emitters.Num(); }
+	/** An emitter's parameters, for script that changes them while it plays (Net/UE2NetScriptVisuals.h). */
+	FArenaParticleParams* GetEmitterParams(int32 Index) { return Emitters.IsValidIndex(Index) ? &Emitters[Index].P : nullptr; }
 	int32 NumLiveParticles() const;
 
 	virtual void InitFromUE2(const FArenaUE2ActorDesc& Desc) override;
