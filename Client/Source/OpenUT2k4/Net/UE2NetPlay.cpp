@@ -1348,6 +1348,7 @@ void FUE2NetPlay::ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params,
 		return;
 	}
 	LastAdjustTimeStamp = TimeStamp;
+	UpdatePing(TimeStamp);
 	if (AArenaGuidedWarhead* WH = NetWarhead.Get(); WH && WarheadChannel == OwnPawnChannel)
 	{
 		// PlayerRocketing: the server's warhead at TimeStamp, then our moves since (ClientUpdatePosition)
@@ -1573,6 +1574,54 @@ void FUE2NetPlay::ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params,
 		CM->FindFloor(CM->UpdatedComponent->GetComponentLocation(), CM->CurrentFloor, false);
 	}
 	ReplayMovesAfter(TimeStamp);
+}
+
+void FUE2NetPlay::UpdatePing(float TimeStamp)
+{
+	using namespace UE2NetPlayLocal;
+	// PlayerController.ClientAdjustPosition (3369): the move at TimeStamp went out that long ago; ExactPing follows it
+	// (smoothed, spikes capped) and every 4 s ServerUpdatePing(1000 * ExactPing), which sets our
+	// PlayerReplicationInfo.Ping to a quarter of it on the server (the scoreboards' ping; 0 until a client sends it)
+	if (!World.IsValid())
+	{
+		return;
+	}
+	const double Now = World->GetTimeSeconds();
+	float NewPing = FMath::Min(1.5f, float(Now) - TimeStamp);
+	if (NewPing < 0.f)
+	{
+		return;
+	}
+	if (ExactPing < 0.004f)
+	{
+		ExactPing = FMath::Min(0.3f, NewPing);
+	}
+	else
+	{
+		if (NewPing > 2.f * ExactPing)
+		{
+			NewPing = FMath::Min(NewPing, 3.f * ExactPing);
+		}
+		ExactPing = FMath::Min(0.99f, 0.99f * ExactPing + 0.008f * NewPing);
+	}
+	// PlayerReplicationInfo.Ping = Min(250 * ExactPing, 255) on the client itself (the server sends it to the others only)
+	const uint8 OwnPing = uint8(FMath::Min(250.f * ExactPing, 255.f));
+	if (AArenaPlayerController* PC = GetPC())
+	{
+		if (AArenaPlayerState* PS = PC->GetPlayerState<AArenaPlayerState>())
+		{
+			PS->SetCompressedPing(OwnPing);
+		}
+	}
+	if (FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get())
+	{
+		SH->SetOwnPing(OwnPing);
+	}
+	if (Now - LastPingUpdate > 4.0 && PCChannel())
+	{
+		LastPingUpdate = Now;
+		Send(PCChannel(), TEXT("ServerUpdatePing"), { VInt(int32(1000.f * ExactPing)) });
+	}
 }
 
 void FUE2NetPlay::ReplayMovesAfter(float TimeStamp)

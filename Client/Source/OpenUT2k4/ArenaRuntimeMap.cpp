@@ -205,6 +205,9 @@ namespace ArenaRuntimeMapLocal
 		bool bFakeBackdrop = false;
 		/** Terrain only: how far the pawn collision copy lowers each vertex, for a capsule (X) and a box (Y) (PawnTerrain). */
 		TArray<FVector2f> PawnDrop;
+		/** Terrain only: the box pawns' collision copy (PawnTerrain), built at a finer grid (TerrainPrimitive). */
+		TArray<FVector3f> BoxPos;
+		TArray<uint32> BoxIdx;
 		bool bInverted = false;
 
 		int32 NumTris() const { return Idx.Num() / 3; }
@@ -494,6 +497,115 @@ namespace ArenaRuntimeMapLocal
 				}
 			}
 		}
+		// the box pawns' copy: UE2 puts a pawn on terrain at the height under its centre (+2.5 UU) wherever it is, on
+		// rough terrain too (a UT2004 server's pawns 44-48 UU above it on DM-ShudderCreek's banks, ours 52-84 with the
+		// slope-based drop). An axis-aligned box of half-width R rests on the highest point under it, so the copy is
+		// the terrain eroded by the box: each vertex at the lowest height of the surface within +-R of it. Built at a
+		// third of the grid (closer than the box is wide, so a box always covers a vertex no higher than its centre)
+		if (!bInverted)
+		{
+			constexpr double BoxR = 50.0; // the UE2 net pawn's box: 25 UU half-width
+			auto SurfaceAt = [&](double GX, double GY) -> double
+			{
+				GX = FMath::Clamp(GX, 0.0, double(W - 1));
+				GY = FMath::Clamp(GY, 0.0, double(H - 1));
+				const int32 X = FMath::Min(int32(GX), W - 2), Y = FMath::Min(int32(GY), H - 2);
+				const double FX = GX - X, FY = GY - Y;
+				const double A = Height(X, Y), B = Height(X + 1, Y), C = Height(X, Y + 1), D = Height(X + 1, Y + 1);
+				if (!Bit(Turn, Y * W + X))
+				{
+					// split (x, y) - (x + 1, y + 1)
+					return FX >= FY ? A + (B - A) * FX + (D - B) * FY : A + (C - A) * FY + (D - C) * FX;
+				}
+				// split (x + 1, y) - (x, y + 1)
+				return FX + FY <= 1.0 ? A + (B - A) * FX + (C - A) * FY : D + (C - D) * (1.0 - FX) + (B - D) * (1.0 - FY);
+			};
+			const double RX = BoxR / Scale.X, RY = BoxR / Scale.Y;
+			// the lowest point of the piecewise-linear surface over the box: at its corners, where its edges cross the
+			// grid lines and the quads' diagonals, or at a grid vertex inside it
+			auto BoxMin = [&](double GX, double GY) -> double
+			{
+				const double X0 = GX - RX, X1 = GX + RX, Y0 = GY - RY, Y1 = GY + RY;
+				double M = TNumericLimits<double>::Max();
+				auto Try = [&](double PX, double PY) { M = FMath::Min(M, SurfaceAt(PX, PY)); };
+				Try(X0, Y0); Try(X1, Y0); Try(X0, Y1); Try(X1, Y1);
+				for (const double EX : { X0, X1 })
+				{
+					for (int32 K = FMath::CeilToInt(Y0); K <= FMath::FloorToInt(Y1); ++K)
+					{
+						Try(EX, K);
+					}
+					const double F = EX - FMath::FloorToDouble(EX);
+					for (int32 K = FMath::FloorToInt(Y0); K <= FMath::FloorToInt(Y1); ++K)
+					{
+						const int32 QX = FMath::Clamp(FMath::FloorToInt(EX), 0, W - 2), QY = FMath::Clamp(K, 0, H - 2);
+						const double DY = K + (Bit(Turn, QY * W + QX) ? 1.0 - F : F);
+						if (DY >= Y0 && DY <= Y1)
+						{
+							Try(EX, DY);
+						}
+					}
+				}
+				for (const double EY : { Y0, Y1 })
+				{
+					for (int32 K = FMath::CeilToInt(X0); K <= FMath::FloorToInt(X1); ++K)
+					{
+						Try(K, EY);
+					}
+					const double F = EY - FMath::FloorToDouble(EY);
+					for (int32 K = FMath::FloorToInt(X0); K <= FMath::FloorToInt(X1); ++K)
+					{
+						const int32 QX = FMath::Clamp(K, 0, W - 2), QY = FMath::Clamp(FMath::FloorToInt(EY), 0, H - 2);
+						const double DX = K + (Bit(Turn, QY * W + QX) ? 1.0 - F : F);
+						if (DX >= X0 && DX <= X1)
+						{
+							Try(DX, EY);
+						}
+					}
+				}
+				for (int32 VY = FMath::CeilToInt(Y0); VY <= FMath::FloorToInt(Y1); ++VY)
+				{
+					for (int32 VX = FMath::CeilToInt(X0); VX <= FMath::FloorToInt(X1); ++VX)
+					{
+						Try(VX, VY);
+					}
+				}
+				return M;
+			};
+			const int32 N = FMath::Max(1, FMath::CeilToInt(FMath::Max(Scale.X, Scale.Y) / (1.7 * BoxR)));
+			const int32 BW = (W - 1) * N + 1, BH = (H - 1) * N + 1;
+			Out.BoxPos.SetNumUninitialized(BW * BH);
+			ParallelFor(BH, [&](int32 SY)
+			{
+				for (int32 SX = 0; SX < BW; ++SX)
+				{
+					const double GX = double(SX) / N, GY = double(SY) / N;
+					Out.BoxPos[SY * BW + SX] = FVector3f(float(Loc.X + (GX - W / 2.0) * Scale.X), float(Loc.Y + (GY - H / 2.0) * Scale.Y), float(BoxMin(GX, GY)));
+				}
+			});
+			for (int32 Y = 0; Y < H - 1; ++Y)
+			{
+				for (int32 X = 0; X < W - 1; ++X)
+				{
+					if (Visible.Num() > 0 && !Bit(Visible, Y * W + X))
+					{
+						continue;
+					}
+					const bool bTurn = Bit(Turn, Y * W + X);
+					for (int32 J = 0; J < N; ++J)
+					{
+						for (int32 I = 0; I < N; ++I)
+						{
+							const uint32 A = (Y * N + J) * BW + X * N + I, B = A + 1, C = A + BW, D = A + BW + 1;
+							// the quad's own diagonal direction in its sub-quads; Unreal winding (see below)
+							const uint32 T[6] = { A, D, B, A, C, D };
+							const uint32 TT[6] = { A, C, B, B, C, D };
+							Out.BoxIdx.Append(bTurn ? TT : T, 6);
+						}
+					}
+				}
+			}
+		}
 		for (int32 Y = 0; Y < H - 1; ++Y)
 		{
 			for (int32 X = 0; X < W - 1; ++X)
@@ -547,6 +659,14 @@ namespace ArenaRuntimeMapLocal
 		if (T.bInverted)
 		{
 			return P; // a ceiling: pawns do not stand on it
+		}
+		if (bBox && T.BoxPos.Num() > 0)
+		{
+			P.Pos = T.BoxPos;
+			P.Idx = T.BoxIdx;
+			P.Nrm.Init(FVector3f(0.f, 0.f, 1.f), P.Pos.Num());
+			P.UV.Init(FVector2f(0.f), P.Pos.Num());
+			return P;
 		}
 		for (int32 i = 0; i < P.Pos.Num() && i < T.PawnDrop.Num(); ++i)
 		{

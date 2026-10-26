@@ -89,6 +89,9 @@ public:
 	 * run its code here: the caller switches (and tells the server) itself.
 	 */
 	bool ScriptSwitchWeapon(int32 PawnChannel, int32 WeaponChannel);
+	/** PlayerController's own ping on the client (PRI.Ping, a quarter of the ms; the server replicates it to the others
+	 *  only): our PRI's mirror gets it, for the mods' scoreboards. */
+	void SetOwnPing(uint8 Ping);
 	/** Our fire pressed / released in the vehicle of VehicleChannel: its mod weapons' client code (ClientStartFire / ClientStopFire). */
 	void VehicleFire(int32 VehicleChannel, bool bStart, bool bAlt);
 	/** The weapon our pawn's script holds or is switching to, when that weapon runs its own code (0 otherwise). */

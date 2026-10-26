@@ -901,6 +901,9 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
 - **Spawning players**: a pawn whose PRI has not named its character yet is not drawn until its model is applied
   (at most a second, then the stock pick), and the model's skins and team colours are applied with the mesh, not
   on the next tick (a frame of the converted mesh's own, untextured materials). Our own corpse is drawn as before.
+- **Shadows**: a pawn's code does not spawn its `ShadowProjector` (`bPlayerShadows` / `bShadowCast` off in the mirror):
+  our renderer casts the shadows. UTComp's pawns made one per spawn ("InitShadow: Failed to allocate texture", 75 in
+  two minutes), which stayed in the mirror.
 - **Object variables**: `Object.Class` and `Object.Name` hold the object's class and name (`FUSWorld::ConstructObject`):
   `class.default.X = ...` (BW's `InitClientVars`) and `Other.Class == class'X'` work.
 - **Sounds**: the first play of each sound by script (`PlaySound` / `PlayOwnedSound`) is logged (`UScript: <actor> plays
@@ -1422,6 +1425,7 @@ that showed, and what our pawn now does to match:
 | Falling while pressing into a wall (jumps, dodges and falls along walls): the server's pawn gets no air control at all. Its horizontal velocity stays exactly as it was (0 into the wall, unchanged along it, also above the maximum speed during a dodge), so it never drifts closer than where it took off. physFalling's `TestWalk` check (the next step's horizontal move with air control) cuts air control when it would hit something: to 0.05 on a walkable slope, to 0 on a wall | `UArenaCharacterMovement::GetAirControl`: 0 when the test move (with the pawn's own collision shape, the box in net play) hits a wall. Ours drifted up to 2 UU into the wall's 2 UU gap during every jump and slid along it with air control: one correction after another while jumping along walls |
 | Air control at the maximum speed: the server's horizontal speed is bound only while it is already above the maximum (`BoundSpeed`); from at or below it, one step may go past it (440 → 444.7 UU/s at 7 ms steps, 448.4 at 11 ms) | `CalcVelocity` (falling) binds to the current speed only when that is above the maximum |
 | Floors under the box: UE2 finds the floor with the pawn's box (physWalking's drop to the floor, physFalling's landing), so a contact anywhere under the bottom face counts, also at a corner (up to √2 R from the centre). The engine's capsule rules (a contact within the radius; its flat-base floor check is an octagon inside the capsule) rejected those: our pawn hung in the falling state at the floor after landing on a corner contact (often next to a wall, 3.9 UU below the server's walking pawn, until the next correction or jump), and walked off ledges the server's pawn still stood on (on DM-Rankin the server's pawn walked 32 UU higher along a ledge for 40 s while ours dropped back after every correction: 964 corrections) | for a box pawn `UArenaCharacterMovement::FloorSweepTest` sweeps the box (a walkable contact is the floor; where the box only catches a step's edge with a contact normal that is not walkable, the engine's own floor sweep decides, or the pawn slid down stairs it pressed against) and `IsWithinEdgeTolerance` accepts the whole bottom face (less the engine's 0.15 cm margin) |
+| Terrain: a UT2004 server puts a pawn on terrain at the height under its centre plus 2.5 UU everywhere, also on rough banks and in pits (DM-ShudderCreek: 44-48 UU above the centre's terrain while ours stood 52-84 UU above with the slope-based lowering) | the box's terrain copy (`TerrainPawnBox`) is the terrain eroded by the box: each vertex at the lowest point of the surface within ±25 UU (exact on the triangulated surface: box corners, its crossings of grid lines and quad diagonals, grid vertices), built on a grid three to four times finer than the heightmap so a box always covers a vertex no higher than its centre. DM-ShudderCreek, 3369 server, route over the map: corrections away from one pit where the server's pawn was falling 692 → 70 in 90 s (the pit itself: the server's pawn slides, ours walks) |
 | `PHYS_None` in an adjustment (Assault's `RoundEnded`, the end of a match): the server's pawn stands still | our pawn stops too (`DisableMovement`); before, it kept falling or walking and drew a correction every move until the next round |
 
 Remaining differences are mostly geometry. Static meshes with a UE2 collision model collide with that model since map
@@ -1433,6 +1437,12 @@ blocker (`wall probe`) and a `details` line: our and the server's velocity, the 
 and our floor component.
 
 ### Firing, weapons, HUD
+
+**Ping**: like a 3369 client, ours measures its ping from the adjustments (the age of the move each one answers:
+`ExactPing`, smoothed and spikes capped as `PlayerController.ClientAdjustPosition` does), sets its own
+`PlayerReplicationInfo.Ping` (a quarter of the ms; the server replicates it to the other players only) and sends
+`ServerUpdatePing(1000 * ExactPing)` every 4 s, which sets it on the server. Our ping showed as 0 on scoreboards (ours
+and UTComp's) before.
 
 - **Fire / alt fire**: `Weapon.ServerStartFire(Mode)` on press and `ServerStopFire(Mode)` on release, on the current
   weapon's channel. NewNet weapons send their own timestamped start fire instead, once the weapon is ready (see

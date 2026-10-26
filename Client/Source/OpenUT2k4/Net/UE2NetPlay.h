@@ -228,6 +228,7 @@ private:
 	void CallServerMove(const FMove* Pending, const FMove& Move, const FMove* Old);
 	void ClientAdjust(const TArray<TPair<FName, FUE2NetValue>>& Params, bool bHasVelocity, bool bVeryShort);
 	void ReplayMovesAfter(float TimeStamp);
+	void UpdatePing(float TimeStamp);
 
 	void SetOwnPawnChannel(int32 Channel, const TCHAR* Why);
 	void ApplyOwnName(const FUE2NetActor& PRI);
@@ -289,6 +290,9 @@ private:
 	/** The server's ClientCapBandwidth (bytes per second, 0: none). */
 	int32 ClientCap = 0;
 	float LastAdjustTimeStamp = -1.f;
+	/** PlayerController.ExactPing (s) from the adjustments' TimeStamps, sent every 4 s (ServerUpdatePing). */
+	float ExactPing = 0.f;
+	double LastPingUpdate = -100.0;
 	float LastTimeStamp = 0.f;
 	/** Spectating: where the server's spectator is (UE2 units), as far as we know (its corrections tell us). */
 	FVector ServerSpecLoc = FVector::ZeroVector;

@@ -271,6 +271,23 @@ public:
 		}
 	}
 
+	/**
+	 * Our renderer casts the shadows: a pawn's code does not spawn its ShadowProjector (xPawn.bPlayerShadows,
+	 * Monster/UnrealPawn bShadowCast). Mod pawns running their code made one per spawn, each failing to allocate its
+	 * render texture ("InitShadow: Failed to allocate texture"), and they piled up in the mirror.
+	 */
+	static void NoScriptShadows(FUSObject* O)
+	{
+		for (const TCHAR* Name : { TEXT("bPlayerShadows"), TEXT("bShadowCast") })
+		{
+			FUSProperty* P = O ? O->FindProperty(FName(Name)) : nullptr;
+			if (P && P->Type == EUSType::Bool && O->Data)
+			{
+				*reinterpret_cast<uint32*>(O->Data + P->Offset) = 0;
+			}
+		}
+	}
+
 	virtual FUSObject* SpawnActor(FUSClass* Class, FUSObject* Owner, FName Tag, const FUSVector* Location, const FUSRotator* Rotation, FUSObject* Spawner) override
 	{
 		FUSRuntime& RT = FUSRuntime::Get();
@@ -281,6 +298,7 @@ public:
 		}
 		FUSEngineProps& P = USProps();
 		FUSObject* A = ConstructObject(Class, Level, NAME_None);
+		NoScriptShadows(A);
 		if (!A)
 		{
 			return nullptr;
@@ -1285,6 +1303,7 @@ struct FUE2NetScriptHUD::FImpl
 		else
 		{
 			O = Script->ConstructObject(A.Class, Level, NAME_None);
+			FUE2NetMirrorWorld::NoScriptShadows(O);
 		}
 		if (!O)
 		{
@@ -3689,6 +3708,20 @@ bool FUE2NetScriptHUD::FeedMessage(int32 Channel, const FString& Function, const
 
 bool FUE2NetScriptHUD::IsScriptWeapon(int32 Channel) const { return Impl->bReady && Impl->IsScriptWeaponImpl(Channel); }
 bool FUE2NetScriptHUD::IsScriptVotingTest() { return FImpl::ScriptVotingTest(); }
+void FUE2NetScriptHUD::SetOwnPing(uint8 Ping)
+{
+	FUSObject* PC = Impl->bReady ? Impl->GetPC() : nullptr;
+	FUSObject* PRI = PC ? FImpl::GetObj(PC, TEXT("PlayerReplicationInfo")) : nullptr;
+	FUSProperty* P = PRI ? PRI->FindProperty(TEXT("Ping")) : nullptr;
+	if (P && P->Type == EUSType::Byte && PRI->Data)
+	{
+		*(PRI->Data + P->Offset) = Ping;
+	}
+	if (FUSProperty* B = PRI ? PRI->FindProperty(TEXT("bReceivedPing")) : nullptr; B && B->Type == EUSType::Bool && PRI->Data)
+	{
+		*reinterpret_cast<uint32*>(PRI->Data + B->Offset) = 1;
+	}
+}
 void FUE2NetScriptHUD::VehicleFire(int32 VehicleChannel, bool bStart, bool bAlt) { if (Impl->bReady) Impl->VehicleFireImpl(VehicleChannel, bStart, bAlt); }
 bool FUE2NetScriptHUD::ScriptSwitchWeapon(int32 PawnChannel, int32 WeaponChannel) { return Impl->bReady && Impl->ScriptSwitchWeaponImpl(PawnChannel, WeaponChannel); }
 int32 FUE2NetScriptHUD::ScriptPawnWeapon(int32 PawnChannel) const { return Impl->bReady ? Impl->ScriptPawnWeaponImpl(PawnChannel) : 0; }
@@ -3786,6 +3819,7 @@ bool FUE2NetScriptHUD::HasClientAttachment(int32, const FString&) const { return
 bool FUE2NetScriptHUD::FeedMessage(int32, const FString&, const TArray<TPair<FName, FUE2NetValue>>&) { return false; }
 bool FUE2NetScriptHUD::IsScriptWeapon(int32) const { return false; }
 bool FUE2NetScriptHUD::IsScriptVotingTest() { return false; }
+void FUE2NetScriptHUD::SetOwnPing(uint8) {}
 void FUE2NetScriptHUD::VehicleFire(int32, bool, bool) {}
 bool FUE2NetScriptHUD::ScriptSwitchWeapon(int32, int32) { return false; }
 int32 FUE2NetScriptHUD::ScriptPawnWeapon(int32) const { return 0; }
