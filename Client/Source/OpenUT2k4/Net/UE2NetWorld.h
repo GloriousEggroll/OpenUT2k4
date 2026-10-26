@@ -181,6 +181,8 @@ private:
 	void HearSound(const TArray<TPair<FName, FUE2NetValue>>& Params, bool b2D);
 	void SetViewTargetFromServer(const FUE2NetValue& Target);
 	void PlayAnnouncer(const FString& Name);
+	/** Announcements played (their first play is logged). */
+	TSet<FString> AnnouncedNames;
 
 	// values: the received property, else the class default
 	const FUE2NetValue* Find(const FUE2NetActor& A, const TCHAR* Key) const;

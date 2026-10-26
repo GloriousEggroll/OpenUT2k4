@@ -1552,8 +1552,8 @@ bool FUE2NetConnection::WriteProperty(FUE2BitWriter& W, FUSProperty* Prop, const
 		W.WriteInt(uint32(Value.Obj.Channel), MaxChannels);
 		return true;
 	case EUSType::Name:
-		// only None is supported for now (no reverse name lookup yet)
-		W.WriteInt(uint32(PackageMap.GetMaxNameIndex()), uint32(PackageMap.GetMaxNameIndex() + 1));
+		// the name's index in the package map's name tables (None when no package has it)
+		W.WriteInt(uint32(PackageMap.NameToIndex(Value.N)), uint32(PackageMap.GetMaxNameIndex() + 1));
 		return true;
 	case EUSType::Struct:
 		if (Prop->Struct && Prop->Struct->Name == TEXT("Vector"))

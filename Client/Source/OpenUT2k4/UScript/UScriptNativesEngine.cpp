@@ -495,6 +495,16 @@ namespace USEngineNatives
 		{
 			return;
 		}
+		{
+			// each sound's first play is logged (which sounds a mod's code plays: Freon's thaw, BW's weapons ...)
+			static TSet<FString> Played;
+			const FString Path = Sound->GetPathName();
+			if (!Played.Contains(Path) && Played.Num() < 4096)
+			{
+				Played.Add(Path);
+				UE_LOG(LogUScript, Log, TEXT("UScript: %s plays %s"), *Self->GetName(), *Path);
+			}
+		}
 		if (USoundBase* S = ArenaRuntimeContent::LoadSoundByObjectPath(Sound->GetPathName()))
 		{
 			FUSGameWorld* G = GW(Self);

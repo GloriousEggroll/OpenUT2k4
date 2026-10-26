@@ -91,7 +91,7 @@ Command line (development and test hooks):
 | `-UE2NetDownloadSelfTest` | at startup, checks the file name rules and `.uz2` unpacking and logs `UE2NetDownloadSelfTest: n passed, m failed` (non-shipping) |
 | `-UE2NetTestMapVote=<map>` | once the server counts a map vote down (and the map list is complete), votes for that map in the current game type (test hook for map voting, non-shipping) |
 | `-UE2NetViewPlayer` | once joined, asks the server every 20 s to let our spectator follow the next player (`ServerViewNextPlayer`); keeps a pawn relevant and tests client to server calls. Local test servers only |
-| `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `aim` (look straight at it; `aim=vehicle` / `aim=player`: at the nearest vehicle / player shown), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire; `hunt=tap`: one press per shot, released once the start fire went out) |
+| `-UE2NetPlayScript="<s>:<cmd>;..."` | step 4 test hook (see "Step 4"): scripted movement, jumps, dodges, fire, weapon switching, respawn, use, suicide, team, ready, chat (only to servers on this machine), combos, routes over the nav graph (`route=pickups`, `route=flag`, `route=weapons`: every weapon base of the map), `goto=water|lift|vehicle:<class>|x,y,z` (walk there on the nav graph; `vehicle:` also gets in), `face` (turn toward the last goto target), `aim` (look straight at it; `aim=vehicle` / `aim=player`: at the nearest vehicle / player shown), `yaw=` / `pitch=`, `say` / `teamsay` (local servers only) and `hunt=1` (aim at the nearest visible player and fire; `hunt=tap`: one press per shot, released once the start fire went out) |
 | `-UE2NetPlayProbe` | step 4 test hook, local servers only: `ClientLoc` is sent 500 UU off, so the server answers every move with its own pawn state. Logged (`UE2NetPlayProbe: ...`), never applied. This measured the 3369 server's physics |
 | `-UE2NetLag=<ms>` | adds that much round trip time (half in each direction) to every packet (test hook, non-shipping) |
 | `-UE2NetNoNewNet` | NewNet weapons get the stock `ServerStartFire` (no lag compensation; A/B test hook, non-shipping) |
@@ -813,7 +813,8 @@ them on our canvas, like the real client draws them:
 
 What a UE2 client runs of a mod's replicated actors runs in the client mirror (`Net/UE2NetScriptHUD.cpp`, `-UE2ScriptClient=0`
 turns it off): for every mirrored actor of a mod's package (not UT2004's own, whose actors our native code shows; not
-an `Info`, controller or HUD) the spawn events (`PreBeginPlay` .. `SetInitialState`, `PostNetBeginPlay`), then each
+a controller or HUD, nor an `Info` other than a `ReplicationInfo`: a mod's GRI, PRI and linked infos run, BW's
+`BCReplicationInfo.InitClientVars` sets the client's weapon defaults from the server's) the spawn events (`PreBeginPlay` .. `SetInitialState`, `PostNetBeginPlay`), then each
 frame its timer, `Tick` and state code; `ClientTrigger` when `bClientTrigger` flips, `FlashMuzzleFlash` /
 `ThirdPersonEffects` when `FlashCount` changes, `PostNetReceive` with `bNetNotify`, `Destroyed` when its channel closes.
 The VM follows UE2's role rule (`USVM::IsSkippedOnProxy`): on a simulated proxy only simulated functions and the code
@@ -841,7 +842,10 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
   `RepOffset` (the condition's place in the declaring class's script, the replication block), and
   `USVM::EvalNetCondition` evaluates it on the actor with our roles (`bNetOwner` set, as for its owner's connection).
   `reliable if (Role < ROLE_Authority) ServerStartFire` holds and is sent, its parameters converted to the wire values
-  (objects to their channels); `reliable if (Role == ROLE_Authority) ClientSetHUD, StopZoom, ReceiveNewAim ...` does
+  (objects to their channels, names to the package map's name index, structs other than vectors and rotators member
+  by member as UE2 serializes them); our PRI and the infos linked to it (`CustomReplicationInfo` ->
+  `NextReplicationInfo`, UTComp_PRI) count as ours too: their `Owner` is not replicated.
+  `reliable if (Role == ROLE_Authority) ClientSetHUD, StopZoom, ReceiveNewAim ...` does
   not, and the call runs here (announcements, zoom resets, BW's `ServerSwitchStock`, which is server to client despite
   its name). The other way, what the server calls on a mod actor running client code (`ClientWeaponSet`,
   `ClientForceAmmoUpdate`, a mod's own client functions) and the menu calls on our controller run in the mirror
@@ -856,6 +860,17 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
   a BW sticky mine torn off and destroyed by its client code crashed the client when its channel closed later).
   `bTearOff` makes a mirror running client code `ROLE_Authority`, detaches it from its channel and calls `TornOff`; it
   goes on as a client-side actor.
+- **Weapon switching** of mod weapons running their own code (BW's script weapons, UTComp's and 3SPN's NewNet
+  stand-ins): as UE2's client does, our switch sets `Pawn.PendingWeapon` and calls the held weapon's `PutDown`; its
+  timer calls `Pawn.ChangedWeapon` once it is down, which sends `ServerChangedWeapon` and brings the new one up
+  (`FUE2NetScriptHUD::ScriptSwitchWeapon`); the weapon the script holds or brings up (its `ClientWeaponSet` on spawn)
+  is ours (`ScriptPawnWeapon`), so ours no longer sends a second `ServerChangedWeapon` (Freon spawned with three) and
+  `BringUp` / `PutDown` are not called twice. Stock weapons switch natively as before.
+- **Object variables**: `Object.Class` and `Object.Name` hold the object's class and name (`FUSWorld::ConstructObject`):
+  `class.default.X = ...` (BW's `InitClientVars`) and `Other.Class == class'X'` work.
+- **Sounds**: the first play of each sound by script (`PlaySound` / `PlayOwnedSound`) is logged (`UScript: <actor> plays
+  <sound>`); announcements of a message class come from `AnnouncerSounds[Switch]` or `MessageAnnouncements[Switch]`
+  (`ONSOnslaughtMessage`: "Red PowerCore vulnerable") and are logged as `announcer <name>`.
 - **Mod weapons' HUD ammo**: a mod weapon class overriding `GetAmmoCount` / `GetHUDAmmoText` gives our HUD's ammo
   number (BW: the magazine) and a small line with its text (BW: the reserve).
 - **Mod weapons without a stock relative** (Ballistic Weapons: `Net/UE2NetScriptWeapon.h`, `AWeap_UE2Script`): our
@@ -943,7 +958,7 @@ focus, every widget's `InitComponent`, value and key handling, the mod's pages a
   `RemapComponents`; `FindComponentIndex`), `GUIController` (`GetStyle` with AlternateKeyName, `GetMenuFont`,
   `GetCurrentRes`; the designer, profiles, demo and OGG lists are stubs), `GUIStyles` (`Draw`, `DrawText`, `TextSize`
   with their `OnDraw` / `OnDrawText` delegates), `GUIList.SortList`, `GUIMultiColumnList` (sort data, `GetListIndex`),
-  `GUIToolTip.SetTip` (kept, not shown), `GUIFont.GetFont` (one font per resolution: 640 / 800 / 1024 / 1280 / more).
+  `GUIToolTip.SetTip`, `GUIController.PlayInterfaceSound`, `GUIFont.GetFont` (one font per resolution: 640 / 800 / 1024 / 1280 / more).
 - **Positions**: values in (-2, 2) are relative (to the owner with `bScaleToParent`, else the screen) unless
   `bNeverScale`; `bBoundToParent` adds the owner's position; `ScalingType` / `BoundingType` per axis. `ClientBounds` are
   the bounds less the style's `BorderOffsets`. The screen is the whole canvas (UE2 stretched its 4:3 menus too).
@@ -951,7 +966,9 @@ focus, every widget's `InitComponent`, value and key handling, the mod's pages a
   `ComponentWidth`, `bSquare`, `bFlipped`, `ComponentJustification`, `bVerticalLayout`), combo boxes (edit, button, the
   list below or above), list boxes (list, scroll bar when needed, multi-column header), scroll bars (buttons, zone, grip
   from `GripPos` / items per page), numeric edits (edit and spinner), tab controls (buttons in rows as wide as their
-  captions, `bFillSpace`, docked panels, a pending tab made active), lists (`ItemHeight`, `ItemsPerPage`), scroll text
+  captions, `bFillSpace`, docked panels, a pending tab made active; a docked panel without a height of its own, BW's
+  config tabs, fills to the bottom as `bFillHeight` does), title bars (`GUITitleBar` / `GUIHeader`: `bUseTextHeight`
+  sizes it to its caption, its `DockedTabs` sit under it by `DockAlign`; drawn with its style and caption), lists (`ItemHeight`, `ItemsPerPage`), scroll text
   (word wrap into `StringElements`), the slider's knob width.
 - **Drawing** (the canvas backend of the mod HUDs): page backgrounds and the darkening under a popup page, labels
   (style or font, colours, shadow, multi-line), images (all `ISTY_` styles, sub-images, drop shadows), buttons, graphic
@@ -966,6 +983,10 @@ focus, every widget's `InitComponent`, value and key handling, the mod's pages a
   `OnDblClick`, `bRequireReleaseClick`, `bIgnoreNextRelease`), held repeat buttons, captured moves
   (`OnCapturedMouseMove`: sliders), right click, clicks on the page background (`OnInvalidate`: open combo lists
   close), `OnKeyEvent` / `OnKeyType` up the focus chain, Tab / Up / Down move the focus, Escape closes the top page.
+  Tool tips: the hovered control's `GUIToolTip` text (or its `Hint`, a menu option's for its label and control) once
+  the mouse rests on it 0.6 s, under the cursor in the `MouseOver` style. Interface sounds: a click plays the
+  component's `OnClickSound` and hovering one with `bMouseOverSound` the hover sound, the controller's `ClickSound`,
+  `EditSound` ... (`2K4MenuSounds`), as `PlayInterfaceSound` from script does.
   A multi-component taking input (UTComp's empty tab control over its button row) is hit only where none of its or its
   siblings' parts is.
 - **Opening a menu**: the mod's own way (UTComp: `mymenu`, F5 once bound). A console command we do not know runs an
@@ -978,8 +999,7 @@ focus, every widget's `InitComponent`, value and key handling, the mod's pages a
   None (UTComp's `UTCompPRI`, which its client finds in `PlayerTick`; our mirror does not tick the controller) gets the
   mirrored actor of that class linked from our PRI (`CustomReplicationInfo` chain), owned by us, or the only one.
 - Settings: what the pages save (`SaveConfig`) goes to our per-user ini (see "Mods' client code"), as before.
-- Not done: tool tips (text kept, not shown), context menus, drag and drop between lists, animations (`Animate` /
-  `Resize`), interface sounds, the 3D previews of the pages (`SpinnyWeap` actors: UTComp's skin / model preview),
+- Not done: context menus, drag and drop between lists, animations (`Animate` / `Resize`), the 3D previews of the pages (`SpinnyWeap` actors: UTComp's skin / model preview),
   `GUIController.GetMapList` / `GetWeaponList` (empty), a button for the mods' menus in our own mid-game menu.
 - Off with `-UE2ScriptMenus=0`. Test hooks (development builds): `ModMenuOpen <class>`, `ModMenuDump` (the top page's
   components with captions, values, states and bounds), `ModMenuClick <name or caption>`, `ModMenuKey <EInputKey>`,
@@ -1000,6 +1020,16 @@ Results (local 3369.3 server, DM-Rankin, utcompv17a, 1 bot, client at 1024x768):
 - WSUTComp_V30 on DM: its OpenedMenu and Extra, HUD, Team Overlay, Skins/Models and Misc pages open and draw with its
   own styles.
 - Cost: the GUI controller is made in about 18 ms when joining.
+- Server-sent menus: Ballistic Weapons' `Mut_Loadout` answers "Mutate Loadout" with `ClientOpenMenu`, which opens
+  `BallisticLoadOutMenu` (the weapon slots with their pictures, Done / Stats / Cancel).
+- Tab controls: `BallisticConfigMenu` (seven tabs in two rows under its `GUIHeader`, which shows "Ballistic Settings |
+  Preferences"): its panels were 0 pixels high (no height of their own) and are now docked to the bottom; clicking
+  Preferences and Loadout shows their check boxes, sliders, combo boxes, check lists and buttons. WS3SPN_V30's
+  `Menu_Menu3SPN` (`Menu3SPN`, through `ModExec`): its title bar, Info / Settings / Ranks tabs; Ranks shows the legend
+  with its scroll bar.
+- Long lists: UT2Vote61's mutator page, 18 items: wheel, scroll buttons and End move the grip and the selection.
+- Tool tips: hovering BW's Preferences tab button shows its hint under the cursor; menu sounds
+  (`2K4MenuSounds.Generic.msfxMouseOver`, `msfxEdit`) logged on hover and click.
 
 ### Downloads
 
@@ -1451,6 +1481,21 @@ Also tested:
 - Chat: `Say` and `TeamSay` came back from the server as `TeamMessage` (logged as `UE2NetPlay: chat from the server`).
 - `ServerDoCombo` is sent (not triggered: it needs 100 adrenaline).
 - The HUD shows health, adrenaline, the weapon bar, ammo, the first-person weapon and our score.
+
+Regression after the call ordering, role and weapon switching changes (Shipping-equivalent development build, local
+3369.3 servers, `-UE2NetTrace`; every run: no crash, 0 bunch errors, only client-to-server functions sent):
+- DM-Rankin, no bots, `route=weapons` (every weapon base of the map, the play script's new route) then each slot's fire
+  and alt fire: `ServerStartFire` / `ServerStopFire` for the shield gun, assault rifle, bio rifle, shock rifle, link
+  gun, minigun, flak cannon, rocket launcher and lightning gun (its alt fire zooms here, nothing sent); self damage
+  from point blank shock combos and shield blasts as on UT2004. With 3 bots: deaths and respawns
+  (`ServerRestartPlayer`), corrections as before. A long run followed the server's map changes (DM-Corrugation,
+  DM-DE-Grendelkeep) with `ServerSetReadyToStart` and went on playing.
+- CTF-Face3: take, carry, capture; "Player dropped the blue flag!", "The blue flag was returned!".
+- ONS-Torlan / ONS-Crossfire with 2 bots: Hellbender driven about 1400 UU and its gun fired (`VehicleFire`), Manta
+  driven and fired, the manual gun turret entered, the minimap and node messages; the announcer now plays the node /
+  core announcements (`MessageAnnouncements`, "Blue_powernode_under_construction", "Red_PowerCore_vulnerable").
+- Spectating (`?SpectatorOnly=1`, clicks through the X server): `ServerViewNextPlayer`, `ServerVerifyViewTarget`,
+  `ServerViewSelf`, the view player bar. The scoreboard (Tab held through the X server) draws, the HUD hidden under it.
 
 MangoHud (first 30 s of a run, 1280x720 window, editor build, shared machine): empty-server route 137.6 fps average;
 DM-Rankin with 3 bots 32 fps; CTF-Face3 21 fps.

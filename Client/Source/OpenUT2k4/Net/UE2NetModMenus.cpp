@@ -305,10 +305,44 @@ namespace UE2NetModMenusLocal
 			FUSClass* C = Args.Num() >= 2 ? FUSRuntime::Get().FindClass(Args[0]) : nullptr;
 			FUSFunction* F = C ? C->FindFunction(FName(*Args[1])) : nullptr;
 			TArray<FString> Lines;
+			if (F)
+			{
+				UE_LOG(LogUE2Net, Log, TEXT("ModDisasm: %s flags 0x%08x"), *F->GetPathName(), F->FunctionFlags);
+			}
 			(F ? USVM::Disassemble(F) : FString(TEXT("not found"))).ParseIntoArrayLines(Lines);
 			for (const FString& L : Lines)
 			{
 				UE_LOG(LogUE2Net, Log, TEXT("ModDisasm: %s"), *L);
+			}
+			// the objects and names the bytecode refers to (crude: a reference token followed by a known index)
+			if (F)
+			{
+				TSet<FString> Seen;
+				const TArray<uint8>& B = F->Script;
+				for (int32 i = 0; i + 4 < B.Num(); ++i)
+				{
+					const uint8 T = B[i];
+					int32 V = 0;
+					FMemory::Memcpy(&V, &B[i + 1], 4);
+					FString What;
+					if (T == 0x00 || T == 0x01 || T == 0x1C || T == 0x20 || T == 0x2E || T == 0x12)
+					{
+						if (FUSObject* O = V > 0 ? FUSRuntime::Get().ResolveRef(V) : nullptr)
+						{
+							What = FString::Printf(TEXT("%02X %X = %s"), T, V, *O->GetFullName());
+						}
+					}
+					else if (T == 0x1B && V > 0)
+					{
+						const FName N = FUSRuntime::Get().GetName(V);
+						What = N.IsNone() ? FString() : FString::Printf(TEXT("1B call %s"), *N.ToString());
+					}
+					if (!What.IsEmpty() && !Seen.Contains(What))
+					{
+						Seen.Add(What);
+						UE_LOG(LogUE2Net, Log, TEXT("ModDisasm:   %04X %s"), i, *What);
+					}
+				}
 			}
 		}));
 	FAutoConsoleCommand CmdRef(TEXT("ModRef"), TEXT("ModRef <hex index> [property]: the object of a script reference index (ModDisasm), or a property of our controller's mirror."),

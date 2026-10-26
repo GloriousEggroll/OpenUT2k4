@@ -1072,11 +1072,18 @@ void FUE2NetPlay::SwitchToWeapon(int32 WeaponChannel)
 	{
 		return;
 	}
-	// UE2 Pawn.ChangedWeapon on a client: ServerChangedWeapon(Weapon, PendingWeapon), then the new weapon comes up
-	Send(PawnCh, TEXT("ServerChangedWeapon"), { CurrentWeaponChannel ? UE2NetPlayLocal::VActor(CurrentWeaponChannel) : UE2NetPlayLocal::VNone(),
-		UE2NetPlayLocal::VActor(WeaponChannel) });
-	UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: weapon %s -> %s (ServerChangedWeapon)"), Weapons.Contains(CurrentWeaponChannel) ? *Weapons[CurrentWeaponChannel].ClassPath : TEXT("none"),
-		*Weapons[WeaponChannel].ClassPath);
+	// UE2 Pawn.ChangedWeapon on a client: ServerChangedWeapon(Weapon, PendingWeapon), then the new weapon comes up. A mod
+	// weapon running its own code switches as UE2's does (Pawn.PendingWeapon, the old one's PutDown, Pawn.ChangedWeapon):
+	// its script sends ServerChangedWeapon when the old weapon is down
+	FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get();
+	const bool bScript = SH && SH->ScriptSwitchWeapon(PawnCh, WeaponChannel);
+	if (!bScript)
+	{
+		Send(PawnCh, TEXT("ServerChangedWeapon"), { CurrentWeaponChannel ? UE2NetPlayLocal::VActor(CurrentWeaponChannel) : UE2NetPlayLocal::VNone(),
+			UE2NetPlayLocal::VActor(WeaponChannel) });
+	}
+	UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: weapon %s -> %s (%s)"), Weapons.Contains(CurrentWeaponChannel) ? *Weapons[CurrentWeaponChannel].ClassPath : TEXT("none"),
+		*Weapons[WeaponChannel].ClassPath, bScript ? TEXT("the weapons' script: PutDown, Pawn.ChangedWeapon") : TEXT("ServerChangedWeapon"));
 	CurrentWeaponChannel = WeaponChannel;
 	++WeaponSwitches;
 	ApplyWeapons();
@@ -2646,6 +2653,19 @@ void FUE2NetPlay::Tick(float DeltaSeconds)
 	{
 		TrySpawnLocalPawn();
 	}
+	// mod weapons running their own code: the one our pawn's script holds or brings up (its ClientWeaponSet, its
+	// PutDown -> Pawn.ChangedWeapon chain) is ours too
+	if (FUE2NetScriptHUD* SH = LocalPawn.IsValid() ? FUE2NetScriptHUD::Get() : nullptr)
+	{
+		const int32 SW = SH->ScriptPawnWeapon(OwnPawnChannel);
+		if (SW && SW != CurrentWeaponChannel && Weapons.Contains(SW))
+		{
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: weapon %s -> %s (the weapons' script)"), Weapons.Contains(CurrentWeaponChannel) ? *Weapons[CurrentWeaponChannel].ClassPath : TEXT("none"),
+				*Weapons[SW].ClassPath);
+			CurrentWeaponChannel = SW;
+			ApplyWeapons();
+		}
+	}
 	// no weapon brought up yet (ClientWeaponSet missed): the best one, like UE2 Pawn.SwitchToBestWeapon
 	if (LocalPawn.IsValid() && !Weapons.Contains(CurrentWeaponChannel) && Weapons.Num() > 0 && Now - LastSpawnRealTime > 0.5)
 	{
@@ -3062,13 +3082,18 @@ void FUE2NetPlay::TickScript(double Now)
 			}
 			else
 			{
+				// route=weapons: every weapon base of the map (test runs firing each weapon)
+				const bool bWeapons = Value == TEXT("weapons");
 				TArray<FVector> Items;
 				for (TActorIterator<AArenaPickup> It(W); It; ++It)
 				{
-					Items.Add(It->GetActorLocation());
+					if (!bWeapons || It->GetWeaponClass())
+					{
+						Items.Add(It->GetActorLocation());
+					}
 				}
 				FVector From = Pawn->GetActorLocation();
-				while (Items.Num() > 0 && Goals.Num() < 12)
+				while (Items.Num() > 0 && Goals.Num() < (bWeapons ? 40 : 12))
 				{
 					int32 Best = 0;
 					for (int32 i = 1; i < Items.Num(); ++i)

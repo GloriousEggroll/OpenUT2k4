@@ -94,6 +94,10 @@ public:
 	TMap<FUSObject*, FTimer> Timers;
 	float ResX = 1024.f, ResY = 768.f;
 	FUSObject* CanvasObj = nullptr;
+	/** Plays an interface sound (a Sound object of the controller: ClickSound, EditSound ...); set by the host. */
+	TFunction<void(FUSObject* Sound)> PlaySound;
+	/** GUIController.PlayInterfaceSound(EClickSound): CS_Click, CS_Edit, CS_Up, CS_Down, CS_Drag, CS_Fade, CS_Hover. */
+	void PlayInterfaceSound(uint8 ClickSound);
 
 private:
 	struct FImpl;

@@ -2772,12 +2772,18 @@ bool FUE2NetWorld::ShowScriptedMessage(const FString& ClassPath, FUSClass* Class
 			*ClassPath, Switch, Style.bIsSpecial ? TEXT(", local message") : TEXT(", console"), *Text, *Style.DrawColor.ToString(), FontSize, Style.PosX, Style.PosY,
 			Style.Lifetime, Style.bIsUnique, Style.bFadeMessage, int32(Style.StackMode));
 	}
-	// the class's announcement for this switch (ONSOnslaughtMessage and others: AnnouncerSounds[Switch] names or sounds)
-	const FString Announce = DefaultText(Class, *FString::Printf(TEXT("AnnouncerSounds[%d]"), Switch));
+	// the class's announcement for this switch (AnnouncerSounds[Switch] names or sounds; ONSOnslaughtMessage's
+	// ClientReceive queues MessageAnnouncements[Switch])
+	FString Announce = DefaultText(Class, *FString::Printf(TEXT("AnnouncerSounds[%d]"), Switch));
+	if (Announce.IsEmpty() || Announce.Equals(TEXT("None")))
+	{
+		Announce = DefaultText(Class, *FString::Printf(TEXT("MessageAnnouncements[%d]"), Switch));
+	}
 	if (!Announce.IsEmpty() && !Announce.Equals(TEXT("None")))
 	{
 		if (USoundBase* Snd = Announce.Contains(TEXT(".")) ? UE2NetWorldLocal::LoadSound(Announce) : nullptr)
 		{
+			UE_CLOG(Count <= 3, LogUE2Net, Log, TEXT("UE2NetWorld: announcer %s"), *Announce);
 			UGameplayStatics::PlaySound2D(PC, Snd);
 		}
 		else
@@ -3055,10 +3061,14 @@ void FUE2NetWorld::PlayAnnouncer(const FString& Name)
 	{
 		if (USoundBase* Sound = ArenaArt::LoadOneShotSound(FString::Printf(TEXT("Sounds/%s/Generic_%s"), Pkg, *Name)))
 		{
+			UE_CLOG(!AnnouncedNames.Contains(Name), LogUE2Net, Log, TEXT("UE2NetWorld: announcer %s (%s)"), *Name, Pkg);
+			AnnouncedNames.Add(Name);
 			UGameplayStatics::PlaySound2D(PC, Sound);
 			return;
 		}
 	}
+	UE_CLOG(!AnnouncedNames.Contains(Name), LogUE2Net, Log, TEXT("UE2NetWorld: announcer %s: no sound"), *Name);
+	AnnouncedNames.Add(Name);
 }
 
 void FUE2NetWorld::HearSound(const TArray<TPair<FName, FUE2NetValue>>& Params, bool b2D)

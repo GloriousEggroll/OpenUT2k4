@@ -297,7 +297,8 @@ protocol is described in `Docs/UE2Net.md`.
   runs a mod's console command (a weapon's reload or special key) and `Mutate <text>` sends UT2004's Mutate; settings a
   mod saves go to OpenUT2k4's own per-user ini, never the UT2004 install. Mods' in-game menus run as their own script
   too (UTComp's settings menu: type `mymenu` in the console, or `ModBind F5 mymenu` once and press F5; Escape closes
-  it). Details in `Docs/UE2Net.md` "Mod servers". A map whose name matches ours but whose GUID differs
+  it; menus a server opens, such as Ballistic Weapons' loadout, open too, with their tabs, tool tips and click sounds).
+  Details in `Docs/UE2Net.md` "Mod servers". A map whose name matches ours but whose GUID differs
   joins without a map rather than showing the wrong level. Packages that cannot be downloaded
   are skipped: actors that need them are not shown. UT2004's own packages (the files in the install's
   `System/Manifest.ini`) are never downloaded: when they are

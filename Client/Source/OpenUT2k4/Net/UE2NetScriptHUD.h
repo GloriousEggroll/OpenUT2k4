@@ -80,6 +80,14 @@ public:
 	};
 	/** The weapon of Channel (ours) runs its own client code in the mirror. */
 	bool IsScriptWeapon(int32 Channel) const;
+	/**
+	 * Switch our pawn to the weapon of WeaponChannel the way UE2's client does when the weapon runs its own code
+	 * (Pawn.PendingWeapon, Weapon.PutDown, then Pawn.ChangedWeapon sends ServerChangedWeapon). False when it does not
+	 * run its code here: the caller switches (and tells the server) itself.
+	 */
+	bool ScriptSwitchWeapon(int32 PawnChannel, int32 WeaponChannel);
+	/** The weapon our pawn's script holds or is switching to, when that weapon runs its own code (0 otherwise). */
+	int32 ScriptPawnWeapon(int32 PawnChannel) const;
 	/** Weapon.BringUp / PutDown, ClientStartFire / ClientStopFire(Mode) of the script weapon. */
 	void ScriptWeaponCommand(int32 Channel, EWeaponCommand Command, uint8 Mode);
 	bool GetScriptWeaponState(int32 Channel, FScriptWeaponState& Out) const;

@@ -23,6 +23,7 @@
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "GameFramework/HUD.h"
+#include "Kismet/GameplayStatics.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "Misc/CommandLine.h"
@@ -1361,7 +1362,10 @@ struct FUE2NetScriptHUD::FImpl
 	static bool ShouldRunClient(FUSClass* C)
 	{
 		const FString Pkg = C ? C->GetPackageName().ToString() : FString();
-		return C && !IsStockPackage(Pkg) && !IsDeniedPackage(Pkg) && !ChainHas(C, TEXT("Info")) && !ChainHas(C, TEXT("Controller")) && !ChainHas(C, TEXT("HUD"));
+		// a mod's replication infos run their client code too (UTComp_PRI receives the map list for UTComp's voting page,
+		// UT2Vote's info drives its menus); other Info classes (game, mutators: server side) do not
+		return C && !IsStockPackage(Pkg) && !IsDeniedPackage(Pkg) && (!ChainHas(C, TEXT("Info")) || ChainHas(C, TEXT("ReplicationInfo")))
+			&& !ChainHas(C, TEXT("Controller")) && !ChainHas(C, TEXT("HUD"));
 	}
 
 	/** The native component that shows a mirrored actor (its channel's), else null. */
@@ -1549,12 +1553,84 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			bOurs = O == PC;
 		}
-		return bOurs && USVM::EvalNetCondition(A, F);
+		// our PlayerReplicationInfo and the infos linked to it (CustomReplicationInfo -> NextReplicationInfo: UTComp_PRI's
+		// ServerSendMapList): their Owner (our controller) is not replicated, the server knows it
+		FUSObject* MyPRI = PC ? GetObj(PC, TEXT("PlayerReplicationInfo")) : nullptr;
+		Guard = 0;
+		for (FUSObject* L = MyPRI; L && !bOurs && Guard < 16; L = GetObj(L, Guard == 0 ? TEXT("CustomReplicationInfo") : TEXT("NextReplicationInfo")), ++Guard)
+		{
+			bOurs = L == A;
+		}
+		const bool bCondition = bOurs && USVM::EvalNetCondition(A, F);
+		UE_CLOG(!bCondition, LogUE2Net, Verbose, TEXT("UE2NetScriptHUD: %s on %s runs here (%s)"), *F->GetName(), *A->GetName(),
+			bOurs ? TEXT("its replication condition does not hold") : TEXT("not ours"));
+		return bCondition;
 	}
 
 	/** The server's call being run here (RunClientFunction / RunMenuFunction): never sent back. */
 	FUSObject* DeliveringActor = nullptr;
 	FUSFunction* DeliveringFunction = nullptr;
+
+	/** A script value as the connection sends it: UE2 serializes a struct parameter member by member (Plane, a mod's
+	 *  own structs), vectors and rotators compressed. */
+	FUE2NetValue NetValueOf(FUSProperty* P, const uint8* Addr, int32 Depth = 0) const
+	{
+		FUE2NetValue V;
+		switch (P->Type)
+		{
+		case EUSType::Byte: V.Kind = FUE2NetValue::EKind::Byte; V.I = *Addr; break;
+		case EUSType::Int: V.Kind = FUE2NetValue::EKind::Int; V.I = *reinterpret_cast<const int32*>(Addr); break;
+		case EUSType::Bool: V.Kind = FUE2NetValue::EKind::Bool; V.I = *reinterpret_cast<const uint32*>(Addr) ? 1 : 0; break;
+		case EUSType::Float: V.Kind = FUE2NetValue::EKind::Float; V.F = *reinterpret_cast<const float*>(Addr); break;
+		case EUSType::Name: V.Kind = FUE2NetValue::EKind::Name; V.N = *reinterpret_cast<const FName*>(Addr); break;
+		case EUSType::Str: V.Kind = FUE2NetValue::EKind::Str; V.S = *reinterpret_cast<const FString*>(Addr); break;
+		case EUSType::Object:
+		case EUSType::Class:
+		{
+			FUSObject* O = *reinterpret_cast<FUSObject* const*>(Addr);
+			const int32* OC = O ? ChannelOf.Find(O) : nullptr;
+			V.Kind = FUE2NetValue::EKind::Object;
+			V.Obj.Channel = OC ? *OC : 0;
+			break;
+		}
+		case EUSType::Struct:
+		{
+			const FString SN = P->Struct ? P->Struct->Name.ToString() : FString();
+			if (SN == TEXT("Vector"))
+			{
+				const FUSVector& Vec = *reinterpret_cast<const FUSVector*>(Addr);
+				V.Kind = FUE2NetValue::EKind::Vector;
+				V.V = FVector3f(Vec.X, Vec.Y, Vec.Z);
+			}
+			else if (SN == TEXT("Rotator"))
+			{
+				const FUSRotator& Rot = *reinterpret_cast<const FUSRotator*>(Addr);
+				V.Kind = FUE2NetValue::EKind::Rotator;
+				V.R = FIntVector(Rot.Pitch, Rot.Yaw, Rot.Roll);
+			}
+			else if (P->Struct && Depth < 8)
+			{
+				V.Kind = FUE2NetValue::EKind::Struct;
+				for (FUSStruct* St = P->Struct; St; St = St->GetSuperStruct())
+				{
+					for (FUSField* Fl = St->Children; Fl; Fl = Fl->Next)
+					{
+						FUSProperty* M = Fl->Class && Fl->Class->Name.ToString().EndsWith(TEXT("Property")) ? static_cast<FUSProperty*>(Fl) : nullptr;
+						for (int32 i = 0; M && i < M->ArrayDim; ++i)
+						{
+							const FString Key = M->ArrayDim > 1 ? FString::Printf(TEXT("%s[%d]"), *M->Name.ToString(), i) : M->Name.ToString();
+							V.Members.Emplace(FName(*Key), NetValueOf(M, Addr + M->Offset + i * M->ElementSize, Depth + 1));
+						}
+					}
+				}
+			}
+			break;
+		}
+		default:
+			break;
+		}
+		return V;
+	}
 
 	void SendServerCall(FUSObject* A, FUSFunction* F, uint8* Parms)
 	{
@@ -1570,46 +1646,7 @@ struct FUE2NetScriptHUD::FImpl
 			{
 				continue;
 			}
-			const uint8* Addr = Parms + P->Offset;
-			FUE2NetValue V;
-			switch (P->Type)
-			{
-			case EUSType::Byte: V.Kind = FUE2NetValue::EKind::Byte; V.I = *Addr; break;
-			case EUSType::Int: V.Kind = FUE2NetValue::EKind::Int; V.I = *reinterpret_cast<const int32*>(Addr); break;
-			case EUSType::Bool: V.Kind = FUE2NetValue::EKind::Bool; V.I = *reinterpret_cast<const uint32*>(Addr) ? 1 : 0; break;
-			case EUSType::Float: V.Kind = FUE2NetValue::EKind::Float; V.F = *reinterpret_cast<const float*>(Addr); break;
-			case EUSType::Name: V.Kind = FUE2NetValue::EKind::Name; V.N = *reinterpret_cast<const FName*>(Addr); break;
-			case EUSType::Str: V.Kind = FUE2NetValue::EKind::Str; V.S = *reinterpret_cast<const FString*>(Addr); break;
-			case EUSType::Object:
-			case EUSType::Class:
-			{
-				FUSObject* O = *reinterpret_cast<FUSObject* const*>(Addr);
-				const int32* OC = O ? ChannelOf.Find(O) : nullptr;
-				V.Kind = FUE2NetValue::EKind::Object;
-				V.Obj.Channel = OC ? *OC : 0;
-				break;
-			}
-			case EUSType::Struct:
-			{
-				const FString SN = P->Struct ? P->Struct->Name.ToString() : FString();
-				if (SN == TEXT("Vector"))
-				{
-					const FUSVector& Vec = *reinterpret_cast<const FUSVector*>(Addr);
-					V.Kind = FUE2NetValue::EKind::Vector;
-					V.V = FVector3f(Vec.X, Vec.Y, Vec.Z);
-				}
-				else if (SN == TEXT("Rotator"))
-				{
-					const FUSRotator& Rot = *reinterpret_cast<const FUSRotator*>(Addr);
-					V.Kind = FUE2NetValue::EKind::Rotator;
-					V.R = FIntVector(Rot.Pitch, Rot.Yaw, Rot.Roll);
-				}
-				break; // other structs: not sent by our encoder (None)
-			}
-			default:
-				break;
-			}
-			Values.Add(V);
+			Values.Add(NetValueOf(P, Parms + P->Offset));
 		}
 		Connection.SendFunction(*Ch, F->Name, Values);
 		int32& N = ServerCallsSent.FindOrAdd(F->Name);
@@ -1916,6 +1953,62 @@ struct FUE2NetScriptHUD::FImpl
 		return Hit && *Hit && !(*Hit)->IsPendingKill() ? *Hit : nullptr;
 	}
 
+	/** Engine.Weapon EWeaponClientState. */
+	enum : uint8 { WS_None = 0, WS_Hidden = 1, WS_BringUp = 2, WS_PutDown = 3, WS_ReadyToFire = 4 };
+
+	/** The weapon of Channel runs its own client code here (a mod weapon, played by script or by our stand-in). */
+	bool RunsWeaponCodeImpl(int32 Channel) const
+	{
+		FUSObject* W = MirrorOfChannel(Channel);
+		const FClientRun* R = W ? ClientRuns.Find(W) : nullptr;
+		return R && !R->bOff && ChainHas(W->Class, TEXT("Weapon")) && !ChainHas(W->Class, TEXT("WeaponAttachment"));
+	}
+
+	/**
+	 * UE2 PlayerController.SwitchWeapon / ClientSetWeapon on a client whose weapons run their own code: Pawn.PendingWeapon,
+	 * then Pawn.Weapon.PutDown (its Timer calls Pawn.ChangedWeapon once it is down, which sends ServerChangedWeapon and
+	 * brings the new one up), or Pawn.ChangedWeapon straight away when nothing is held.
+	 */
+	bool ScriptSwitchWeaponImpl(int32 PawnChannel, int32 WeaponChannel)
+	{
+		FUSObject* Pawn = MirrorOfChannel(PawnChannel);
+		FUSObject* W = MirrorOfChannel(WeaponChannel);
+		if (!Pawn || !W || !RunsWeaponCodeImpl(WeaponChannel))
+		{
+			return false;
+		}
+		FUSObject* Cur = GetObj(Pawn, TEXT("Weapon"));
+		if (Cur == W || GetObj(Pawn, TEXT("PendingWeapon")) == W)
+		{
+			return true; // held, or already on its way up
+		}
+		RunGuarded(Pawn, [&]()
+		{
+			PrepareWeapon(W);
+			SetObj(Pawn, TEXT("PendingWeapon"), W);
+			if (Cur && !Cur->IsPendingKill())
+			{
+				PrepareWeapon(Cur);
+				CallWith(Cur, TEXT("PutDown"), [](FUSParms&) {});
+			}
+			else
+			{
+				CallWith(Pawn, TEXT("ChangedWeapon"), [](FUSParms&) {});
+			}
+		});
+		return true;
+	}
+
+	/** The weapon our pawn's code holds or is switching to (Pawn.PendingWeapon, else Pawn.Weapon) when it runs its code. */
+	int32 ScriptPawnWeaponImpl(int32 PawnChannel) const
+	{
+		FUSObject* Pawn = MirrorOfChannel(PawnChannel);
+		FUSObject* W = Pawn ? GetObj(Pawn, TEXT("PendingWeapon")) : nullptr;
+		W = W ? W : (Pawn ? GetObj(Pawn, TEXT("Weapon")) : nullptr);
+		const int32* Ch = W ? ChannelOf.Find(W) : nullptr;
+		return Ch && RunsWeaponCodeImpl(*Ch) ? *Ch : 0;
+	}
+
 	bool IsScriptWeaponImpl(int32 Channel) const
 	{
 		FUSObject* W = MirrorOfChannel(Channel);
@@ -1995,20 +2088,37 @@ struct FUE2NetScriptHUD::FImpl
 			switch (Command)
 			{
 			case FUE2NetScriptHUD::EWeaponCommand::BringUp:
+			{
 				HeldScriptWeapon = Channel;
-				if (FUSObject* Pawn = GetObj(W, TEXT("Instigator")))
+				FUSObject* Pawn = GetObj(W, TEXT("Instigator"));
+				// Pawn.ChangedWeapon already brought it up (ClientWeaponSet, our switch through PendingWeapon)
+				const uint8* StP = PropPtr<uint8>(W, TEXT("ClientState"));
+				const uint8 St = StP ? *StP : 0;
+				if (Pawn && GetObj(Pawn, TEXT("Weapon")) == W && (St == WS_BringUp || St == WS_ReadyToFire))
+				{
+					break;
+				}
+				if (Pawn)
 				{
 					SetObj(Pawn, TEXT("Weapon"), W);
 				}
 				CallWith(W, TEXT("BringUp"), [](FUSParms& P) { P.Object(nullptr); });
 				break;
+			}
 			case FUE2NetScriptHUD::EWeaponCommand::PutDown:
+			{
 				if (HeldScriptWeapon == Channel)
 				{
 					HeldScriptWeapon = 0;
 				}
-				CallWith(W, TEXT("PutDown"), [](FUSParms&) {});
+				const uint8* StP = PropPtr<uint8>(W, TEXT("ClientState"));
+				const uint8 St = StP ? *StP : 0;
+				if (St != WS_PutDown && St != WS_Hidden)
+				{
+					CallWith(W, TEXT("PutDown"), [](FUSParms&) {});
+				}
 				break;
+			}
 			case FUE2NetScriptHUD::EWeaponCommand::StartFire:
 				CallWith(W, TEXT("ClientStartFire"), [Fm](FUSParms& P) { P.Int(Fm); });
 				break;
@@ -2826,7 +2936,14 @@ struct FUE2NetScriptHUD::FImpl
 		SyncClientLocations();
 		TArray<FUSObject*> Actors = Script->LocalActors;
 		const int32 NumLocal = Actors.Num();
-		Actors.Append(Script->TimerOnly);
+		for (FUSObject* T : Script->TimerOnly)
+		{
+			// a mod's GRI running its client code has its timer ticked with it (TickMirroredClients)
+			if (!ClientRuns.Contains(T))
+			{
+				Actors.Add(T);
+			}
+		}
 		for (int32 Ai = 0; Ai < Actors.Num(); ++Ai)
 		{
 			FUSObject* A = Actors[Ai];
@@ -3139,8 +3256,22 @@ struct FUE2NetScriptHUD::FImpl
 			bMenus = false;
 			return;
 		}
+		// GUIController.PlayInterfaceSound: the controller's click / edit / hover sounds, heard by us alone
+		Gui->PlaySound = [this](FUSObject* Sound)
+		{
+			const FString Path = Sound ? Sound->GetPathName() : FString();
+			int32& N = InterfaceSounds.FindOrAdd(Path);
+			UE_CLOG(N++ == 0, LogUE2Net, Log, TEXT("UE2NetScriptHUD: menu sound %s"), *Path);
+			USoundBase* S = Path.IsEmpty() ? nullptr : ArenaRuntimeContent::LoadSoundByObjectPath(Path);
+			if (S && World.IsValid())
+			{
+				UGameplayStatics::PlaySound2D(World.Get(), S);
+			}
+		};
 		UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: mods' menus ready (%.1f ms)"), (FPlatformTime::Seconds() - T0) * 1000.0);
 	}
+	/** Menu sounds played (by sound path). */
+	TMap<FString, int32> InterfaceSounds;
 
 	/** xVoting's pages stay ours (Net/UE2NetMapVote: the mid-game menu's Map Voting tab). */
 	static bool IsNativeMenu(const FString& MenuClass)
@@ -3452,6 +3583,8 @@ bool FUE2NetScriptHUD::FeedMessage(int32 Channel, const FString& Function, const
 }
 
 bool FUE2NetScriptHUD::IsScriptWeapon(int32 Channel) const { return Impl->bReady && Impl->IsScriptWeaponImpl(Channel); }
+bool FUE2NetScriptHUD::ScriptSwitchWeapon(int32 PawnChannel, int32 WeaponChannel) { return Impl->bReady && Impl->ScriptSwitchWeaponImpl(PawnChannel, WeaponChannel); }
+int32 FUE2NetScriptHUD::ScriptPawnWeapon(int32 PawnChannel) const { return Impl->bReady ? Impl->ScriptPawnWeaponImpl(PawnChannel) : 0; }
 void FUE2NetScriptHUD::ScriptWeaponCommand(int32 Channel, EWeaponCommand Command, uint8 Mode) { if (Impl->bReady) Impl->ScriptWeaponCommandImpl(Channel, Command, Mode); }
 bool FUE2NetScriptHUD::GetScriptWeaponState(int32 Channel, FScriptWeaponState& Out) const { return Impl->bReady && Impl->GetScriptWeaponStateImpl(Channel, Out); }
 void FUE2NetScriptHUD::ScriptWeaponAnimEnd(int32 Channel) { if (Impl->bReady) Impl->ScriptWeaponAnimEndImpl(Channel); }
@@ -3545,6 +3678,8 @@ FString FUE2NetScriptHUD::Describe() const { return FString(); }
 bool FUE2NetScriptHUD::HasClientAttachment(int32, const FString&) const { return false; }
 bool FUE2NetScriptHUD::FeedMessage(int32, const FString&, const TArray<TPair<FName, FUE2NetValue>>&) { return false; }
 bool FUE2NetScriptHUD::IsScriptWeapon(int32) const { return false; }
+bool FUE2NetScriptHUD::ScriptSwitchWeapon(int32, int32) { return false; }
+int32 FUE2NetScriptHUD::ScriptPawnWeapon(int32) const { return 0; }
 void FUE2NetScriptHUD::ScriptWeaponCommand(int32, EWeaponCommand, uint8) {}
 bool FUE2NetScriptHUD::GetScriptWeaponState(int32, FScriptWeaponState&) const { return false; }
 void FUE2NetScriptHUD::ScriptWeaponAnimEnd(int32) {}

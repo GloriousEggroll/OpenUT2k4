@@ -21,6 +21,7 @@ namespace
 	enum : uint8 { ICP_Normal = 0, ICP_Center = 1, ICP_Scaled = 2, ICP_Stretched = 3, ICP_Bound = 4 };
 	enum : uint8 { MSTY_None = 0, MSTY_Normal = 1, MSTY_Alpha = 5, MSTY_Modulated = 4 };
 	enum : uint8 { SCALE_All = 0, SCALE_X = 1, SCALE_Y = 2 };
+	enum : uint8 { PGA_None = 0, PGA_Client = 1, PGA_Left = 2, PGA_Right = 3, PGA_Top = 4, PGA_Bottom = 5 };
 	enum : uint8 { ORIENT_Vertical = 0, ORIENT_Horizontal = 1 };
 
 	// ---------------------------------------------------------------------------------------------
@@ -139,7 +140,7 @@ namespace
 			*ListBase = nullptr, *List = nullptr, *MCList = nullptr, *MCListBox = nullptr, *MCHeader = nullptr, *ScrollBar = nullptr,
 			*ScrollZone = nullptr, *Numeric = nullptr, *MenuOption = nullptr, *TabControl = nullptr, *TabButton = nullptr, *TabPanel = nullptr,
 			*Panel = nullptr, *Section = nullptr, *ScrollText = nullptr, *ToolTip = nullptr, *Styles = nullptr, *Font = nullptr,
-			*Controller = nullptr, *ContextMenu = nullptr, *VertList = nullptr;
+			*Controller = nullptr, *ContextMenu = nullptr, *VertList = nullptr, *TitleBar = nullptr;
 
 		void Resolve()
 		{
@@ -188,6 +189,7 @@ namespace
 			Font = C(TEXT("GUIFont"));
 			Controller = C(TEXT("GUIController"));
 			ContextMenu = C(TEXT("GUIContextMenu"));
+			TitleBar = C(TEXT("GUITitleBar"));
 		}
 	};
 
@@ -1552,6 +1554,16 @@ namespace
 		US_RESULT(int32) = A && ArrayIndex >= 0 && ArrayIndex < A->Num ? reinterpret_cast<const int32*>(A->Data)[ArrayIndex] : ArrayIndex;
 	}
 
+	US_NATIVE(PlayInterfaceSoundNative)
+	{
+		USP_GET_BYTE(Which);
+		USP_FINISH;
+		if (GCurrent)
+		{
+			GCurrent->PlayInterfaceSound(Which);
+		}
+	}
+
 	US_NATIVE(ToolTipSetTip)
 	{
 		USP_GET_STR(Tip);
@@ -1787,6 +1799,12 @@ struct FUSGUI::FImpl
 				{
 					continue;
 				}
+				// bFillHeight: "the panel will set its height = ClipY - Top"; a panel without a height of its own (Ballistic's
+				// config tabs leave WinHeight 0) is docked the same way, or its scaled children would collapse to nothing
+				if (!GetBool(Panel, TEXT("bFillHeight")) && ActualDim(Panel, GetF(Panel, TEXT("WinHeight")), false) <= 1.f)
+				{
+					SetBool(Panel, TEXT("bFillHeight"), true);
+				}
 				const float H = GetBool(Panel, TEXT("bFillHeight")) ? ScreenH() - Top : ActualDim(Panel, GetF(Panel, TEXT("WinHeight")), false);
 				Place(Panel, B.L, Top, B.W, H);
 			}
@@ -1796,6 +1814,32 @@ struct FUSGUI::FImpl
 		{
 			CallEvent(C, TEXT("MakeTabActive"), [Pending](FUSParms& P) { P.Object(Pending); });
 		}
+	}
+
+	// GUITitleBar (GUIHeader, GUIFooter): bUseTextHeight sizes it to its caption, DockedTabs puts a tab control
+	// under it (or on top of it with bDockTop), aligned by DockAlign
+	void LayoutTitleBar(FUSObject* C, FBox4 B)
+	{
+		if (GetBool(C, TEXT("bUseTextHeight")))
+		{
+			float XL = 0.f, YL = 0.f;
+			StyleTextSize(GetO(C, TEXT("Style")), MSAT_Blurry, TEXT("Wq"), GetB(C, TEXT("FontScale"), 1), XL, YL);
+			if (YL > 0.f)
+			{
+				B.H = FMath::RoundToFloat(YL * 1.25f);
+				Place(C, B.L, B.T, B.W, B.H);
+				UpdateBounds(C);
+			}
+		}
+		FUSObject* Tabs = GetO(C, TEXT("DockedTabs"));
+		if (!Tabs)
+		{
+			return;
+		}
+		const FBox4 TB = BoundsOf(Tabs);
+		const uint8 Align = GetB(C, TEXT("DockAlign"));
+		const float X = Align == PGA_Left ? B.L : Align == PGA_Right ? B.R() - TB.W : B.L + (B.W - TB.W) * 0.5f;
+		Place(Tabs, X, GetBool(C, TEXT("bDockTop")) ? B.T - TB.H : B.T + B.H, TB.W, TB.H);
 	}
 
 	void LayoutList(FUSObject* L)
@@ -1911,6 +1955,10 @@ struct FUSGUI::FImpl
 		else if (Is(C, KC.TabControl))
 		{
 			LayoutTabs(C, B);
+		}
+		else if (Is(C, KC.TitleBar))
+		{
+			LayoutTitleBar(C, B);
 		}
 		else if (Is(C, KC.ListBase))
 		{
@@ -2385,6 +2433,19 @@ struct FUSGUI::FImpl
 				StyleDraw(GetO(C, TEXT("Style")), MSAT_Blurry, BoundsOf(C));
 			}
 		}
+		else if (Is(C, KC.TitleBar))
+		{
+			// GUIBorder's native draw: its style, then the caption indented by TextIndent
+			FUSObject* S = GetO(C, TEXT("Style"));
+			const FBox4 B = BoundsOf(C);
+			StyleDraw(S, State(C), B);
+			const FString Caption = GetS(C, TEXT("Caption"));
+			if (!Caption.IsEmpty())
+			{
+				const float Indent = float(GetI(C, TEXT("TextIndent")));
+				StyleText(S, State(C), FBox4{ B.L + Indent, B.T, B.W - 2.f * Indent, B.H }, GetB(C, TEXT("Justification")), Caption, GetB(C, TEXT("FontScale"), 1));
+			}
+		}
 		else if (Is(C, KC.Multi))
 		{
 			// moComponents, combo boxes, scroll bars, numeric edits: their parts draw
@@ -2555,8 +2616,69 @@ struct FUSGUI::FImpl
 		UpdateHover();
 		if (Top)
 		{
+			DrawToolTip();
 			DrawCursor();
 		}
+	}
+
+	/** The control the tooltip is timed for, and since when the mouse rests on it. */
+	FUSObject* TipFor = nullptr;
+	double TipSince = 0.0;
+	float TipMouseX = 0.f, TipMouseY = 0.f;
+
+	/**
+	 * GUIController's tooltip: the hovered control's GUIToolTip text (SetHint, or its Hint) once the mouse has rested on
+	 * it a moment, in a box under the cursor drawn with the tooltip's style ("MouseOver" in UT2004).
+	 */
+	void DrawToolTip()
+	{
+		if (Hover != TipFor || FMath::Abs(G.MouseX - TipMouseX) > 3.f || FMath::Abs(G.MouseY - TipMouseY) > 3.f)
+		{
+			TipFor = Hover;
+			TipSince = Now;
+			TipMouseX = G.MouseX;
+			TipMouseY = G.MouseY;
+		}
+		if (!Hover || Pressed || Now - TipSince < 0.6)
+		{
+			return;
+		}
+		// a menu option's label and control show the option's hint (GUIMenuOption.SetHint)
+		FUSObject* From = Hover;
+		FUSObject* Owner = GetO(Hover, TEXT("MenuOwner"));
+		if (GetS(From, TEXT("Hint")).IsEmpty() && !GetO(From, TEXT("ToolTip")) && Owner && Is(Owner, K().MenuOption))
+		{
+			From = Owner;
+		}
+		FUSObject* Tip = GetO(From, TEXT("ToolTip"));
+		FString Text = Tip ? GetS(Tip, TEXT("Text")) : FString();
+		Text = Text.IsEmpty() ? GetS(From, TEXT("Hint")) : Text;
+		if (Text.IsEmpty())
+		{
+			return;
+		}
+		FUSObject* S = Tip ? GetO(Tip, TEXT("Style")) : nullptr;
+		if (!S)
+		{
+			const FObjArray Styles = GetArr(Ctl(), TEXT("StyleStack"));
+			for (int32 i = 0; i < Styles.Num() && !S; ++i)
+			{
+				S = Styles[i] && GetS(Styles[i], TEXT("KeyName")).Equals(TEXT("MouseOver"), ESearchCase::IgnoreCase) ? Styles[i] : nullptr;
+			}
+		}
+		if (!S)
+		{
+			return;
+		}
+		float XL = 0.f, YL = 0.f;
+		StyleTextSize(S, MSAT_Blurry, Text, 1, XL, YL);
+		const float W = FMath::Min(XL + 12.f, ScreenW()), H = YL + 6.f;
+		const float X = FMath::Clamp(G.MouseX, 0.f, FMath::Max(0.f, ScreenW() - W));
+		float Y = G.MouseY + 24.f;
+		Y = Y + H > ScreenH() ? FMath::Max(0.f, G.MouseY - H - 4.f) : Y;
+		const FBox4 R{ X, Y, W, H };
+		StyleDraw(S, MSAT_Blurry, R);
+		StyleText(S, MSAT_Blurry, R, TXTA_Center, Text, 1);
 	}
 
 	// ---- hit testing and input ---------------------------------------------------------------------
@@ -2677,6 +2799,10 @@ struct FUSGUI::FImpl
 		}
 		Hover = H;
 		SetO(Ctl(), TEXT("ActiveControl"), H);
+		if (H && GetBool(H, TEXT("bMouseOverSound")))
+		{
+			G.PlayInterfaceSound(7); // CS_Hover
+		}
 		if (H && GetB(H, TEXT("MenuState")) != MSAT_Disabled && GetB(H, TEXT("MenuState")) != MSAT_Pressed)
 		{
 			MenuStateChange(H, MSAT_Watched);
@@ -2714,6 +2840,8 @@ struct FUSGUI::FImpl
 		const FScriptCall Bound = FindDelegate(C, TEXT("OnClick"), false);
 		UE_LOG(LogUScript, Log, TEXT("UScriptGUI: click on %s (%s) -> %s"), *C->GetName(), *GetS(C, TEXT("Caption")),
 			Bound.Function ? *FString::Printf(TEXT("%s.%s"), *Bound.Target->GetName(), *Bound.Function->GetName()) : TEXT("its default"));
+		// UE2 GUIComponent: a click plays the component's OnClickSound through the controller
+		G.PlayInterfaceSound(GetB(C, TEXT("OnClickSound")));
 		CallDelegate(C, TEXT("OnClick"), [C](FUSParms& P) { P.Object(C); });
 	}
 
@@ -3192,8 +3320,10 @@ namespace
 			}
 		}
 		const FBox4 B = BoundsOf(C);
-		return FString::Printf(TEXT("%s %s \"%s\"%s state %d %s at %.0f,%.0f %.0fx%.0f"), *C->Class->GetName(), *C->GetName(), *Text, *Value,
-			GetB(C, TEXT("MenuState")), GetBool(C, TEXT("bVisible")) ? TEXT("visible") : TEXT("hidden"), B.L, B.T, B.W, B.H);
+		return FString::Printf(TEXT("%s %s \"%s\"%s state %d %s at %.0f,%.0f %.0fx%.0f (win %g,%g %gx%g%s%s)"), *C->Class->GetName(), *C->GetName(), *Text, *Value,
+			GetB(C, TEXT("MenuState")), GetBool(C, TEXT("bVisible")) ? TEXT("visible") : TEXT("hidden"), B.L, B.T, B.W, B.H,
+			GetF(C, TEXT("WinLeft")), GetF(C, TEXT("WinTop")), GetF(C, TEXT("WinWidth")), GetF(C, TEXT("WinHeight")),
+			GetBool(C, TEXT("bScaleToParent")) ? TEXT(" scaled") : TEXT(""), GetBool(C, TEXT("bFillHeight")) ? TEXT(" fill") : TEXT(""));
 	}
 
 	void DumpTree(FUSObject* C, int32 Depth, FString& Out)
@@ -3242,6 +3372,20 @@ namespace
 			return C;
 		}
 		return nullptr;
+	}
+}
+
+void FUSGUI::PlayInterfaceSound(uint8 ClickSound)
+{
+	static const TCHAR* Names[] = { nullptr, TEXT("ClickSound"), TEXT("EditSound"), TEXT("UpSound"), TEXT("DownSound"), TEXT("DragSound"), TEXT("FadeSound"),
+		TEXT("MouseOverSound"), TEXT("ClickSound") };
+	if (!Controller || ClickSound == 0 || ClickSound >= UE_ARRAY_COUNT(Names) || !PlaySound)
+	{
+		return;
+	}
+	if (FUSObject* Sound = GetO(Controller, Names[ClickSound]))
+	{
+		PlaySound(Sound);
 	}
 }
 
@@ -3320,7 +3464,7 @@ namespace USNatives
 			{ TEXT("GUIController"), TEXT("GetCurrentRes"), &GetCurrentRes }, { TEXT("GUIController"), TEXT("SetRenderDevice"), &ReturnFalse },
 			{ TEXT("GUIController"), TEXT("ResetDesigner"), &Quiet }, { TEXT("GUIController"), TEXT("ResetInput"), &Quiet },
 			{ TEXT("GUIController"), TEXT("GetProfileList"), &Quiet }, { TEXT("GUIController"), TEXT("ResetKeyboard"), &Quiet },
-			{ TEXT("GUIController"), TEXT("GetOGGList"), &Quiet }, { TEXT("GUIController"), TEXT("PlayInterfaceSound"), &Quiet },
+			{ TEXT("GUIController"), TEXT("GetOGGList"), &Quiet }, { TEXT("GUIController"), TEXT("PlayInterfaceSound"), &PlayInterfaceSoundNative },
 			{ TEXT("GUIController"), TEXT("SetMoveControl"), &SetMoveControl }, { TEXT("GUIController"), TEXT("Profile"), &Quiet },
 			{ TEXT("GUIController"), TEXT("GetDEMList"), &Quiet }, { TEXT("GUIController"), TEXT("GetDEMHeader"), &ReturnFalse },
 			{ TEXT("GUIController"), TEXT("GetOwnageList"), &Quiet }, { TEXT("GUIController"), TEXT("SaveOwnageList"), &Quiet },

@@ -81,6 +81,15 @@ FUSObject* FUSWorld::ConstructObject(FUSClass* Class, FUSObject* Outer, FName Na
 			}
 		}
 	}
+	// Object's own Class and Name variables (UE2 keeps them in the object: "class.default.X = ...", "Name")
+	if (FUSProperty* CP = Class->FindProperty(TEXT("Class")); CP && CP->Type == EUSType::Class && CP->Offset + CP->GetSize() <= Size)
+	{
+		*reinterpret_cast<FUSObject**>(O->Data + CP->Offset) = Class;
+	}
+	if (FUSProperty* NP = Class->FindProperty(TEXT("Name")); NP && NP->Type == EUSType::Name && NP->Offset + NP->GetSize() <= Size)
+	{
+		*reinterpret_cast<FName*>(O->Data + NP->Offset) = O->Name;
+	}
 	O->StateFrame = new FUSStateFrame();
 	O->StateFrame->StateNode = Class;
 	O->StateFrame->CodeNode = Class;
