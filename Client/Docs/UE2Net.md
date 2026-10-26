@@ -888,6 +888,19 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
 - **Mod pickups' PrePivot**: a mod pickup in place of a stock one draws its item at `-PrePivot` against the stock
   pickup's (Ballistic Weapons' `AP_6Magnum` 70 UU, `AP_MRS138Box` 32 UU); placed and mutator pickups (drawn as their
   static mesh) already used it.
+- **Dying mod pawns** (UTComp's `UTComp_xPawn`, Freon's pawns): a torn-off pawn's mirror goes on running its code
+  (`TornOff`, `PlayDying`: its sounds and effects), but its body is our native pawn's (ragdoll, gibs, the death
+  camera's corpse): it is not drawn again as a client-side actor from its own mesh. It was, unanimated, so every
+  dead player stood in the reference pose next to its ragdoll or where its gibs flew (and our own death showed it
+  as a dark shape at the camera). `Actor.BoneRefresh` (xPawn.AssignInitialPose) is a no-op.
+- **What a mod pawn's code still lacks** (warnings, no effect on what we show): `xUtil.FindUPLPlayerRecord` (the
+  character record: its species, mesh and skins), so `UTComp_xPawn.Setup` and `xPawn.ProcessHitFX` ("Accessed None"
+  on the record's species and gib group) do not set the mirror's mesh, skins and hit gibs; our native pawn has the
+  character from the PRI and its own blood and gibs. `PlayerController.PlayBeepSound` (the HUD's chat beep,
+  `MenuSounds.selectJ`, `HUD.bMessageBeep`) plays as on a 3369 client.
+- **Spawning players**: a pawn whose PRI has not named its character yet is not drawn until its model is applied
+  (at most a second, then the stock pick), and the model's skins and team colours are applied with the mesh, not
+  on the next tick (a frame of the converted mesh's own, untextured materials). Our own corpse is drawn as before.
 - **Object variables**: `Object.Class` and `Object.Name` hold the object's class and name (`FUSWorld::ConstructObject`):
   `class.default.X = ...` (BW's `InitClientVars`) and `Other.Class == class'X'` work.
 - **Sounds**: the first play of each sound by script (`PlaySound` / `PlayOwnedSound`) is logged (`UScript: <actor> plays
@@ -2160,7 +2173,10 @@ Scripts/ut2004-test-server.sh [-m Map] [-g GameClass] [-p Port] [-b Bots] [-n Na
   (`TestBots adrenaline ...`), for combo tests. `Mutate TestSpawn <Package.Class> [distance]` spawns that class in
   front of the sender (a mod vehicle a map's randomizer rarely hands out: `OdinV2Omni.OdinV2Omni`, a map's own
   `MantaMirage`), `Mutate TestDamage <amount> [self]` damages the vehicle in front of the sender, or the one it sits
-  in (a manual gun turret destroyed); both log `TestBots spawn / damage ...`.
+  in (a manual gun turret destroyed); `Mutate TestBring` moves a bot 400 UU in front of the sender, `Mutate TestKill
+  <amount> [self]` damages that bot (or the sender: deaths, ragdolls and gibs on demand), `Mutate TestGod 1|0` makes
+  the sender invulnerable (bots cannot interrupt a test); all log `TestBots ...`. Mutators given with `-o
+  "?mutator=..."` join TestBots' in one `?Mutator=` list (UE2 reads only the first).
 
 Examples:
 

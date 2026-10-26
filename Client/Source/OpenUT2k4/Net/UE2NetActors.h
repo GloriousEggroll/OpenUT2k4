@@ -116,6 +116,10 @@ protected:
 	FString FaceSkin;
 	bool bCharacterKnown = false;
 	bool bModelApplied = false;
+	/** Spawned before its PRI named the character: drawn only once the model and its skins are applied (or the
+	 *  stock pick after a second), never first as the bare body or a model without its skin. */
+	bool bAwaitModel = false;
+	void SetBodyShown(bool bShown);
 	const ArenaArt::FWeaponArt* WeaponArt = nullptr;
 	FString WeaponClassName;
 

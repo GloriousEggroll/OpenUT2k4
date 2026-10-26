@@ -208,6 +208,14 @@ if [[ "${BOTS}" -gt 0 ]]; then
     URL="${URL}?MinPlayers=${BOTS}?Mutator=OUTestBots.TestBots"
 fi
 URL="${URL}${EXTRA}"
+# one ?Mutator= list (UE2 reads the first one only): the options' mutators join TestBots'
+URL="$(python3 -I -c '
+import sys
+parts = sys.argv[1].split("?")
+muts = [p.split("=", 1)[1] for p in parts[1:] if p.lower().startswith("mutator=")]
+rest = [p for p in parts[1:] if not p.lower().startswith("mutator=")]
+print("?".join([parts[0]] + rest + (["Mutator=" + ",".join(muts)] if muts else [])))
+' "${URL}")"
 
 cd "${RUN_DIR}/System"
 NATIVE="${RUN_DIR}/System/ucc-bin-linux-amd64"

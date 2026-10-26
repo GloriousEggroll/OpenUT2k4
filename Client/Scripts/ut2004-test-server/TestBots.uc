@@ -6,6 +6,8 @@ class TestBots extends Mutator;
 var string LastScores;
 // ?TestAdrenaline=1 in the server URL: human players are kept at full adrenaline (to test combos)
 var bool bGiveAdrenaline;
+// the bot "Mutate TestBring" moved (TestKill's target)
+var Pawn Brought;
 
 function PostBeginPlay()
 {
@@ -93,6 +95,7 @@ function Mutate(string MutateString, PlayerController Sender)
 	local Actor A, Best;
 	local vector Dir, Loc;
 	local float Dist, BestDot, Cosine;
+	local Controller C;
 
 	Split(MutateString, " ", Parts);
 	if (Sender != None && Sender.Pawn != None && Parts.Length >= 2 && Parts[0] ~= "TestSpawn")
@@ -138,6 +141,46 @@ function Mutate(string MutateString, PlayerController Sender)
 			Best.TakeDamage(int(Parts[1]), Sender.Pawn, Best.Location, vect(0,0,0), class'DamTypeShockBeam');
 		}
 		Log("TestBots damage " $ Parts[1] $ " -> " $ Best);
+	}
+	else if (Sender != None && Parts.Length >= 2 && Parts[0] ~= "TestGod")
+	{
+		// "Mutate TestGod 1|0": the sender takes no damage (bots cannot interrupt a test) or does again
+		Sender.bGodMode = Parts[1] != "0";
+		Log("TestBots god " $ Sender.bGodMode);
+	}
+	else if (Sender != None && Sender.Pawn != None && Parts.Length >= 1 && Parts[0] ~= "TestBring")
+	{
+		// "Mutate TestBring": a bot is moved 400 UU in front of the sender (and held there: TestKill hits it)
+		Brought = None;
+		for (C = Level.ControllerList; C != None && Brought == None; C = C.NextController)
+		{
+			if (AIController(C) != None && C.Pawn != None && Vehicle(C.Pawn) == None)
+			{
+				Brought = C.Pawn;
+			}
+		}
+		if (Brought != None)
+		{
+			Dir = vector(Sender.Pawn.Rotation);
+			Dir.Z = 0;
+			Brought.SetLocation(Sender.Pawn.Location + Normal(Dir) * 400);
+		}
+		Log("TestBots bring -> " $ Brought);
+	}
+	else if (Sender != None && Sender.Pawn != None && Parts.Length >= 2 && Parts[0] ~= "TestKill")
+	{
+		// "Mutate TestKill <damage> [self]": the bot TestBring moved takes that damage (instagib-like 1000: gibs;
+		// 150: a ragdoll), or with "self" the sender's own pawn does
+		Best = Brought;
+		if (Parts.Length >= 3 && Parts[2] ~= "self")
+		{
+			Best = Sender.Pawn;
+		}
+		if (Best != None && !Best.bDeleteMe)
+		{
+			Best.TakeDamage(int(Parts[1]), Sender.Pawn, Best.Location, vect(0,0,0), class'DamTypeShockBeam');
+		}
+		Log("TestBots kill " $ Parts[1] $ " -> " $ Best);
 	}
 	Super.Mutate(MutateString, Sender);
 }

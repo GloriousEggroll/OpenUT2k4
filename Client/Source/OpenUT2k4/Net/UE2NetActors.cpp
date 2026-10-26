@@ -405,7 +405,31 @@ void AUE2NetPawn::BeginPlay()
 	{
 		ApplyModel();
 	}
+	else if (ArenaArt::IsEnabled())
+	{
+		bAwaitModel = true;
+		SetBodyShown(false);
+	}
 	UpdateTeamColors();
+}
+
+void AUE2NetPawn::SetBodyShown(bool bShown)
+{
+	if (USkeletalMeshComponent* SkelMesh = GetMesh())
+	{
+		SkelMesh->SetHiddenInGame(!bShown);
+	}
+	for (UStaticMeshComponent* Part : BodyParts)
+	{
+		if (Part)
+		{
+			Part->SetVisibility(bShown);
+		}
+	}
+	if (ThirdPersonWeapon)
+	{
+		ThirdPersonWeapon->SetHiddenInGame(!bShown);
+	}
 }
 
 void AUE2NetPawn::SetCharacter(const FString& CharacterName, int32 PlayerId)
@@ -440,6 +464,13 @@ void AUE2NetPawn::ApplyModel()
 	if (bModelApplied || bNetDead || !ArenaArt::IsEnabled())
 	{
 		return;
+	}
+	if (bAwaitModel)
+	{
+		bAwaitModel = false;
+		SetBodyShown(true);
+		UE_LOG(LogUE2Net, Verbose, TEXT("UE2NetWorld: %s shown %.0f ms after it spawned (%s)"), *GetName(), GetGameTimeSinceCreation() * 1000.f,
+			bCharacterKnown ? TEXT("its character") : TEXT("a stock pick"));
 	}
 	const ArenaArt::FCharacterModel* M = Model ? Model : ArenaArt::PickCharacterModel(ModelPlayerId);
 	USkeletalMesh* Mesh = M ? ArenaArt::Load<USkeletalMesh>(M->Mesh) : nullptr;
@@ -503,7 +534,11 @@ void AUE2NetPawn::ApplyModel()
 			: (MeshPath.Contains(TEXT("/Aliens/")) ? ArenaRagdoll::EGibKind::OrganicAlt : ArenaRagdoll::EGibKind::Organic));
 	}
 	AppliedSkinTeam = -100;
-	LastTeam = -100;
+	// the skins with the mesh, before its first frame (not on the next tick: a frame of the bare mesh)
+	LastTeam = GetTeam();
+	bScriptSkinsApplied = false;
+	UpdateTeamColors();
+	ApplyCharacterSkin();
 	UE_LOG(LogUE2Net, Verbose, TEXT("UE2NetWorld: %s uses %s, skin %s.%s"), GetPlayerState() ? *GetPlayerState()->GetPlayerName() : *GetName(), M->Mesh, *CharSkinPkg, *CharSkin);
 	if (!WeaponClassName.IsEmpty())
 	{

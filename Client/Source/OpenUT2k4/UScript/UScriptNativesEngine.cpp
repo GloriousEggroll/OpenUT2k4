@@ -776,6 +776,8 @@ void USNatives::RegisterEngine()
 		{ TEXT("Actor"), TEXT("GetBoneCoords"), &GetBoneCoords }, { TEXT("Actor"), TEXT("GetBoneRotation"), &GetBoneRotation },
 		{ TEXT("Emitter"), TEXT("Kill"), &EmitterKill }, { TEXT("Actor"), TEXT("KSetStayUprightParams"), &Quiet },
 		{ TEXT("Actor"), TEXT("KSetStayUpright"), &Quiet },
+		// (the pose is our native pawn's: xPawn.AssignInitialPose's BoneRefresh after its bone setup does nothing here)
+		{ TEXT("Actor"), TEXT("BoneRefresh"), &Quiet },
 		// presentation / physics details without an effect on script logic yet
 		{ TEXT("Actor"), TEXT("PlaySound"), &PlaySound }, { TEXT("Actor"), TEXT("PlayOwnedSound"), &PlaySound }, { TEXT("Actor"), TEXT("DemoPlaySound"), &Quiet },
 		{ TEXT("Actor"), TEXT("MakeNoise"), &Quiet }, { TEXT("Actor"), TEXT("PlayAnim"), &PlayAnim }, { TEXT("Actor"), TEXT("LoopAnim"), &LoopAnim },

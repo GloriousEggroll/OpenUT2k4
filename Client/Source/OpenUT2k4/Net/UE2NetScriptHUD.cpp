@@ -845,6 +845,9 @@ struct FUE2NetScriptHUD::FImpl
 		bool bOff = false;
 		bool bMirrored = false;
 		bool bReported = false;
+		/** Torn off from a channel our native world shows (a dying player's pawn: our ragdoll or gibs): its code runs on
+		 *  (effects, sounds) but its body is ours, not drawn again from its own mesh. */
+		bool bNativeBody = false;
 	};
 	TMap<FUSObject*, FClientRun> ClientRuns;
 	/** Mirror -> its channel (every mirrored actor). */
@@ -1893,7 +1896,7 @@ struct FUE2NetScriptHUD::FImpl
 		TArray<FUSObject*> Spawned;
 		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
 		{
-			if (!KV.Value.bMirrored && KV.Key && !KV.Key->IsPendingKill())
+			if (!KV.Value.bMirrored && !KV.Value.bNativeBody && KV.Key && !KV.Key->IsPendingKill())
 			{
 				Spawned.Add(KV.Key);
 			}
@@ -2692,6 +2695,10 @@ struct FUE2NetScriptHUD::FImpl
 		}
 		USProps().Role.Set<uint8>(O, UE2_ROLE_Authority);
 		USProps().RemoteRole.Set<uint8>(O, 0);
+		// what our world shows for the channel (a player's body: ragdoll, gibs) stays ours; the script's actor is not
+		// drawn a second time from its mesh (a mod pawn's corpse stood in its reference pose next to our ragdoll)
+		FUE2NetWorld* NW = FUE2NetWorld::Get();
+		R->bNativeBody = (NW && NW->GetNativeActor(Channel) != nullptr) || (RTPawn() && O->Class->IsChildOf(RTPawn())); // (our own pawn: our corpse)
 		Mirrors.Remove(Channel);
 		ChannelOf.Remove(O);
 		R->bMirrored = false;
