@@ -866,6 +866,28 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
   (`FUE2NetScriptHUD::ScriptSwitchWeapon`); the weapon the script holds or brings up (its `ClientWeaponSet` on spawn)
   is ours (`ScriptPawnWeapon`), so ours no longer sends a second `ServerChangedWeapon` (Freon spawned with three) and
   `BringUp` / `PutDown` are not called twice. Stock weapons switch natively as before.
+- **Unpossessed, not dead** (Freon's frozen body: the server's `Controller.Pawn` is None, the pawn a simulated proxy
+  and not torn off): ours lets go of it after a quarter second and the world layer shows it as any other pawn, so
+  the server's `ClientSetViewTarget(<our frozen pawn>)` / `ClientSetBehindView(True)` view it from behind (the
+  frozen body in its ice, the thaw message, its health counting up), as the 3369 client does. Before, our local pawn
+  stayed and the camera sat inside the wall.
+- **Third person of a script weapon** (our behind view, a spectator or frozen view of us): the weapon's
+  `AttachmentClass` mesh, placement (`RelativeLocation` / `RelativeRotation` / `DrawScale`) and skins in the right hand
+  (UE2's `ThirdPersonActor`); other players' attachments without a stock relative (Ballistic Weapons') are drawn
+  from their own class defaults too (`UE2NetModWeapons::FindAttachment` against `Engine.WeaponAttachment`).
+- **Vehicle weapons running their own code** (the Odin's ion cannon, a MantaMirage's plasma gun): our fire / alt
+  fire in the vehicle also calls their `ClientStartFire` / `ClientStopFire` as `ONSVehicle.Fire` does on the driving
+  client (`OwnerEffects`: the Odin's charge-up sound, `IonTurretAttachment.PlayChargeUp`, its charge beams
+  `FX_Turret_IonCannon_ChargeBeam`); their `FireCountdown` runs down between presses.
+- **Vehicle camera**: `ONSVehicle.SpecialCalcBehindView` with the class's `TPCamDistance`, `TPCamLookat` and
+  `TPCamWorldOffset` (the Odin: 375 UU behind a point 350 UU above it); the sweep ignores what rides on the vehicle
+  (its guns, a mod's attachments), which pulled the camera into the hull.
+- **Level**: `Level.GRI` is the mirrored GRI and `Level.DefaultGameType` the server's game class (a real client has
+  the map's), so `AnnouncerVoice.PrecacheAnnouncements` (in the controller's `PostBeginPlay`, before the GRI arrives)
+  finds `Level.GetGameClass()` (it logged "Accessed None" on every join).
+- **Mod pickups' PrePivot**: a mod pickup in place of a stock one draws its item at `-PrePivot` against the stock
+  pickup's (Ballistic Weapons' `AP_6Magnum` 70 UU, `AP_MRS138Box` 32 UU); placed and mutator pickups (drawn as their
+  static mesh) already used it.
 - **Object variables**: `Object.Class` and `Object.Name` hold the object's class and name (`FUSWorld::ConstructObject`):
   `class.default.X = ...` (BW's `InitClientVars`) and `Other.Class == class'X'` work.
 - **Sounds**: the first play of each sound by script (`PlaySound` / `PlayOwnedSound`) is logged (`UScript: <actor> plays
@@ -1000,7 +1022,20 @@ focus, every widget's `InitComponent`, value and key handling, the mod's pages a
   mirrored actor of that class linked from our PRI (`CustomReplicationInfo` chain), owned by us, or the only one.
 - Settings: what the pages save (`SaveConfig`) goes to our per-user ini (see "Mods' client code"), as before.
 - Not done: context menus, drag and drop between lists, animations (`Animate` / `Resize`), the 3D previews of the pages (`SpinnyWeap` actors: UTComp's skin / model preview),
-  `GUIController.GetMapList` / `GetWeaponList` (empty), a button for the mods' menus in our own mid-game menu.
+  `GUIController.GetMapList` / `GetWeaponList` (empty: UE2 fills them from the install's .ucl files, which a
+  download-only client has none of for a mod), a button for the mods' menus in our own mid-game menu.
+- **Multi-column lists**: `AddedItem` / `RemovedItem` count `ItemCount` (MapVoteMultiColumnList fills itself through
+  them), `InitializeColumns` sets `ColumnWidths` from `InitColumnPerc` while `bInit` and when the list's width changes,
+  the sort keys come from the `GetSortString` delegate or the list class's own function of that name (an unbound
+  delegate calls it), a click on a header column makes it the `SortColumn` (descending first, so the list's
+  `OnSortChanged` flips it to ascending) or flips the order, and hovering a column shows its `ColumnHeadingHints`.
+- **`RelativeLeft / Top / Width / Height`** keep a value that is already relative ((-2, 2)): FloatingWindow's
+  `SetDefaultPosition` passes its `DefaultWidth=0.8` through them (xVoting's map voting window was a pixel wide).
+- **`SetOwner`** calls the old owner's `LostChild` and the new one's `GainedChild` (UE2's `AActor::SetOwner`):
+  `PlayerController.GainedChild` links its `VoteReplicationInfo`.
+- Test hook `-UE2ScriptVoting` (development builds): xVoting's `VotingReplicationInfo` runs its client code in the
+  mirror too (its calls to the server dropped, our native map vote answers it), so `ModMenuOpen xVoting.MapVotingPage`
+  opens the stock script page with the server's maps and game types.
 - Off with `-UE2ScriptMenus=0`. Test hooks (development builds): `ModMenuOpen <class>`, `ModMenuDump` (the top page's
   components with captions, values, states and bounds), `ModMenuClick <name or caption>`, `ModMenuKey <EInputKey>`,
   `ModMenuType <text>`, `ModMenuClose`, `ModDisasm <class> <function>`, `ModRef <hex>`, `ModPCProp <property>`;
@@ -1028,6 +1063,9 @@ Results (local 3369.3 server, DM-Rankin, utcompv17a, 1 bot, client at 1024x768):
   `Menu_Menu3SPN` (`Menu3SPN`, through `ModExec`): its title bar, Info / Settings / Ranks tabs; Ranks shows the legend
   with its scroll bar.
 - Long lists: UT2Vote61's mutator page, 18 items: wheel, scroll buttons and End move the grip and the selection.
+- Multi-column list with data (`-UE2ScriptVoting`, xVoting map voting on a DM server): `xVoting.MapVotingPage` with
+  its 46 DM maps under Map Name / Played / Seq headers; clicking the Map Name header twice sorts descending, then
+  ascending (screenshots).
 - Tool tips: hovering BW's Preferences tab button shows its hint under the cursor; menu sounds
   (`2K4MenuSounds.Generic.msfxMouseOver`, `msfxEdit`) logged on hover and click.
 
@@ -1496,6 +1534,15 @@ Regression after the call ordering, role and weapon switching changes (Shipping-
   core announcements (`MessageAnnouncements`, "Blue_powernode_under_construction", "Red_PowerCore_vulnerable").
 - Spectating (`?SpectatorOnly=1`, clicks through the X server): `ServerViewNextPlayer`, `ServerVerifyViewTarget`,
   `ServerViewSelf`, the view player bar. The scoreboard (Tab held through the X server) draws, the HUD hidden under it.
+- BR-Bifrost with 2 bots: spawn, ball messages ("Othello has the ball!", "dropped the ball", "The ball was
+  returned!"), `ServerUse`. AS-Convoy with 2 bots: the objectives, respawns, assault rifle fire; the server's map
+  rotation went on to AS-FallenCity and AS-Mothership, where we spawned in a space fighter
+  (`ASVehicle_SpaceFighter_Human`, driven until it was shot down).
+- Modded ONS (ONS-Tek-)o(-Randomizer-V13, `Mutate TestSpawn`): an Odin driven, fire and alt fire (`VehicleFire`
+  / `VehicleCeaseFire`), its charge-up sound and charge beams from its own code; a MantaMirage driven, fired and
+  jumped. ONS-Torlan: a manual gun turret destroyed with us in it (`Mutate TestDamage 2000 self`): its gun hidden
+  (`ONSManualGun.bHidden`), the base left standing.
+- Freon: frozen by the bots, our frozen body seen from behind until a teammate thawed us.
 
 MangoHud (first 30 s of a run, 1280x720 window, editor build, shared machine): empty-server route 137.6 fps average;
 DM-Rankin with 3 bots 32 fps; CTF-Face3 21 fps.
@@ -2110,7 +2157,10 @@ Scripts/ut2004-test-server.sh [-m Map] [-g GameClass] [-p Port] [-b Bots] [-n Na
 - **Scores**: with `-b`, the mutator also logs every player's score / deaths (and the team scores) whenever they
   change (`ScriptLog: TestBots scores Name=score/deaths ... teams=r-b`), to compare a client's view with the server's.
   With `-o "?TestAdrenaline=1"` it also gives human players 100 adrenaline every second while no combo runs
-  (`TestBots adrenaline ...`), for combo tests.
+  (`TestBots adrenaline ...`), for combo tests. `Mutate TestSpawn <Package.Class> [distance]` spawns that class in
+  front of the sender (a mod vehicle a map's randomizer rarely hands out: `OdinV2Omni.OdinV2Omni`, a map's own
+  `MantaMirage`), `Mutate TestDamage <amount> [self]` damages the vehicle in front of the sender, or the one it sits
+  in (a manual gun turret destroyed); both log `TestBots spawn / damage ...`.
 
 Examples:
 

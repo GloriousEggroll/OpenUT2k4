@@ -82,6 +82,66 @@ function GetServerPlayers(out GameInfo.ServerResponseLine ServerState)
 	}
 }
 
+// "Mutate TestSpawn <Package.Class> [distance]" (local test servers only): spawns that actor class (a mod vehicle:
+// an Odin, a map's MantaMirage) in front of the sender, to test what the randomizer of a map rarely hands out.
+// "Mutate TestDamage <amount> [self]": the nearest vehicle in front of the sender (or with "self" the vehicle it sits
+// in) takes that damage (a manual gun turret destroyed: its dead base).
+function Mutate(string MutateString, PlayerController Sender)
+{
+	local array<string> Parts;
+	local class<Actor> SpawnClass;
+	local Actor A, Best;
+	local vector Dir, Loc;
+	local float Dist, BestDot, Cosine;
+
+	Split(MutateString, " ", Parts);
+	if (Sender != None && Sender.Pawn != None && Parts.Length >= 2 && Parts[0] ~= "TestSpawn")
+	{
+		SpawnClass = class<Actor>(DynamicLoadObject(Parts[1], class'Class', true));
+		Dist = 600;
+		if (Parts.Length >= 3)
+		{
+			Dist = float(Parts[2]);
+		}
+		Dir = vector(Sender.Pawn.Rotation);
+		Dir.Z = 0;
+		Loc = Sender.Pawn.Location + Normal(Dir) * Dist + vect(0,0,150);
+		A = None;
+		if (SpawnClass != None)
+		{
+			A = Spawn(SpawnClass,,, Loc, Sender.Pawn.Rotation);
+		}
+		Log("TestBots spawn " $ Parts[1] $ " -> " $ A);
+	}
+	else if (Sender != None && Sender.Pawn != None && Parts.Length >= 2 && Parts[0] ~= "TestDamage")
+	{
+		BestDot = 0.7;
+		Dir = vector(Sender.Rotation);
+		foreach DynamicActors(class'Actor', A)
+		{
+			if (Vehicle(A) != None && A != Sender.Pawn && VSize(A.Location - Sender.Pawn.Location) < 5000)
+			{
+				Cosine = Normal(A.Location - Sender.Pawn.Location) Dot Dir;
+				if (Cosine > BestDot)
+				{
+					BestDot = Cosine;
+					Best = A;
+				}
+			}
+		}
+		if (Parts.Length >= 3 && Parts[2] ~= "self")
+		{
+			Best = Sender.Pawn; // the vehicle the sender sits in
+		}
+		if (Best != None)
+		{
+			Best.TakeDamage(int(Parts[1]), Sender.Pawn, Best.Location, vect(0,0,0), class'DamTypeShockBeam');
+		}
+		Log("TestBots damage " $ Parts[1] $ " -> " $ Best);
+	}
+	Super.Mutate(MutateString, Sender);
+}
+
 defaultproperties
 {
 	FriendlyName="OpenUT2k4 Test Bots"

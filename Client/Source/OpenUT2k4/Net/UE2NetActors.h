@@ -297,6 +297,15 @@ public:
 	void Setup(const FString& Label, const FString& SkeletalMeshPath, const FString& StaticMeshPath, const UE2NetModWeapons::FLook& Look,
 		const FString& DestroyedMeshPath, float RadiusUU, float HeightUU);
 	void SetTeam(int32 InTeam);
+	/** ONSVehicle's behind-view camera (UE2 units): TPCamDistance, TPCamLookat (in the vehicle's frame), TPCamWorldOffset. */
+	struct FBehindCamera
+	{
+		bool bValid = false;
+		float Distance = 375.f;
+		FVector LookAt = FVector::ZeroVector;
+		FVector WorldOffset = FVector(0.f, 0.f, 100.f);
+	};
+	FBehindCamera BehindCamera;
 	/** Actor.bHidden: the body is not drawn (a stationary turret's base until it is destroyed); the weapons stay. */
 	void SetBodyHidden(bool bInHidden);
 	/** The KRigidBody state (UE2 units; velocity in UU/s). */

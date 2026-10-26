@@ -2092,7 +2092,8 @@ void AArenaCharacter::ApplyBodySkin()
 
 void AArenaCharacter::UpdateThirdPersonWeapon()
 {
-	const ArenaArt::FWeaponArt* Art = CurrentWeapon ? ArenaArt::FindWeaponArt(CurrentWeapon->GetClass()) : nullptr;
+	// a net mod weapon's art (its stand-in's, or a script weapon's own attachment: Net/UE2NetModWeapons.h), else ours
+	const ArenaArt::FWeaponArt* Art = CurrentWeapon ? (CurrentWeapon->GetArt() ? CurrentWeapon->GetArt() : ArenaArt::FindWeaponArt(CurrentWeapon->GetClass())) : nullptr;
 	AnimEvents.bHeavyWeapon = Art && Art->bHeavy;
 
 	USkeletalMesh* WeaponMesh = (bSkeletalBody && !bDead && Art && Art->ThirdPersonMesh) ? ArenaArt::Load<USkeletalMesh>(Art->ThirdPersonMesh) : nullptr;
@@ -2147,6 +2148,15 @@ void AArenaCharacter::UpdateThirdPersonWeapon()
 	if (ThirdPersonWeapon->GetSkeletalMeshAsset() != WeaponMesh)
 	{
 		ThirdPersonWeapon->SetSkeletalMeshAsset(WeaponMesh);
+	}
+	ThirdPersonWeapon->EmptyOverrideMaterials();
+	const TArray<UMaterialInterface*>& TPSkins = CurrentWeapon->GetNetStandIn().ThirdPersonSkins;
+	for (int32 i = 0; i < TPSkins.Num(); ++i)
+	{
+		if (TPSkins[i])
+		{
+			ThirdPersonWeapon->SetMaterial(i, TPSkins[i]);
+		}
 	}
 	ThirdPersonWeapon->SetRelativeLocationAndRotation(Art->HandOffset, Art->HandRotation);
 	ThirdPersonWeapon->SetRelativeScale3D(FVector(Art->HandScale));

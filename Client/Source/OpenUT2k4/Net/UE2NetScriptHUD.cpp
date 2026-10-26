@@ -899,6 +899,12 @@ struct FUE2NetScriptHUD::FImpl
 		Script->Level = Level;
 		USProps().Level.Set<FUSObject*>(Level, Level);
 		USProps().NetMode.Set<uint8>(Level, UE2_NM_Client);
+		// the map's LevelInfo.DefaultGameType (a real client has the map loaded; LevelInfo.GetGameClass falls back on it
+		// until the GRI arrives: AnnouncerVoice.PrecacheAnnouncements in the controller's PostBeginPlay): the server's game
+		if (FUSProperty* P = Level->FindProperty(TEXT("DefaultGameType")); P && P->Type == EUSType::Str && !Connection.GetGameClass().IsEmpty())
+		{
+			*reinterpret_cast<FString*>(Level->Data + P->Offset) = Connection.GetGameClass();
+		}
 		if (FUSProperty* P = Level->FindProperty(TEXT("TimeDilation")))
 		{
 			*reinterpret_cast<float*>(Level->Data + P->Offset) = 1.1f;
@@ -1284,6 +1290,12 @@ struct FUE2NetScriptHUD::FImpl
 		}
 		++Mirrored;
 		Mirrors.Add(A.Channel, O);
+		if (O != Level && ChainHas(A.Class, TEXT("GameReplicationInfo")) && !GetObj(Level, TEXT("GRI")))
+		{
+			// GameReplicationInfo.PostBeginPlay: Level.GRI (stock GRIs run no client code here; the announcer's
+			// PrecacheAnnouncements reads Level.GetGameClass() through it)
+			SetObj(Level, TEXT("GRI"), O);
+		}
 		FUSEngineProps& P = USProps();
 		if (O != Level)
 		{
@@ -1359,8 +1371,33 @@ struct FUE2NetScriptHUD::FImpl
 	 * except Info (replication infos, mutators: their client parts are done in UE2NetModClient / the HUD), controllers and
 	 * HUDs (run by the script HUD).
 	 */
+	/**
+	 * Test hook (development builds, -UE2ScriptVoting): xVoting's VotingReplicationInfo runs its client code here too
+	 * (its map and game lists fill from the server's ReceiveMapInfo / ReceiveGameConfig), its calls to the server are
+	 * dropped (our native map vote answers them), so xVoting's script pages can be opened with real data
+	 * (`ModMenuOpen xVoting.MapVotingPage`: the multi-column map list, its headers and sorting).
+	 */
+	static bool ScriptVotingTest()
+	{
+#if UE_BUILD_SHIPPING
+		return false;
+#else
+		static const bool bOn = FParse::Param(FCommandLine::Get(), TEXT("UE2ScriptVoting"));
+		return bOn;
+#endif
+	}
+
+	static bool IsScriptVotingInfo(const FUSClass* C)
+	{
+		return C && ScriptVotingTest() && ChainHas(C, TEXT("VotingReplicationInfoBase"));
+	}
+
 	static bool ShouldRunClient(FUSClass* C)
 	{
+		if (IsScriptVotingInfo(C))
+		{
+			return true;
+		}
 		const FString Pkg = C ? C->GetPackageName().ToString() : FString();
 		// a mod's replication infos run their client code too (UTComp_PRI receives the map list for UTComp's voting page,
 		// UT2Vote's info drives its menus); other Info classes (game, mutators: server side) do not
@@ -1427,6 +1464,10 @@ struct FUE2NetScriptHUD::FImpl
 		if (!O)
 		{
 			return;
+		}
+		if (Level && O != Level && GetObj(Level, TEXT("GRI")) == O)
+		{
+			SetObj(Level, TEXT("GRI"), nullptr);
 		}
 		if (const int32* Ch = ChannelOf.Find(O))
 		{
@@ -1546,6 +1587,10 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			return false;
 		}
+		if (IsScriptVotingInfo(A->Class))
+		{
+			return true; // dropped in SendServerCall: the native map vote talks to the server
+		}
 		FUSObject* PC = Script ? Script->GetLocalPlayerController() : nullptr;
 		bool bOurs = false;
 		int32 Guard = 0;
@@ -1634,6 +1679,10 @@ struct FUE2NetScriptHUD::FImpl
 
 	void SendServerCall(FUSObject* A, FUSFunction* F, uint8* Parms)
 	{
+		if (IsScriptVotingInfo(A->Class))
+		{
+			return;
+		}
 		const int32* Ch = ChannelOf.Find(A);
 		if (!Ch)
 		{
@@ -1997,6 +2046,55 @@ struct FUE2NetScriptHUD::FImpl
 			}
 		});
 		return true;
+	}
+
+	/** Fire presses on vehicle weapons that run their own code: when each last saw one (their FireCountdown runs down). */
+	TMap<FUSObject*, double> VehicleWeaponLastFire;
+
+	/**
+	 * UE2 ONSVehicle.Fire / StopFire on the driving client: the vehicle's weapons' ClientStartFire / ClientStopFire
+	 * (OwnerEffects: the Odin's charge-up beams on its ion cannon). For mod vehicle weapons running their own code; the
+	 * server gets VehicleFire / VehicleCeaseFire from ours.
+	 */
+	void VehicleFireImpl(int32 VehicleChannel, bool bStart, bool bAlt)
+	{
+		FUSObject* Vehicle = MirrorOfChannel(VehicleChannel);
+		FUSObject* PC = GetPC();
+		if (!Vehicle)
+		{
+			return;
+		}
+		const double Now = FPlatformTime::Seconds();
+		TArray<FUSObject*> Guns;
+		for (const TPair<FUSObject*, FClientRun>& KV : ClientRuns)
+		{
+			FUSObject* W = KV.Key;
+			if (W && !W->IsPendingKill() && !KV.Value.bOff && ChainHas(W->Class, TEXT("ONSWeapon")) && (GetObj(W, TEXT("Base")) == Vehicle || GetObj(W, TEXT("Owner")) == Vehicle))
+			{
+				Guns.Add(W);
+			}
+		}
+		for (FUSObject* W : Guns)
+		{
+			RunGuarded(W, [&]()
+			{
+				if (bStart)
+				{
+					// ONSWeapon's native tick counts FireCountdown down; ours does it between presses
+					double& Last = VehicleWeaponLastFire.FindOrAdd(W);
+					if (float* FC = PropPtr<float>(W, TEXT("FireCountdown")))
+					{
+						*FC = FMath::Max(0.f, *FC - float(Last > 0.0 ? Now - Last : 1000.0));
+					}
+					Last = Now;
+					CallWith(W, TEXT("ClientStartFire"), [PC, bAlt](FUSParms& P) { P.Object(PC).Bool(bAlt); });
+				}
+				else
+				{
+					CallWith(W, TEXT("ClientStopFire"), [PC, bAlt](FUSParms& P) { P.Object(PC).Bool(bAlt); });
+				}
+			});
+		}
 	}
 
 	/** The weapon our pawn's code holds or is switching to (Pawn.PendingWeapon, else Pawn.Weapon) when it runs its code. */
@@ -3583,6 +3681,8 @@ bool FUE2NetScriptHUD::FeedMessage(int32 Channel, const FString& Function, const
 }
 
 bool FUE2NetScriptHUD::IsScriptWeapon(int32 Channel) const { return Impl->bReady && Impl->IsScriptWeaponImpl(Channel); }
+bool FUE2NetScriptHUD::IsScriptVotingTest() { return FImpl::ScriptVotingTest(); }
+void FUE2NetScriptHUD::VehicleFire(int32 VehicleChannel, bool bStart, bool bAlt) { if (Impl->bReady) Impl->VehicleFireImpl(VehicleChannel, bStart, bAlt); }
 bool FUE2NetScriptHUD::ScriptSwitchWeapon(int32 PawnChannel, int32 WeaponChannel) { return Impl->bReady && Impl->ScriptSwitchWeaponImpl(PawnChannel, WeaponChannel); }
 int32 FUE2NetScriptHUD::ScriptPawnWeapon(int32 PawnChannel) const { return Impl->bReady ? Impl->ScriptPawnWeaponImpl(PawnChannel) : 0; }
 void FUE2NetScriptHUD::ScriptWeaponCommand(int32 Channel, EWeaponCommand Command, uint8 Mode) { if (Impl->bReady) Impl->ScriptWeaponCommandImpl(Channel, Command, Mode); }
@@ -3678,6 +3778,8 @@ FString FUE2NetScriptHUD::Describe() const { return FString(); }
 bool FUE2NetScriptHUD::HasClientAttachment(int32, const FString&) const { return false; }
 bool FUE2NetScriptHUD::FeedMessage(int32, const FString&, const TArray<TPair<FName, FUE2NetValue>>&) { return false; }
 bool FUE2NetScriptHUD::IsScriptWeapon(int32) const { return false; }
+bool FUE2NetScriptHUD::IsScriptVotingTest() { return false; }
+void FUE2NetScriptHUD::VehicleFire(int32, bool, bool) {}
 bool FUE2NetScriptHUD::ScriptSwitchWeapon(int32, int32) { return false; }
 int32 FUE2NetScriptHUD::ScriptPawnWeapon(int32) const { return 0; }
 void FUE2NetScriptHUD::ScriptWeaponCommand(int32, EWeaponCommand, uint8) {}

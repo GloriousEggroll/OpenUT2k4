@@ -55,6 +55,8 @@ public:
 	void SetNetAvailable(bool bNewAvailable);
 	/** Net play: a mod pickup's own StaticMesh in place of our item mesh, fitted to its size. */
 	void SetNetItemMesh(class UStaticMesh* Mesh);
+	/** Net play: a mod pickup's PrePivot (cm, unscaled): its item is drawn at -PrePivot in the item's own frame. */
+	void SetNetItemOffset(const FVector& Offset);
 
 	UPROPERTY(VisibleAnywhere) TObjectPtr<USphereComponent> Trigger;
 	UPROPERTY(VisibleAnywhere) TObjectPtr<USceneComponent> ModelRoot;
@@ -80,6 +82,8 @@ protected:
 	/** Imported pickup base (stays when the item is taken). */
 	UPROPERTY() TObjectPtr<UStaticMeshComponent> BaseMesh;
 	bool bModelBuilt = false;
+	/** SetNetItemOffset: what was added to the item's place. */
+	FVector NetItemOffset = FVector::ZeroVector;
 	/** The imported item mesh replaced the procedural parts (AddModelPart adds nothing). */
 	bool bArtModel = false;
 	/** -1 = by type, 0 = no base, 1 = base. */

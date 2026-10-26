@@ -37,6 +37,8 @@ namespace UE2NetModWeapons
 		ArenaWeaponHand::FViewParams View;
 		/** First-person Skins (UE2 material paths; empty: the mesh's own). */
 		TArray<FString> Skins;
+		/** The attachment's Skins for the third-person mesh (a weapon without a stock relative). */
+		TArray<FString> ThirdPersonSkins;
 		/** Fire modes' FireRate (seconds) where the mod's differs; < 0: the stand-in's. */
 		float FireRate[2] = { -1.f, -1.f };
 		/** IconCoords where they differ, on IconTexture (the mod's IconMaterial, an art path; empty: the stock HUD
@@ -70,6 +72,9 @@ namespace UE2NetModWeapons
 	OPENUT2K4_API const FModAttachment* FindAttachment(const FString& UE2Class);
 	/** A mod pickup's StaticMesh where it differs from its stock ancestor's (null: keep ours). */
 	OPENUT2K4_API UStaticMesh* FindPickupMesh(const FString& UE2Class);
+	/** A mod pickup's PrePivot less its nearest stock ancestor's (UE2 units; zero for stock classes): where UE2 draws its
+	 *  mesh against the stock pickup's place (BallisticV25.AP_6Magnum: 70 UU up). */
+	OPENUT2K4_API FVector PickupPrePivotDelta(const FString& UE2Class);
 	/** A class of UT2004's own script packages ("XWeapons.ShockRifle"), not a mod's. */
 	OPENUT2K4_API bool IsStockClass(const FString& ClassPath);
 	/** Loads the materials of a Skins list (null entries: the mesh's own), converting a mod's that are not in the cache yet. */

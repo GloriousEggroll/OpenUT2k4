@@ -678,6 +678,10 @@ namespace ArenaNet
 				GTravelMap.Split(TEXT("?"), &GTravelMap, nullptr);
 				GMapChangeError.Reset();
 			}
+			if (GNetScriptHUD && GMapVote && FUE2NetScriptHUD::IsScriptVotingTest())
+			{
+				GNetScriptHUD->FunctionCall(Actor, Function, Params); // test hook: xVoting's info runs in the mirror too
+			}
 			if (GMapVote && GMapVote->FunctionCall(Actor, Function, Params))
 			{
 				return; // map voting (Net/UE2NetMapVote.h)

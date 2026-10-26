@@ -146,6 +146,23 @@ void AArenaPickup::SetNetItemMesh(UStaticMesh* Mesh)
 	}
 }
 
+void AArenaPickup::SetNetItemOffset(const FVector& Offset)
+{
+	if (!bModelBuilt)
+	{
+		BuildModel();
+	}
+	UStaticMeshComponent* Item = bArtModel && ModelParts.Num() > 0 ? ModelParts[0].Get() : nullptr;
+	if (!Item)
+	{
+		return;
+	}
+	// UE2 draws a mesh at -PrePivot in its own (scaled, turned) frame
+	const FVector Shift = -Item->GetRelativeRotation().RotateVector(Offset * Item->GetRelativeScale3D());
+	Item->SetRelativeLocation(Item->GetRelativeLocation() - NetItemOffset + Shift);
+	NetItemOffset = Shift;
+}
+
 void AArenaPickup::BuildModel()
 {
 	for (UStaticMeshComponent* Part : ModelParts)

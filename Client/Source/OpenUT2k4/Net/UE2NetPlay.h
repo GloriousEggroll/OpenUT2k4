@@ -314,6 +314,8 @@ private:
 	TMap<int32, FWeaponInfo> Weapons;
 	int32 CurrentWeaponChannel = 0;
 	double LastSpawnRealTime = 0.0;
+	/** Since when our pawn looks unpossessed (Tick: let go of it after a moment). */
+	double UnpossessedSince = 0.0;
 	double NextIgnoreRefresh = 0.0;
 	double LastRestartRequest = 0.0;
 	bool bFireHeld[2] = { false, false };

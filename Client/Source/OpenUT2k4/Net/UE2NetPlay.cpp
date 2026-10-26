@@ -265,11 +265,26 @@ void AUE2NetLocalPawn::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
 	// UE2 Vehicle.SpecialCalcBehindView: behind and above the vehicle, along our own view rotation
 	const FRotator View = Controller ? Controller->GetControlRotation() : GetActorRotation();
 	const FBoxSphereBounds B = Vehicle->GetRootComponent() ? Vehicle->GetRootComponent()->Bounds : FBoxSphereBounds(Vehicle->GetActorLocation(), FVector(200.f), 200.f);
-	const FVector Pivot = Vehicle->GetActorLocation() + FVector(0.f, 0.f, 120.f);
+	FVector Pivot = Vehicle->GetActorLocation() + FVector(0.f, 0.f, 120.f);
 	FVector Desired = Pivot - View.Vector() * FMath::Max(600.f, float(B.SphereRadius) * 2.2f);
+	if (const AUE2NetVehicle* NV = Cast<AUE2NetVehicle>(Vehicle); NV && NV->BehindCamera.bValid)
+	{
+		// ONSVehicle.SpecialCalcBehindView: CamLookAt = Location + (TPCamLookat >> Rotation) + TPCamWorldOffset,
+		// the camera TPCamDistance behind it along our view
+		const float S = UE2NetPlayLocal::S;
+		const AUE2NetVehicle::FBehindCamera& C = NV->BehindCamera;
+		Pivot = Vehicle->GetActorLocation() + Vehicle->GetActorRotation().RotateVector(C.LookAt * S)
+			+ C.WorldOffset * S;
+		Desired = Pivot - View.Vector() * C.Distance * S;
+	}
 	FHitResult Hit;
 	FCollisionQueryParams Q(SCENE_QUERY_STAT(UE2NetDriveCamera), false, this);
 	Q.AddIgnoredActor(Vehicle);
+	// and what rides on it (its guns and turrets, a mod's attachments: the Odin's ion cannon), which would pull the
+	// camera into the hull
+	TArray<AActor*> Riders;
+	Vehicle->GetAttachedActors(Riders, true, true);
+	Q.AddIgnoredActors(Riders);
 	if (GetWorld()->SweepSingleByChannel(Hit, Pivot, Desired, FQuat::Identity, ECC_Camera, FCollisionShape::MakeSphere(12.f), Q))
 	{
 		Desired = Hit.Location;
@@ -393,6 +408,7 @@ AArenaWeapon* AUE2NetLocalPawn::EnsureNetWeapon(UClass* WeaponClass, const FStri
 			In.Art = &Mod->Art;
 			In.View = Mod->bView ? &Mod->View : nullptr;
 			In.Skins = UE2NetModWeapons::LoadSkins(Mod->Skins);
+			In.ThirdPersonSkins = UE2NetModWeapons::LoadSkins(Mod->ThirdPersonSkins);
 			In.FireRate[0] = Mod->FireRate[0];
 			In.FireRate[1] = Mod->FireRate[1];
 			In.bIcon = Mod->bIcon;
@@ -2462,6 +2478,10 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 			// UE2 Vehicle.Fire / AltFire -> VehicleFire(bWasAltFire) on the vehicle (or gunner seat) we drive
 			bFireHeld[Mode] = true;
 			Send(DrivingChannel, TEXT("VehicleFire"), { VBool(Mode == 1) });
+			if (FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get())
+			{
+				SH->VehicleFire(DrivingChannel, true, Mode == 1); // its mod weapons' ClientStartFire (OwnerEffects)
+			}
 			++FireCommands;
 			return true;
 		}
@@ -2496,6 +2516,10 @@ bool FUE2NetPlay::HandleInput(APlayerController* InPC, EInput Input, int32 Value
 		{
 			bFireHeld[Mode] = false;
 			Send(DrivingChannel, TEXT("VehicleCeaseFire"), { VBool(Mode == 1) });
+			if (FUE2NetScriptHUD* SH = FUE2NetScriptHUD::Get())
+			{
+				SH->VehicleFire(DrivingChannel, false, Mode == 1);
+			}
 			return true;
 		}
 		bNewNetFirePending[Mode] = false;
@@ -2652,6 +2676,29 @@ void FUE2NetPlay::Tick(float DeltaSeconds)
 	if (OwnPawnChannel && !LocalPawn.IsValid())
 	{
 		TrySpawnLocalPawn();
+	}
+	// our pawn unpossessed while it stays (Controller.UnPossess without a death: Freon freezes it, the controller
+	// spectates its body): the server's Controller.Pawn is None and the pawn a simulated proxy, not torn off. It is
+	// then a pawn like the others (the world layer shows it; the server's view target and behind view follow it)
+	if (OwnPawnChannel && !DrivingChannel && LocalPawn.IsValid())
+	{
+		const FUE2NetActor* PA = Connection->GetActors().Find(OwnPawnChannel);
+		const FUE2NetActor* CA = Connection->GetActors().Find(PCChannel());
+		const bool bLetGo = PA && CA && UE2NetPlayLocal::GetInt(*PA, TEXT("Role"), 3) == 2 && UE2NetPlayLocal::GetInt(*PA, TEXT("bTearOff"), 0) == 0 && UE2NetPlayLocal::GetRef(*CA, TEXT("Pawn")) == 0;
+		UnpossessedSince = bLetGo ? (UnpossessedSince > 0.0 ? UnpossessedSince : Now) : 0.0;
+		if (bLetGo && Now - UnpossessedSince > 0.25)
+		{
+			const int32 Channel = OwnPawnChannel;
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: our pawn (channel %d) was unpossessed and stays: shown as the others"), Channel);
+			UnpossessedSince = 0.0;
+			DestroyLocalPawn(false);
+			OwnPawnChannel = 0;
+			AckedPawnChannel = 0;
+			if (FUE2NetWorld* NW = FUE2NetWorld::Get())
+			{
+				NW->ActorOpened(*PA);
+			}
+		}
 	}
 	// mod weapons running their own code: the one our pawn's script holds or brings up (its ClientWeaponSet, its
 	// PutDown -> Pawn.ChangedWeapon chain) is ours too

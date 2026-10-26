@@ -1581,6 +1581,11 @@ void AArenaWeapon::SetNetStandIn(const FArenaNetStandIn& In)
 	{
 		NetStandInSkins.Add(M);
 	}
+	NetStandInThirdPersonSkins.Reset();
+	for (UMaterialInterface* M : In.ThirdPersonSkins)
+	{
+		NetStandInThirdPersonSkins.Add(M);
+	}
 	for (int32 Mode = 0; Mode < 2; ++Mode)
 	{
 		if (In.FireRate[Mode] > 0.f)

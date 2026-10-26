@@ -78,6 +78,9 @@ public:
 		bool bAnimStopped = false;
 		uint32 AnimSerial = 0;
 	};
+	/** Test hook (development builds, -UE2ScriptVoting): xVoting's VotingReplicationInfo runs its client code in the
+	 *  mirror too (its calls to the server dropped), so its script pages open with the server's data. */
+	static bool IsScriptVotingTest();
 	/** The weapon of Channel (ours) runs its own client code in the mirror. */
 	bool IsScriptWeapon(int32 Channel) const;
 	/**
@@ -86,6 +89,8 @@ public:
 	 * run its code here: the caller switches (and tells the server) itself.
 	 */
 	bool ScriptSwitchWeapon(int32 PawnChannel, int32 WeaponChannel);
+	/** Our fire pressed / released in the vehicle of VehicleChannel: its mod weapons' client code (ClientStartFire / ClientStopFire). */
+	void VehicleFire(int32 VehicleChannel, bool bStart, bool bAlt);
 	/** The weapon our pawn's script holds or is switching to, when that weapon runs its own code (0 otherwise). */
 	int32 ScriptPawnWeapon(int32 PawnChannel) const;
 	/** Weapon.BringUp / PutDown, ClientStartFire / ClientStopFire(Mode) of the script weapon. */

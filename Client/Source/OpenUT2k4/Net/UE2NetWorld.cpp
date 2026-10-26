@@ -1458,6 +1458,13 @@ void FUE2NetWorld::ApplyPickup(FEntity& E, const FUE2NetActor& A, const TArray<F
 			{
 				Pickup->SetNetItemMesh(ModMesh);
 			}
+			// and where UE2 draws it: its PrePivot against the stock pickup's
+			const FVector Pivot = UE2NetModWeapons::PickupPrePivotDelta(E.ClassPath);
+			if (!Pivot.IsNearlyZero())
+			{
+				Pickup->SetNetItemOffset(Pivot * S);
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: %s: PrePivot %s UU against its stock pickup's"), *E.ClassPath, *Pivot.ToCompactString());
+			}
 		}
 		else
 		{
@@ -1964,6 +1971,26 @@ AUE2NetVehicle* FUE2NetWorld::SpawnVehicle(FEntity& E, const FUE2NetActor& A)
 	if (!V)
 	{
 		return nullptr;
+	}
+	// ONSVehicle.SpecialCalcBehindView's camera: the class's TPCamDistance, TPCamLookat, TPCamWorldOffset
+	{
+		auto ParseVec = [](const FString& T, FVector& Out)
+		{
+			double X = 0, Y = 0, Z = 0;
+			const bool bOk = FParse::Value(*T, TEXT("X="), X) | FParse::Value(*T, TEXT("Y="), Y) | FParse::Value(*T, TEXT("Z="), Z);
+			Out = FVector(X, Y, Z);
+			return bOk;
+		};
+		const FString Dist = DefaultText(A.Class, TEXT("TPCamDistance"));
+		if (!Dist.IsEmpty())
+		{
+			V->BehindCamera.bValid = true;
+			V->BehindCamera.Distance = FCString::Atof(*Dist);
+			ParseVec(DefaultText(A.Class, TEXT("TPCamLookat")), V->BehindCamera.LookAt);
+			ParseVec(DefaultText(A.Class, TEXT("TPCamWorldOffset")), V->BehindCamera.WorldOffset);
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: %s camera: distance %.0f, look at %s, offset %s"), *E.ClassPath, V->BehindCamera.Distance,
+				*V->BehindCamera.LookAt.ToCompactString(), *V->BehindCamera.WorldOffset.ToCompactString());
+		}
 	}
 	// the class's own art (Actor.Mesh, else its StaticMesh when drawn as one), skins and wreck
 	auto Content = [](const FString& ObjectPath, const TCHAR* Folder)
@@ -3151,6 +3178,13 @@ void FUE2NetWorld::SetViewTargetFromServer(const FUE2NetValue& Target)
 	}
 	if (Target.Obj.IsDynamic())
 	{
+		if (const FUE2NetPlay* Play = FUE2NetPlay::Get(); Play && Play->IsOwnPawnChannel(Target.Obj.Channel))
+		{
+			// our own pawn as a view target: the server unpossessed it (Freon's frozen body, ServerViewSelf); it is shown
+			// as any other pawn once our side lets it go (FUE2NetPlay::Tick)
+			PendingViewChannel = Target.Obj.Channel;
+			return;
+		}
 		if (AUE2NetPawn* Pawn = PawnForChannel(Target.Obj.Channel))
 		{
 			const FUE2NetActor* A = Connection->GetActors().Find(Target.Obj.Channel);

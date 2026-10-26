@@ -335,7 +335,8 @@ file name rules and `.uz2` unpacking. Playing (step 4):
 - `-UE2NetCapsuleCollision` / `-UE2NetNoBackoff` turn the UE2 box collision / the 2 UU `MoveActor` back-off off
   (A/B). `-UE2NetLegacyMoves` sends moves at the old 3369 cadence (at most one packet per 1/45 s) instead of the
   OldUnreal 3374 client's. The test server's `TestBots` mutator takes `?TestAdrenaline=1`, which keeps human players
-  at 100 adrenaline for combo tests.
+  at 100 adrenaline for combo tests, and `Mutate TestSpawn <class>` / `Mutate TestDamage <amount> [self]` (spawn a
+  vehicle in front of you, damage one) for vehicle tests.
 - `-UE2NetPlayProbe` (local servers) logs the server's pawn state next to ours for every move.
 - `-UE2NetLag=<ms>` adds round trip time. `-UE2NetNoNewNet` sends the stock `ServerStartFire` for NewNet weapons
   (no lag compensation, A/B).

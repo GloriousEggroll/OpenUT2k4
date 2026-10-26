@@ -303,6 +303,22 @@ namespace UE2NetModWeaponsLocal
 			}
 		}
 
+		// third person (a weapon without a stock relative): its AttachmentClass's mesh, placement and skins, which UE2
+		// attaches to the pawn (Weapon.AttachToPawn: ThirdPersonActor) and our behind view shows
+		if (W->Native == AWeap_UE2Script::StaticClass())
+		{
+			const FString AttClass = ObjPath(M, TEXT("AttachmentClass"));
+			if (const FModAttachment* Att = AttClass.IsEmpty() ? nullptr : FindAttachment(AttClass); Att && Att->Art.ThirdPersonMesh)
+			{
+				W->Art.ThirdPersonMesh = Att->Art.ThirdPersonMesh;
+				W->Art.HandOffset = Att->Art.HandOffset;
+				W->Art.HandRotation = Att->Art.HandRotation;
+				W->Art.HandScale = Att->Art.HandScale;
+				W->ThirdPersonSkins = Att->Skins;
+				Note(FString::Printf(TEXT("third person %s"), *AttClass));
+			}
+		}
+
 		// weapon bar icon: IconCoords on the stock HUD atlas, or on the mod's own texture (a plain Texture: the bar draws
 		// a region of it)
 		const FString Icon = ObjPath(M, TEXT("IconMaterial"));
@@ -338,7 +354,15 @@ namespace UE2NetModWeaponsLocal
 		UClass* Native = StandIn(UE2Class, StockWeapon);
 		const ArenaArt::FWeaponArt* Base = Native ? ArenaArt::FindWeaponArt(Native) : nullptr;
 		const FDefaults M = Defaults(UE2Class);
-		const FDefaults S = Defaults(ObjPath(Defaults(StockWeapon), TEXT("AttachmentClass")));
+		FString StockAttachment = ObjPath(Defaults(StockWeapon), TEXT("AttachmentClass"));
+		if (!Base && M && M.Class->IsChildOf(FUSRuntime::Get().FindClass(TEXT("Engine.WeaponAttachment"))))
+		{
+			// no stock relative (Ballistic Weapons' attachments): all the mod's own, against Engine.WeaponAttachment
+			static const ArenaArt::FWeaponArt Empty;
+			Base = &Empty;
+			StockAttachment = TEXT("Engine.WeaponAttachment");
+		}
+		const FDefaults S = Defaults(StockAttachment);
 		if (!Base || !M || !S)
 		{
 			return nullptr;
@@ -350,7 +374,7 @@ namespace UE2NetModWeaponsLocal
 		if (!Mesh.Equals(ObjPath(S, TEXT("Mesh")), ESearchCase::IgnoreCase) && !Mesh.IsEmpty())
 		{
 			const FString Path = ArtPath(TEXT("SkeletalMeshes"), Mesh);
-			if (ArenaArt::Load<USkeletalMesh>(Path))
+			if (ArenaArt::Load<USkeletalMesh>(Path) || (UE2NetModContent::EnsureConverted(Mesh, TEXT("SkeletalMesh")) && ArenaArt::Load<USkeletalMesh>(Path)))
 			{
 				A->Art.ThirdPersonMesh = Keep(A->ThirdPersonMesh, Path);
 				A->Notes.Add(FString::Printf(TEXT("third-person mesh %s"), *Mesh));
@@ -440,6 +464,28 @@ UStaticMesh* UE2NetModWeapons::FindPickupMesh(const FString& UE2Class)
 	}
 	Cache.Add(Key, Result);
 	return Result;
+}
+
+FVector UE2NetModWeapons::PickupPrePivotDelta(const FString& UE2Class)
+{
+	if (!UE2Class.Contains(TEXT(".")) || IsStockPackage(PackageOf(UE2Class)))
+	{
+		return FVector::ZeroVector;
+	}
+	const FDefaults M = Defaults(UE2Class);
+	FUSClass* Stock = M.Class ? M.Class->GetSuperClass() : nullptr;
+	while (Stock && !IsStockPackage(PackageOf(Stock->GetPathName())))
+	{
+		Stock = Stock->GetSuperClass();
+	}
+	const FDefaults S = Defaults(Stock ? Stock->GetPathName() : FString());
+	if (!M)
+	{
+		return FVector::ZeroVector;
+	}
+	const FUSVector A = Value<FUSVector>(M, TEXT("PrePivot"));
+	const FUSVector B = S ? Value<FUSVector>(S, TEXT("PrePivot")) : FUSVector(0.f, 0.f, 0.f);
+	return FVector(A.X - B.X, A.Y - B.Y, A.Z - B.Z);
 }
 
 bool UE2NetModWeapons::IsStockClass(const FString& ClassPath)

@@ -1076,6 +1076,12 @@ namespace
 		{
 			V = Which == 0 ? B.L : Which == 1 ? B.T : Which == 2 ? B.W : B.H;
 		}
+		// a value already relative ((-2, 2): FloatingWindow's DefaultWidth=0.8 through SetDefaultPosition) stays as it is
+		if (V == Real && Real != 0.f && IsRelative(Self, Real))
+		{
+			US_RESULT(float) = Real;
+			return;
+		}
 		float R = 0.f;
 		switch (Which)
 		{
@@ -1480,7 +1486,9 @@ namespace
 		}
 		const int32 Count = FMath::Max(0, GetI(L, TEXT("ItemCount")));
 		TArray<TPair<FString, int32>> Items;
-		const FScriptCall Get = FindDelegate(L, TEXT("GetSortString"), false);
+		// the delegate, else the list class's own GetSortString (an unbound delegate calls the function of its name:
+		// MapVoteMultiColumnList overrides it)
+		const FScriptCall Get = FindDelegate(L, TEXT("GetSortString"), true);
 		for (int32 i = 0; i < Count; ++i)
 		{
 			FString S;
@@ -1545,6 +1553,9 @@ namespace
 	US_NATIVE(MCSortList) { USP_FINISH; MCSort(Self); }
 	US_NATIVE(MCChangeSortOrder) { USP_FINISH; SetBool(Self, TEXT("SortDescending"), !GetBool(Self, TEXT("SortDescending"))); MCSort(Self); }
 	US_NATIVE(MCMarkDirty) { USSkipNativeParms(Stack); SetBool(Self, TEXT("NeedsSorting"), true); }
+	/** GUIMultiColumnList.AddedItem / RemovedItem: one more / fewer item (ItemCount), sorted again before drawing. */
+	US_NATIVE(MCAddedItem) { USSkipNativeParms(Stack); SetI(Self, TEXT("ItemCount"), GetI(Self, TEXT("ItemCount")) + 1); SetBool(Self, TEXT("NeedsSorting"), true); }
+	US_NATIVE(MCRemovedItem) { USSkipNativeParms(Stack); SetI(Self, TEXT("ItemCount"), FMath::Max(0, GetI(Self, TEXT("ItemCount")) - 1)); SetBool(Self, TEXT("NeedsSorting"), true); }
 	US_NATIVE(MCGetListIndex)
 	{
 		USP_GET_INT(ArrayIndex);
@@ -1589,6 +1600,8 @@ struct FUSGUI::FImpl
 	FUSObject* Hover = nullptr;
 	FUSObject* Pressed = nullptr;
 	bool bPressedOver = false;
+	/** Multi-column lists' width when their columns were last set up. */
+	TMap<FUSObject*, float> MCWidths;
 	FUSObject* LastClicked = nullptr;
 	double LastClickTime = -10.0;
 	double Now = 0.0;
@@ -1851,6 +1864,20 @@ struct FUSGUI::FImpl
 		SetI(L, TEXT("ItemsPerPage"), FMath::Max(0, int32(CB.H / FMath::Max(1.f, IH))));
 		if (Is(L, K().MCList))
 		{
+			// GUIMultiColumnList.InitializeColumns (ColumnWidths from InitColumnPerc) while bInit, and again when its width
+			// changes (UE2's ResolutionChanged sets bInit)
+			FUSProperty* WP = Prop(L, TEXT("ColumnWidths"), EUSType::Array);
+			FUSProperty* PP = Prop(L, TEXT("InitColumnPerc"), EUSType::Array);
+			const int32 NumW = WP ? reinterpret_cast<const FUSScriptArray*>(L->Data + WP->Offset)->Num : 0;
+			const int32 NumP = PP ? reinterpret_cast<const FUSScriptArray*>(L->Data + PP->Offset)->Num : 0;
+			const float Width = BoundsOf(L).W;
+			float& LastWidth = MCWidths.FindOrAdd(L);
+			if (GetBool(L, TEXT("bInit")) || (NumP > 0 && NumW < NumP) || !FMath::IsNearlyEqual(LastWidth, Width, 0.5f))
+			{
+				LastWidth = Width;
+				ResetCanvas();
+				CallEvent(L, TEXT("InitializeColumns"), [this](FUSParms& P) { P.Object(G.CanvasObj); });
+			}
 			FUSProperty* SD = Prop(L, TEXT("SortData"), EUSType::Array);
 			const int32 Have = SD ? reinterpret_cast<const FUSScriptArray*>(L->Data + SD->Offset)->Num : 0;
 			if (GetBool(L, TEXT("NeedsSorting")) || Have != GetI(L, TEXT("ItemCount")))
@@ -2342,6 +2369,53 @@ struct FUSGUI::FImpl
 		}
 	}
 
+	/** The column of a multi-column list header under X (INDEX_NONE: none). */
+	int32 HeaderColumnAt(FUSObject* C, float X)
+	{
+		FUSObject* L = GetO(C, TEXT("MyList"));
+		FUSProperty* WP = L ? Prop(L, TEXT("ColumnWidths"), EUSType::Array) : nullptr;
+		if (!WP)
+		{
+			return INDEX_NONE;
+		}
+		const FUSScriptArray& WA = *reinterpret_cast<const FUSScriptArray*>(L->Data + WP->Offset);
+		const FBox4 B = BoundsOf(C);
+		float Left = B.L;
+		for (int32 i = 0; i < WA.Num; ++i)
+		{
+			const float W = reinterpret_cast<const float*>(WA.Data)[i];
+			if (X >= Left && X < Left + W)
+			{
+				return i;
+			}
+			Left += W;
+		}
+		return INDEX_NONE;
+	}
+
+	/**
+	 * GUIMultiColumnListHeader's native click: the column clicked becomes the list's SortColumn (descending first, so
+	 * the list's OnSortChanged, which flips the order, sorts it ascending); the same column again flips the order.
+	 */
+	bool HeaderClick(FUSObject* C)
+	{
+		FUSObject* L = GetO(C, TEXT("MyList"));
+		const int32 Col = HeaderColumnAt(C, G.MouseX);
+		if (!L || Col == INDEX_NONE)
+		{
+			return false;
+		}
+		if (GetI(L, TEXT("SortColumn"), -1) != Col)
+		{
+			SetI(L, TEXT("SortColumn"), Col);
+			SetBool(L, TEXT("SortDescending"), true);
+		}
+		CallEvent(L, TEXT("OnSortChanged"), [](FUSParms&) {});
+		UE_LOG(LogUScript, Log, TEXT("UScriptGUI: %s sorted by column %d (%s)"), *L->GetName(), Col, GetBool(L, TEXT("SortDescending")) ? TEXT("descending") : TEXT("ascending"));
+		G.PlayInterfaceSound(1); // CS_Click
+		return true;
+	}
+
 	void DrawMCHeader(FUSObject* C)
 	{
 		FUSObject* L = GetO(C, TEXT("MyList"));
@@ -2653,6 +2727,17 @@ struct FUSGUI::FImpl
 		FUSObject* Tip = GetO(From, TEXT("ToolTip"));
 		FString Text = Tip ? GetS(Tip, TEXT("Text")) : FString();
 		Text = Text.IsEmpty() ? GetS(From, TEXT("Hint")) : Text;
+		// a multi-column list header: the hovered column's ColumnHeadingHints
+		if (FUSObject* L = Is(Hover, K().MCHeader) ? GetO(Hover, TEXT("MyList")) : nullptr)
+		{
+			const int32 Col = HeaderColumnAt(Hover, G.MouseX);
+			FUSProperty* HP = Prop(L, TEXT("ColumnHeadingHints"), EUSType::Array);
+			const FUSScriptArray* HA = HP ? reinterpret_cast<const FUSScriptArray*>(L->Data + HP->Offset) : nullptr;
+			if (HA && Col >= 0 && Col < HA->Num && !reinterpret_cast<const FString*>(HA->Data)[Col].IsEmpty())
+			{
+				Text = reinterpret_cast<const FString*>(HA->Data)[Col];
+			}
+		}
 		if (Text.IsEmpty())
 		{
 			return;
@@ -2735,7 +2820,8 @@ struct FUSGUI::FImpl
 			bOutWeak = true;
 			return Fallback;
 		}
-		if (GetBool(C, TEXT("bAcceptsInput")) && BoundsOf(C).Contains(X, Y))
+		// (a multi-column list's header takes clicks natively in UE2: sorting)
+		if ((GetBool(C, TEXT("bAcceptsInput")) || Is(C, K().MCHeader)) && BoundsOf(C).Contains(X, Y))
 		{
 			bOutWeak = Is(C, K().Multi);
 			return C;
@@ -2834,6 +2920,10 @@ struct FUSGUI::FImpl
 	void Click(FUSObject* C, bool bDouble)
 	{
 		if (bDouble && CallDelegate(C, TEXT("OnDblClick"), [C](FUSParms& P) { P.Object(C); }))
+		{
+			return;
+		}
+		if (Is(C, K().MCHeader) && HeaderClick(C))
 		{
 			return;
 		}
@@ -3476,8 +3566,8 @@ namespace USNatives
 			{ TEXT("GUIStyles"), TEXT("TextSize"), &StylesTextSize },
 			{ TEXT("GUIList"), TEXT("SortList"), &ListSortList },
 			{ TEXT("GUIMultiColumnList"), TEXT("SortList"), &MCSortList }, { TEXT("GUIMultiColumnList"), TEXT("ChangeSortOrder"), &MCChangeSortOrder },
-			{ TEXT("GUIMultiColumnList"), TEXT("UpdatedItem"), &MCMarkDirty }, { TEXT("GUIMultiColumnList"), TEXT("RemovedItem"), &MCMarkDirty },
-			{ TEXT("GUIMultiColumnList"), TEXT("AddedItem"), &MCMarkDirty }, { TEXT("GUIMultiColumnList"), TEXT("GetListIndex"), &MCGetListIndex },
+			{ TEXT("GUIMultiColumnList"), TEXT("UpdatedItem"), &MCMarkDirty }, { TEXT("GUIMultiColumnList"), TEXT("RemovedItem"), &MCRemovedItem },
+			{ TEXT("GUIMultiColumnList"), TEXT("AddedItem"), &MCAddedItem }, { TEXT("GUIMultiColumnList"), TEXT("GetListIndex"), &MCGetListIndex },
 			{ TEXT("GUIToolTip"), TEXT("SetTip"), &ToolTipSetTip }, { TEXT("GUIScrollText"), TEXT("GetWordUnderCursor"), &EmptyStr },
 			{ TEXT("GUITreeList"), TEXT("UpdateVisibleCount"), &Quiet }, { TEXT("GUISplitter"), TEXT("SplitterUpdatePositions"), &Quiet },
 		};

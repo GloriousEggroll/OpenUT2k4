@@ -672,7 +672,8 @@ void AUE2NetPawn::SetNetWeapon(const FString& AttachmentClass)
 	WeaponClassName = AttachmentClass;
 	UClass* WeaponClass = AttachmentClass.IsEmpty() ? nullptr : UE2NetActorsLocal::WeaponForAttachment(AttachmentClass);
 	// a mod attachment: its own mesh, skins and placement where they differ from the stock one (Net/UE2NetModWeapons.h)
-	const UE2NetModWeapons::FModAttachment* ModAttachment = WeaponClass ? UE2NetModWeapons::FindAttachment(AttachmentClass) : nullptr;
+	// (also one without a stock relative: Ballistic Weapons' attachments, the mod's mesh alone)
+	const UE2NetModWeapons::FModAttachment* ModAttachment = AttachmentClass.IsEmpty() ? nullptr : UE2NetModWeapons::FindAttachment(AttachmentClass);
 	WeaponArt = ModAttachment ? &ModAttachment->Art : WeaponClass ? ArenaArt::FindWeaponArt(WeaponClass) : nullptr;
 	AnimEvents.bHeavyWeapon = WeaponArt && WeaponArt->bHeavy;
 	USkeletalMesh* WeaponMesh = (bSkeletalBody && !bNetDead && WeaponArt && WeaponArt->ThirdPersonMesh) ? ArenaArt::Load<USkeletalMesh>(WeaponArt->ThirdPersonMesh) : nullptr;
@@ -875,6 +876,9 @@ void AUE2NetPawn::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
 		Pivot = Vehicle->GetActorLocation() + FVector(0.f, 0.f, 120.f);
 		Distance = FMath::Max(600.f, float(B.SphereRadius) * 2.2f);
 		Q.AddIgnoredActor(Vehicle);
+		TArray<AActor*> Riders;
+		Vehicle->GetAttachedActors(Riders, true, true);
+		Q.AddIgnoredActors(Riders);
 		if (!bBehindView)
 		{
 			ViewRot.Pitch = FRotator::NormalizeAxis(View.Pitch);

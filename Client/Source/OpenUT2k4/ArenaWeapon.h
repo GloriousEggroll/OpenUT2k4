@@ -27,6 +27,8 @@ struct FArenaNetStandIn
 	const ArenaWeaponHand::FViewParams* View = nullptr;
 	/** First-person skins (null entries: the mesh's own). */
 	TArray<UMaterialInterface*> Skins;
+	/** Third-person skins (null entries: the mesh's own). */
+	TArray<UMaterialInterface*> ThirdPersonSkins;
 	/** Fire modes' refire times (s); < 0: ours. */
 	float FireRate[2] = { -1.f, -1.f };
 	/** Weapon bar icon (X1, Y1, X2, Y2) on IconTexture (an art path; empty: the stock HUD atlas). */
@@ -308,6 +310,8 @@ protected:
 	FArenaNetStandIn NetStandIn;
 	/** Keeps NetStandIn.Skins loaded. */
 	UPROPERTY() TArray<TObjectPtr<UMaterialInterface>> NetStandInSkins;
+	/** Keeps NetStandIn.ThirdPersonSkins loaded. */
+	UPROPERTY() TArray<TObjectPtr<UMaterialInterface>> NetStandInThirdPersonSkins;
 	float PutDownEndTime = -1.f;
 	float ShowViewTime = 0.f;
 	bool bViewShown = false;

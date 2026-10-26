@@ -222,11 +222,34 @@ namespace USEngineNatives
 		USP_FINISH;
 		USProps().Physics.Set<uint8>(Self, NewPhysics);
 	}
+	/** Actor.GainedChild / LostChild(Other) on Target, as UE2's AActor::SetOwner calls them. */
+	void OwnerEvent(FUSObject* Target, const TCHAR* Event, FUSObject* Child)
+	{
+		FUSFunction* F = Target && !Target->IsPendingKill() ? USVM::FindFunction(Target, FName(Event)) : nullptr;
+		if (!F || F->Parms.Num() < 1 || !F->Parms[0] || F->Parms[0]->Type != EUSType::Object)
+		{
+			return;
+		}
+		TArray<uint8, TInlineAllocator<64>> Buffer;
+		Buffer.SetNumZeroed(FMath::Max(F->ParmsSize, int32(sizeof(FUSObject*))) + 16);
+		*reinterpret_cast<FUSObject**>(Buffer.GetData() + F->Parms[0]->Offset) = Child;
+		USVM::ProcessEvent(Target, F, Buffer.GetData());
+	}
+
 	US_NATIVE(SetOwner)
 	{
 		USP_GET_OBJECT(NewOwner);
 		USP_FINISH;
+		FUSObject* Old = USProps().Owner.Get<FUSObject*>(Self);
+		if (Old == NewOwner)
+		{
+			return;
+		}
+		// UE2 AActor::SetOwner: the old owner's LostChild, the new one's GainedChild (PlayerController.GainedChild links
+		// its VotingReplicationInfo)
+		OwnerEvent(Old, TEXT("LostChild"), Self);
 		USProps().Owner.Set<FUSObject*>(Self, NewOwner);
+		OwnerEvent(NewOwner, TEXT("GainedChild"), Self);
 	}
 	US_NATIVE(SetBase)
 	{
