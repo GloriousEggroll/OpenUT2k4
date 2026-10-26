@@ -486,8 +486,10 @@ field   = RepIndex:ReadInt(class MaxIndex)
 
 Notes for step 3 (implemented in `Net/UE2NetWorld*`):
 
-- `Role` / `RemoteRole` arrive as the **server's** values. The server's `Role` (Authority) is our remote role, and
-  its `RemoteRole` is our local role (SimulatedProxy, or AutonomousProxy for our own PlayerController and pawn).
+- `Role` / `RemoteRole` arrive as the **client's** values: UE2's server swaps them before replicating an actor
+  (`UActorChannel::ReplicateActor`), so `Role` is our local role (SimulatedProxy, or AutonomousProxy for our own
+  PlayerController and pawn: `xPlayer.Role = 3` in captured traffic) and `RemoteRole` the server's (Authority). They
+  are used as they come (an older revision swapped them again, which made every mirrored actor `ROLE_Authority`).
 - Only properties that changed are sent; the first bunch has everything that differs from the class defaults. Step 3
   starts each actor from its class's defaults (which our loader already reads) and applies the updates.
 - Values are kept per actor in `FUE2NetActor::Properties` (`"Name"` or `"Name[i]"`), and reported through
@@ -756,8 +758,8 @@ scoreboard class)`, e.g. `WS3SPN_V6.TAM_HUD` / `TAM_Scoreboard`, `WSUTComp_V6.UT
 them on our canvas, like the real client draws them:
 
 - **Client mirror**: every replicated actor whose class the script runtime has (stock or downloaded) gets an object of
-  that class in a client-side script world (`FUE2NetMirrorWorld`): class defaults plus the received properties, Role
-  and RemoteRole swapped, references resolved to the mirrored actors, to classes, to placeholders of textures / fonts /
+  that class in a client-side script world (`FUE2NetMirrorWorld`): class defaults plus the received properties (the
+  roles as they come: ours), references resolved to the mirrored actors, to classes, to placeholders of textures / fonts /
   sounds, or, for map actors without a channel (`PRI.PlayerZone`, `PlayerLocation`), to a data copy with the map
   package's saved properties (location names). What UE2's client sets up itself is set up the same way: the Level
   (`NM_Client`, `TimeSeconds`, the clock, `Title` from the converted map, `GRI`, `GetLocalPlayerController`),
@@ -834,12 +836,28 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
   (`FUE2NetWorld::RetireClientAttachmentStandIn`). Kept: Freeze Tag's frozen look (the mod's frozen skins are
   `Combiner`s made at run time, which our materials cannot draw) and the beacon's `bScriptPostRender` line.
 - **Calls to the server**: a replicated function client script calls on an actor our connection owns (its `Owner`
-  chain reaches our controller: our pawn, weapons, inventory) is sent to the server as UE2's `ProcessRemoteFunction`
-  does (`FUSWorld::IsRemoteCall` / `CallRemote`, `USVM::IsNetFunction`: the first declaration's `FUNC_Net`), its
-  parameters converted to the wire values (objects to their channels); functions named `Client...` (and any with a
-  return value) run here instead, standing in for the replication condition UE2 evaluates. The other way, what the
-  server calls on a mod actor running client code (`ClientWeaponSet`, `ClientForceAmmoUpdate`, a mod's own client
-  functions) runs in the mirror (`RunClientFunction`).
+  chain reaches our controller: our pawn, weapons, inventory) goes to the server only when its **replication
+  condition** holds here, as UE2's `AActor::ProcessRemoteFunction` decides: the loader keeps each function's
+  `RepOffset` (the condition's place in the declaring class's script, the replication block), and
+  `USVM::EvalNetCondition` evaluates it on the actor with our roles (`bNetOwner` set, as for its owner's connection).
+  `reliable if (Role < ROLE_Authority) ServerStartFire` holds and is sent, its parameters converted to the wire values
+  (objects to their channels); `reliable if (Role == ROLE_Authority) ClientSetHUD, StopZoom, ReceiveNewAim ...` does
+  not, and the call runs here (announcements, zoom resets, BW's `ServerSwitchStock`, which is server to client despite
+  its name). The other way, what the server calls on a mod actor running client code (`ClientWeaponSet`,
+  `ClientForceAmmoUpdate`, a mod's own client functions) and the menu calls on our controller run in the mirror
+  (`RunClientFunction`, `RunMenuFunction`), and are never sent back (that call is marked while it runs).
+- **Order in a bunch**: UE2 applies a bunch's properties before the calls in it act on them. The connection hands the
+  calls on after the actor's open / update (`FUE2NetConnection::ReceivedBunch`): a weapon's `ClientWeaponSet` in the
+  bunch that opens its channel finds its mirror (it arrived before it, so BW weapons stayed `WS_None` and never fired or
+  reloaded); its `Owner`, which comes in a later bunch, is waited for by the weapon's own `PendingClientWeaponSet` state.
+- **Destroying and tearing off**: as UE2's `ULevel::DestroyActor`, client script cannot destroy a replicated actor it
+  is not the authority of (only `bNetTemporary` ones and its own); a destroyed mirror leaves `Mirrors`, `ChannelOf` and
+  every other map that keeps it before the world frees it (`Forget`, `ForgetDestroyed` before each `CleanupDestroyed`:
+  a BW sticky mine torn off and destroyed by its client code crashed the client when its channel closed later).
+  `bTearOff` makes a mirror running client code `ROLE_Authority`, detaches it from its channel and calls `TornOff`; it
+  goes on as a client-side actor.
+- **Mod weapons' HUD ammo**: a mod weapon class overriding `GetAmmoCount` / `GetHUDAmmoText` gives our HUD's ammo
+  number (BW: the magazine) and a small line with its text (BW: the reserve).
 - **Mod weapons without a stock relative** (Ballistic Weapons: `Net/UE2NetScriptWeapon.h`, `AWeap_UE2Script`): our
   player holds an actor that shows the mod's weapon (its first-person mesh, skins and placement from the class
   defaults, against `Engine.Weapon`'s; its icon on the weapon bar under its `InventoryGroup`) while the mirror runs the
@@ -847,10 +865,18 @@ script reads the right `Location` / `Rotation` and `GetBoneCoords`.
   server through the bridge above), and each frame `WeaponTick` and the fire modes as UE2's native weapon code runs them
   on the owning client (`ModeTick`, the fire mode's own timer, while `WS_ReadyToFire` the shots: `ModeDoFire` each time
   `NextFireTime` passes, `bWaitForRelease` once per press, `bFireOnRelease` modes `ModeHoldFire` then fire on release).
-  The animations the script plays on the weapon play on our view model (and `AnimEnd(0)` goes back when one ends,
-  `HasAnim` answers from the converted animation set), its ammo (`AmmoAmount` / `MaxAmmo`) is our HUD's, and what its
+  The weapon in our hands is the one ticked, whichever way it came up (the server's `ClientWeaponSet` brings it up
+  through its own code). The animations the script plays on the weapon play on our view model (and `AnimEnd(0)` goes
+  back when one ends; one our view model cannot play ends after half a second, or script waiting for it, BW's cocking
+  and reloads, would wait forever; `HasAnim` answers from the converted animation set), its ammo is our HUD's (see
+  "Mod weapons' HUD ammo"), and what its
   fire modes attach to the weapon (`FlashEmitter` on `tip`) is drawn on the first-person view model. `Pawn.IsLocallyControlled`
   holds for our pawn (its controller's `Player` is a `Viewport`).
+- **First-person meshes**: Ballistic Weapons' (`BallisticAnims2.X3`, `Katana`, `MRT6Shotgun`, `M290Shotgun`,
+  `M763Shotgun`, `A909Blades` ...) ship without their base mesh, with LODs that mix packed soft-skinned sections
+  (`SkinningData`) and rigid ones (a vertex stream on one bone each). The converter decoded only LODs with soft
+  sections alone; it now decodes the soft part (the LOD's first points) and adds the rigid sections
+  (`AppendRigidStream`). Script packages' assets are exported again once (`ScriptAssetsVersion` 3).
 - **Mod fire timing for stand-ins**: for a mod weapon our stand-in plays (it has a stock relative), its fire modes run
   alongside ours (`ModeTick` each frame with `bIsFiring` as held, `ModeDoFire` for each shot ours plays) and their
   `FireRate` after that is our stand-in's refire time (a spin-up, ProSniperFire's rate set in `ModeDoFire`).
@@ -1115,7 +1141,7 @@ keeps ticking: keep-alives and acks go out, and the server waits for `JOIN`.
 `FUE2NetWorld` (`Net/UE2NetWorld.h`) is created when our copy of the map has loaded and JOIN goes out, and gets the
 connection's `OnActorOpened / OnActorUpdated / OnActorClosed / OnFunctionCall`. Values come from the received
 properties with the class defaults below them (the UScript loader's default objects: `DefaultText`); the server's
-Role and RemoteRole are swapped. Actors are classified by their class chain:
+roles are used as they come (the client's: see "Notes for step 3"). Actors are classified by their class chain:
 
 | UE2 class (chain) | Ours |
 |---|---|

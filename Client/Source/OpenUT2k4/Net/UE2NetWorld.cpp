@@ -725,11 +725,9 @@ void FUE2NetWorld::Apply(FEntity& E, const FUE2NetActor& A, const TArray<FString
 {
 	if (bInitial || Changed.Contains(TEXT("Role")) || Changed.Contains(TEXT("RemoteRole")))
 	{
-		// the server's roles, swapped: its RemoteRole is our Role (SimulatedProxy, AutonomousProxy for what we own)
-		int32 ServerRole = GetInt(A, TEXT("Role"), 4), ServerRemote = GetInt(A, TEXT("RemoteRole"), 2);
-		SwapRoles(ServerRole, ServerRemote);
-		E.Role = uint8(ServerRole);
-		E.RemoteRole = uint8(ServerRemote);
+		// the client's roles: UE2's server swaps them before replicating (SimulatedProxy, AutonomousProxy for what we own)
+		E.Role = uint8(GetInt(A, TEXT("Role"), 2));
+		E.RemoteRole = uint8(GetInt(A, TEXT("RemoteRole"), 4));
 	}
 	switch (E.Kind)
 	{

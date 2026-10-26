@@ -1243,6 +1243,9 @@ void FUE2NetConnection::ReceivedActorBunch(FInBunch& Bunch)
 	FUE2BitReader& R = Bunch.Data;
 	FUE2NetActor* Actor = Actors.Find(Bunch.Channel);
 	bool bJustOpened = false;
+	// UE2 applies a bunch's properties before the function calls in it act on them: the calls are handed on after the
+	// actor's open / update (a weapon's ClientWeaponSet in the bunch that opens its channel finds its mirror and values)
+	TArray<TPair<FUSFunction*, TArray<TPair<FName, FUE2NetValue>>>> Calls;
 	if (!Actor)
 	{
 		if (!Bunch.bOpen)
@@ -1419,7 +1422,7 @@ void FUE2NetConnection::ReceivedActorBunch(FInBunch& Bunch)
 				break;
 			}
 			++FunctionsReceived;
-			HandleFunction(*Actor, Function, Params);
+			Calls.Emplace(Function, MoveTemp(Params));
 		}
 		else
 		{
@@ -1446,6 +1449,15 @@ void FUE2NetConnection::ReceivedActorBunch(FInBunch& Bunch)
 	else if (Changed.Num() > 0 && OnActorUpdated)
 	{
 		OnActorUpdated(*Actor, Changed);
+	}
+	for (TPair<FUSFunction*, TArray<TPair<FName, FUE2NetValue>>>& Call : Calls)
+	{
+		FUE2NetActor* Live = IsOpen() ? Actors.Find(Bunch.Channel) : nullptr;
+		if (!Live)
+		{
+			break;
+		}
+		HandleFunction(*Live, Call.Key, Call.Value);
 	}
 }
 

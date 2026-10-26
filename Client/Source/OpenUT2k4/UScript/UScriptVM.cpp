@@ -1259,6 +1259,45 @@ bool USVM::IsNetFunction(const FUSFunction* Function)
 	return false;
 }
 
+bool USVM::EvalNetCondition(FUSObject* Self, const FUSFunction* Function)
+{
+	// the condition is the first declaration's (overrides inherit the replication)
+	const FUSFunction* Decl = nullptr;
+	int32 Guard = 0;
+	for (const FUSField* F = Function; F && Guard < 32; F = F->SuperField, ++Guard)
+	{
+		if (static_cast<const FUSFunction*>(F)->FunctionFlags & USFlags::FUNC_Net)
+		{
+			Decl = static_cast<const FUSFunction*>(F);
+		}
+	}
+	FUSClass* Owner = Decl ? Decl->GetOwnerClass() : nullptr;
+	if (!Self || !Self->Data || !Decl || !Owner || Decl->RepOffset == 0xFFFF || int32(Decl->RepOffset) >= Owner->Script.Num())
+	{
+		return false;
+	}
+	// UE2 tests it with the actor's net flags as for its owner's connection
+	FUSProperty* NetOwner = Self->FindProperty(TEXT("bNetOwner"));
+	uint32* NetOwnerAddr = NetOwner && NetOwner->Type == EUSType::Bool ? reinterpret_cast<uint32*>(Self->Data + NetOwner->Offset) : nullptr;
+	const uint32 OldNetOwner = NetOwnerAddr ? *NetOwnerAddr : 0;
+	if (NetOwnerAddr)
+	{
+		*NetOwnerAddr = 1;
+	}
+	const bool bOldAbort = GAbort;
+	GAbort = false;
+	uint32 Value = 0;
+	FUSFrame Frame(Self, Owner, Owner->Script.GetData() + Decl->RepOffset, nullptr);
+	Frame.Step(Self, &Value);
+	const bool bFailed = GAbort;
+	GAbort = bOldAbort;
+	if (NetOwnerAddr)
+	{
+		*NetOwnerAddr = OldNetOwner;
+	}
+	return !bFailed && Value != 0;
+}
+
 bool USVM::IsProxy(const FUSObject* Self)
 {
 	if (!Self || !(Self->Flags & USF_Actor) || !Self->Data)

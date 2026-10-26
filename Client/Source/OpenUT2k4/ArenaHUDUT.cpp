@@ -17,6 +17,7 @@
 #include "Net/UE2NetDownload.h"
 #include "Net/UE2NetJoin.h"
 #include "Net/UE2NetScriptHUD.h"
+#include "Net/UE2NetPlay.h"
 #include "ArenaTypes.h"
 #include "ArenaUserSettings.h"
 #include "ArenaWeapon.h"
@@ -489,6 +490,23 @@ void AArenaHUD::DrawUTAmmo(const AArenaCharacter* Char)
 	}
 	FNumericWidget Digits = Def.DigitsAmmo;
 	Digits.Value = Weapon->bInfiniteAmmo ? 1 : Weapon->Ammo; // CalculateAmmo: 1 / 1 without an ammo count
+	// a UT2004 server mod's weapon reports its own HUD ammo (Weapon.GetAmmoCount / GetHUDAmmoText: Ballistic Weapons'
+	// magazine, with the reserve in its text)
+	int32 ModCur = 0, ModMax = 0;
+	FString ModText;
+	const FUE2NetPlay* Play = FUE2NetPlay::Get();
+	const FUE2NetScriptHUD* ScriptHud = FUE2NetScriptHUD::Get();
+	if (Play && ScriptHud && ScriptHud->GetModWeaponAmmo(Play->GetCurrentWeaponChannel(), ModCur, ModMax, ModText))
+	{
+		Digits.Value = FMath::Max(0, ModCur);
+		const FString Shown = ModText.TrimStartAndEnd();
+		if (!Shown.IsEmpty() && Shown != FString::FromInt(ModCur))
+		{
+			const int32 Font = ArenaHudFonts::FontSizeIndex(D.UTClipX(), -2);
+			const FVector2D S = D.TextSizeUT(Font, Shown);
+			D.TextUT(Font, Shown, F.W - S.X - 0.01f * F.W, F.H * (1.f - 0.115f * F.HudScale) - S.Y, FLinearColor(FColor(255, 255, 255)), EArenaAlign::Left, true);
+		}
+	}
 	DrawNumeric(F, Digits);
 }
 

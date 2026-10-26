@@ -198,7 +198,6 @@ private:
 	/** A class default of a class reference (e.g. a damage type's "bAlwaysGibs"). */
 	FString ClassDefault(const FUE2NetValue& ClassRef, const TCHAR* Key) const;
 	/** Role / RemoteRole as seen by us (the server's swapped). */
-	static void SwapRoles(int32& Role, int32& RemoteRole) { Swap(Role, RemoteRole); }
 
 	FEntity* FindEntity(int32 Channel) { return Channel ? Entities.Find(Channel) : nullptr; }
 	class AUE2NetPawn* PawnForChannel(int32 Channel);

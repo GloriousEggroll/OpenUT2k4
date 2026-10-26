@@ -37,8 +37,9 @@ namespace ArenaConvUserContent
 	/** Bumped when more of a script package's assets are exported (state.json packages' "assets", and the signature of
 	 *  a map with embedded classes; 1: every texture, material, mesh, animation and sound inside a .u, for mod weapons:
 	 *  Net/UE2NetModWeapons.h; 2: also those it takes from other custom packages, and a map's embedded classes' assets,
-	 *  for mod vehicles). */
-	constexpr int32 ScriptAssetsVersion = 2;
+	 *  for mod vehicles; 3: skeletal meshes whose LODs mix packed soft-skinned and rigid sections, Ballistic Weapons'
+	 *  first-person meshes). */
+	constexpr int32 ScriptAssetsVersion = 3;
 
 	struct FOptions
 	{

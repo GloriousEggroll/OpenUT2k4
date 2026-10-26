@@ -930,7 +930,8 @@ namespace ArenaConvSkel
 			}
 			G.Mat.Add(Point); // temporarily: point of each wedge (replaced below)
 		}
-		if (i >= W.Num() || NextPoint != NPts)
+		// with rigid sections too, the soft stream covers the soft part's points only (the first ones)
+		if (i >= W.Num() || (L.RigidSections.Num() ? NextPoint > NPts || NextPoint == 0 : NextPoint != NPts))
 		{
 			Err = FString::Printf(TEXT("stream does not match the LOD (%d of %d points, %s)"), NextPoint, NPts, i >= W.Num() ? TEXT("no end marker") : TEXT("ended"));
 			return false;
@@ -1023,6 +1024,58 @@ namespace ArenaConvSkel
 		return true;
 	}
 
+	/**
+	 * The rigid sections of a LOD (vertex stream + RigidIndices, each vertex on its section's bone) added to geometry that
+	 * already holds the decoded soft sections: weapon meshes mix both (Ballistic Weapons' first-person meshes:
+	 * BallisticAnims2.X3, MRT6Shotgun ...). The soft part has no normals: the rigid part's are left out too.
+	 */
+	bool AppendRigidStream(const FLod& L, int32 NBones, FGeo& G, FString& Err)
+	{
+		if (!L.RigidSections.Num())
+		{
+			return true;
+		}
+		const int32 Nsv = L.StreamVerts.Num();
+		if (!Nsv)
+		{
+			Err = TEXT("rigid sections without a vertex stream");
+			return false;
+		}
+		const int32 Base = G.Positions.Num() / 3;
+		TArray<int32> Bone;
+		Bone.Init(0, Nsv);
+		for (const FSection& S : L.RigidSections)
+		{
+			const int32 A = S.FirstFace * 3;
+			const int32 End = FMath::Min(A + S.NumFaces * 3, L.RigidIndices.Num());
+			for (int32 k = A; k < End; ++k)
+			{
+				if (L.RigidIndices[k] >= Nsv)
+				{
+					Err = TEXT("rigid section index out of range");
+					return false;
+				}
+				Bone[L.RigidIndices[k]] = FMath::Clamp<int32>(S.Bone, 0, FMath::Max(0, NBones - 1));
+			}
+			for (int32 k = A; k + 2 < End; k += 3)
+			{
+				G.Tris.Append({ Base + L.RigidIndices[k], Base + L.RigidIndices[k + 1], Base + L.RigidIndices[k + 2] });
+				G.Mat.Add(S.Mat);
+			}
+		}
+		for (int32 i = 0; i < Nsv; ++i)
+		{
+			const FStreamVert& V = L.StreamVerts[i];
+			G.Positions.Append({ double(V.P[0]), double(V.P[1]), double(V.P[2]) });
+			G.UVs.Append({ V.UV[0], V.UV[1] });
+			G.Joints.Append({ Bone[i], 0, 0, 0 });
+			G.Weights.Append({ 1.0, 0.0, 0.0, 0.0 });
+		}
+		G.Normals.Reset();
+		G.PointCount += Nsv;
+		return true;
+	}
+
 	bool MeshGeometry(const FMesh& M, FGeo& G, FString& Err)
 	{
 		const int32 Nb = M.Bones.Num();
@@ -1106,12 +1159,12 @@ namespace ArenaConvSkel
 		for (int32 Li = 0; Li < M.Lods.Num(); ++Li)
 		{
 			const FLod& L = M.Lods[Li];
-			if (L.SoftSections.Num() && !L.RigidSections.Num() && L.SkinningData.Num() && L.Points.Num() && L.SoftIndices.Num())
+			if (L.SoftSections.Num() && L.SkinningData.Num() && L.Points.Num() && L.SoftIndices.Num())
 			{
 				FString DecodeErr;
-				if (DecodeSkinningData(L, Nb, G, DecodeErr))
+				if (DecodeSkinningData(L, Nb, G, DecodeErr) && AppendRigidStream(L, Nb, G, DecodeErr))
 				{
-					G.Source = FString::Printf(TEXT("lod%d-packed-soft"), Li);
+					G.Source = FString::Printf(TEXT("lod%d-packed-soft%s"), Li, L.RigidSections.Num() ? TEXT("+rigid") : TEXT(""));
 					return true;
 				}
 				if (DecodeFail.IsEmpty())

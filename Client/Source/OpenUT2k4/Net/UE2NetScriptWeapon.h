@@ -37,4 +37,6 @@ protected:
 	int32 ScriptChannel = 0;
 	uint32 AnimSerial = 0;
 	bool bAnimEndPending = false;
+	/** Platform time to send AnimEnd for an animation our view mesh does not play (0: none). */
+	double AnimEndFallback = 0.0;
 };

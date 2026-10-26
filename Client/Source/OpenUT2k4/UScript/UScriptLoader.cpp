@@ -547,7 +547,7 @@ bool FUSLinker::LoadStruct(FUSStruct* S, FConvReader& R)
 		F->FunctionFlags = R.U32();
 		if (F->FunctionFlags & USFlags::FUNC_Net)
 		{
-			R.U16();
+			F->RepOffset = R.U16();
 		}
 	}
 	else if (Cn == TEXT("State") || Cn == TEXT("Class"))

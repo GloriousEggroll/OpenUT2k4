@@ -83,6 +83,11 @@ public:
 	/** Weapon.BringUp / PutDown, ClientStartFire / ClientStopFire(Mode) of the script weapon. */
 	void ScriptWeaponCommand(int32 Channel, EWeaponCommand Command, uint8 Mode);
 	bool GetScriptWeaponState(int32 Channel, FScriptWeaponState& Out) const;
+	/**
+	 * The ammo a mod weapon's own code reports for the HUD (Weapon.GetAmmoCount, GetHUDAmmoText overridden by the mod:
+	 * Ballistic Weapons' magazine and reserve). False when the weapon's class does not override them.
+	 */
+	bool GetModWeaponAmmo(int32 Channel, int32& OutCur, int32& OutMax, FString& OutText) const;
 	/** The weapon's animation ended: its AnimEnd(0). */
 	void ScriptWeaponAnimEnd(int32 Channel);
 	/**

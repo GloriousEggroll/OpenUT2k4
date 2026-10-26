@@ -316,13 +316,31 @@ public:
 		return A->IsPendingKill() ? nullptr : A;
 	}
 
+	/** Called when script destroys an actor (before it is freed): the client mirror forgets it (Mirrors, ChannelOf ...). */
+	TFunction<void(FUSObject*)> OnDestroyed;
+
 	virtual bool DestroyActor(FUSObject* Actor) override
 	{
 		if (!Actor || Actor->IsPendingKill())
 		{
 			return false;
 		}
+		// UE2 ULevel::DestroyActor: a client cannot destroy a replicated actor it does not own the authority of (a torn off
+		// one became ROLE_Authority; bNetTemporary ones are the client's to destroy)
+		FUSEngineProps& P = USProps();
+		if (P.Role.Get<uint8>(Actor) < UE2_ROLE_Authority)
+		{
+			FUSProperty* Temp = Actor->FindProperty(TEXT("bNetTemporary"));
+			if (!Temp || Temp->Type != EUSType::Bool || !*reinterpret_cast<const uint32*>(Actor->Data + Temp->Offset))
+			{
+				return false;
+			}
+		}
 		CallEvent(Actor, TEXT("Destroyed"));
+		if (OnDestroyed)
+		{
+			OnDestroyed(Actor);
+		}
 		LocalActors.Remove(Actor);
 		MarkPendingKill(Actor);
 		return true;
@@ -942,6 +960,7 @@ struct FUE2NetScriptHUD::FImpl
 			Out = !Bone.IsNone() && C->DoesSocketExist(Bone) ? C->GetSocketTransform(Bone) : C->GetComponentTransform();
 			return true;
 		};
+		Script->OnDestroyed = [this](FUSObject* A) { Forget(A); };
 		Script->RemoteFilter = [this](FUSObject* A, FUSFunction* F) { return IsServerCall(A, F); };
 		Script->RemoteSend = [this](FUSObject* A, FUSFunction* F, uint8* Parms) { SendServerCall(A, F, Parms); };
 		RT.PlaceholderInit = [this](FUSObject* Obj) { Backend.InitPlaceholder(Obj); };
@@ -1215,11 +1234,11 @@ struct FUE2NetScriptHUD::FImpl
 		FString Name;
 		int32 Index = 0;
 		SplitKey(Key, Name, Index);
-		// the server's Role is our RemoteRole and the other way round
+		// UE2's server swaps Role and RemoteRole before replicating an actor (UActorChannel::ReplicateActor), so the wire
+		// already holds the client's roles: our pawn and controller ROLE_AutonomousProxy, the rest ROLE_SimulatedProxy
 		if (Name == TEXT("Role") || Name == TEXT("RemoteRole"))
 		{
-			const bool bRole = Name == TEXT("Role");
-			(bRole ? USProps().RemoteRole : USProps().Role).Set<uint8>(O, uint8(V->I));
+			(Name == TEXT("Role") ? USProps().Role : USProps().RemoteRole).Set<uint8>(O, uint8(V->I));
 			return;
 		}
 		FUSProperty* P = O->FindProperty(FName(*Name));
@@ -1394,6 +1413,75 @@ struct FUE2NetScriptHUD::FImpl
 	}
 
 	/** Forgets client-code actors that are gone (before the world frees them). */
+	/**
+	 * A mirrored actor goes (script destroyed it, its channel closed): every map that keeps it by pointer lets go before
+	 * CleanupDestroyed frees it. A destroyed replicated actor is detached from its channel, as UE2 detaches torn off and
+	 * temporary actors; the channel's close later finds nothing.
+	 */
+	void Forget(FUSObject* O)
+	{
+		if (!O)
+		{
+			return;
+		}
+		if (const int32* Ch = ChannelOf.Find(O))
+		{
+			FUSObject* const* M = Mirrors.Find(*Ch);
+			if (M && *M == O)
+			{
+				Mirrors.Remove(*Ch);
+				if (*Ch == PCChannel)
+				{
+					PCChannel = 0;
+					bPCInitialised = false;
+					Script->LocalPC = nullptr;
+				}
+			}
+			ChannelOf.Remove(O);
+		}
+		if (O == GRI)
+		{
+			GRI = nullptr;
+			USProps().GRI.Set<FUSObject*>(Level, nullptr);
+		}
+		for (auto It = StaticRefs.CreateIterator(); It; ++It)
+		{
+			if (It.Value() == O)
+			{
+				It.RemoveCurrent();
+			}
+		}
+		Script->TimerOnly.Remove(O);
+		Script->LocalActors.Remove(O);
+		ClientRuns.Remove(O);
+		bPRIsDirty = true;
+	}
+
+	/** Before the world frees its pending kill objects: nothing of ours may point at them. */
+	void ForgetDestroyed()
+	{
+		TArray<FUSObject*> Dead;
+		for (const TPair<int32, FUSObject*>& KV : Mirrors)
+		{
+			if (KV.Value && KV.Value->IsPendingKill())
+			{
+				Dead.Add(KV.Value);
+			}
+		}
+		for (const TPair<FUSObject*, int32>& KV : ChannelOf)
+		{
+			if (KV.Key && KV.Key->IsPendingKill())
+			{
+				Dead.AddUnique(KV.Key);
+			}
+		}
+		for (FUSObject* O : Dead)
+		{
+			Forget(O);
+		}
+		PurgeClientRuns();
+	}
+
 	void PurgeClientRuns()
 	{
 		for (auto It = ClientRuns.CreateIterator(); It; ++It)
@@ -1438,23 +1526,35 @@ struct FUE2NetScriptHUD::FImpl
 	 * ProcessRemoteFunction sends it; the server-to-client ones (ClientXxx by UE2's naming, and any with a return value)
 	 * run here. UE2 decides by the function's replication condition; the naming stands in for it.
 	 */
+	/**
+	 * UE2 AActor::ProcessRemoteFunction on a client: a replicated function goes to the server when the actor belongs to our
+	 * controller (its owner chain reaches it: GetTopPlayerController) and the function's replication condition holds here,
+	 * with our roles (`reliable if (Role < ROLE_Authority) ServerStartFire` holds; `reliable if (Role == ROLE_Authority)
+	 * ClientSetHUD, ReceiveNewAim, StopZoom` does not: those run here). A call the server just sent us is never sent back.
+	 */
 	bool IsServerCall(FUSObject* A, FUSFunction* F) const
 	{
-		if (!bClientCode || !A || !F || F->ReturnProperty || F->Name.ToString().StartsWith(TEXT("Client")) || !ChannelOf.Contains(A))
+		if (!bClientCode || !A || !F || F->ReturnProperty || !ChannelOf.Contains(A))
+		{
+			return false;
+		}
+		if (A == DeliveringActor && DeliveringFunction && F->Name == DeliveringFunction->Name)
 		{
 			return false;
 		}
 		FUSObject* PC = Script ? Script->GetLocalPlayerController() : nullptr;
+		bool bOurs = false;
 		int32 Guard = 0;
-		for (FUSObject* O = A; O && Guard < 8; O = USProps().Owner.Get<FUSObject*>(O), ++Guard)
+		for (FUSObject* O = A; O && Guard < 8 && !bOurs; O = USProps().Owner.Get<FUSObject*>(O), ++Guard)
 		{
-			if (O == PC)
-			{
-				return true;
-			}
+			bOurs = O == PC;
 		}
-		return false;
+		return bOurs && USVM::EvalNetCondition(A, F);
 	}
+
+	/** The server's call being run here (RunClientFunction / RunMenuFunction): never sent back. */
+	FUSObject* DeliveringActor = nullptr;
+	FUSFunction* DeliveringFunction = nullptr;
 
 	void SendServerCall(FUSObject* A, FUSFunction* F, uint8* Parms)
 	{
@@ -1952,6 +2052,47 @@ struct FUE2NetScriptHUD::FImpl
 		return true;
 	}
 
+	/**
+	 * What a mod weapon's own HUD code shows as its ammo (HudCDeathmatch: Weapon.GetAmmoCount; BW: the magazine, and
+	 * GetHUDAmmoText for magazine and reserve): only for weapon classes of a mod that override them.
+	 */
+	bool GetModWeaponAmmoImpl(int32 Channel, int32& OutCur, int32& OutMax, FString& OutText) const
+	{
+		FUSObject* W = MirrorOfChannel(Channel);
+		if (!W || W->IsPendingKill() || !ClientRuns.Contains(W))
+		{
+			return false;
+		}
+		auto ModOverride = [W](const TCHAR* Name) -> FUSFunction*
+		{
+			FUSFunction* F = USVM::FindFunction(W, FName(Name));
+			FUSClass* C = F ? F->GetOwnerClass() : nullptr;
+			return C && !IsStockPackage(C->GetPackageName().ToString()) ? F : nullptr;
+		};
+		FUSFunction* Count = ModOverride(TEXT("GetAmmoCount"));
+		FUSFunction* Text = ModOverride(TEXT("GetHUDAmmoText"));
+		if (!Count && !Text)
+		{
+			return false;
+		}
+		if (Count && Count->Parms.Num() >= 2)
+		{
+			FUSParms P(Count);
+			P.Float(0.f).Float(0.f);
+			P.Call(W);
+			OutMax = FMath::RoundToInt(P.GetFloat(0));
+			OutCur = FMath::RoundToInt(P.GetFloat(1));
+		}
+		if (Text && Text->Parms.Num() >= 1)
+		{
+			FUSParms P(Text);
+			P.Int(0);
+			P.Call(W);
+			OutText = P.ReturnStr();
+		}
+		return true;
+	}
+
 	void ScriptWeaponAnimEndImpl(int32 Channel)
 	{
 		FUSObject* W = MirrorOfChannel(Channel);
@@ -2032,6 +2173,7 @@ struct FUE2NetScriptHUD::FImpl
 			const bool bWaiting = bWaitForRelease && *bWaitForRelease && bNowWaiting && *bNowWaiting;
 			if (!bWaiting && Now >= *NextFireTime)
 			{
+				UE_LOG(LogUE2Net, Verbose, TEXT("UE2NetScriptHUD: %s.ModeDoFire at %.2f"), *F->GetName(), Now);
 				CallWith(F, TEXT("ModeDoFire"), [](FUSParms&) {});
 				if (bWaitForRelease && *bWaitForRelease && bNowWaiting)
 				{
@@ -2048,6 +2190,16 @@ struct FUE2NetScriptHUD::FImpl
 	/** The held script weapon's frame: Weapon.WeaponTick, then its fire modes. */
 	void TickHeldScriptWeapon(float DeltaSeconds)
 	{
+		// the weapon in our hands (the server's ClientWeaponSet brings a script weapon up through its own code, not only
+		// through our BringUp)
+		if (const FUE2NetPlay* Play = FUE2NetPlay::Get())
+		{
+			const int32 Cur = Play->GetCurrentWeaponChannel();
+			if (Cur && Cur != HeldScriptWeapon && IsScriptWeaponImpl(Cur))
+			{
+				HeldScriptWeapon = Cur;
+			}
+		}
 		FUSObject* W = MirrorOfChannel(HeldScriptWeapon);
 		if (!W || !IsScriptWeaponImpl(HeldScriptWeapon))
 		{
@@ -2187,6 +2339,8 @@ struct FUE2NetScriptHUD::FImpl
 		FUSObject* O = MirrorOfChannel(A.Channel);
 		const FClientRun* R = O ? ClientRuns.Find(O) : nullptr;
 		FUSFunction* F = R && !R->bOff ? USVM::FindFunction(O, Function->Name) : nullptr;
+		UE_LOG(LogUE2Net, Verbose, TEXT("UE2NetScriptHUD: server call %s on %s: %s"), *Function->GetName(), O ? *O->GetName() : TEXT("(no mirror)"),
+			F ? TEXT("run") : (R ? TEXT("no such function") : TEXT("not running client code")));
 		if (!F)
 		{
 			return false;
@@ -2209,7 +2363,11 @@ struct FUE2NetScriptHUD::FImpl
 				}
 			}
 		}
-		RunGuarded(O, [&]() { USVM::ProcessEvent(O, F, Block); });
+		{
+			TGuardValue<FUSObject*> GA(DeliveringActor, O);
+			TGuardValue<FUSFunction*> GF(DeliveringFunction, F);
+			RunGuarded(O, [&]() { USVM::ProcessEvent(O, F, Block); });
+		}
 		F->DestroyValue(Block);
 		FMemory::Free(Block);
 		return true;
@@ -2301,6 +2459,36 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			SetObj(*Hit, TEXT("GameReplicationInfo"), GRI);
 		}
+		if (Changed.Contains(TEXT("bTearOff")))
+		{
+			FUSObject* O = *Hit;
+			FUSProperty* T = O->FindProperty(TEXT("bTearOff"));
+			if (T && T->Type == EUSType::Bool && *reinterpret_cast<const uint32*>(O->Data + T->Offset))
+			{
+				TearOff(A.Channel, O);
+			}
+		}
+	}
+
+	/**
+	 * UE2 bTearOff: the client's copy leaves the channel and becomes its own (ROLE_Authority), then gets TornOff (a
+	 * dying pawn, BW's M46 sticky mine). One running client code keeps running as a client-side actor; the channel's close
+	 * no longer touches it.
+	 */
+	void TearOff(int32 Channel, FUSObject* O)
+	{
+		FClientRun* R = ClientRuns.Find(O);
+		if (!R || O == GetPC())
+		{
+			return;
+		}
+		USProps().Role.Set<uint8>(O, UE2_ROLE_Authority);
+		USProps().RemoteRole.Set<uint8>(O, 0);
+		Mirrors.Remove(Channel);
+		ChannelOf.Remove(O);
+		R->bMirrored = false;
+		Script->LocalActors.AddUnique(O);
+		CallClientEvent(O, TEXT("TornOff"));
 	}
 
 	void Close(const FUE2NetActor& A)
@@ -2339,7 +2527,7 @@ struct FUE2NetScriptHUD::FImpl
 		Script->TimerOnly.Remove(O);
 		Script->LocalActors.Remove(O);
 		Script->MarkPendingKill(O);
-		PurgeClientRuns();
+		ForgetDestroyed();
 		Script->CleanupDestroyed();
 	}
 
@@ -2686,6 +2874,10 @@ struct FUE2NetScriptHUD::FImpl
 		TickMirroredClients(DeltaSeconds);
 		TickHeldScriptWeapon(DeltaSeconds);
 		FillModInfoRefs(GetPC());
+		if (FUSObject* PC = GetPC())
+		{
+			SyncPawnWeapon(PC);
+		}
 		if (Gui)
 		{
 			Gui->Tick(DeltaSeconds);
@@ -2697,7 +2889,7 @@ struct FUE2NetScriptHUD::FImpl
 		}
 		ProcessInteractions(TEXT("Process_Tick"), nullptr, DeltaSeconds);
 		SyncClientVisuals();
-		PurgeClientRuns();
+		ForgetDestroyed();
 		Script->CleanupDestroyed();
 		TickSeconds += FPlatformTime::Seconds() - T0;
 	}
@@ -2721,6 +2913,11 @@ struct FUE2NetScriptHUD::FImpl
 			Target = Pawn && !Pawn->IsPendingKill() ? Pawn : PC;
 		}
 		SetObj(PC, TEXT("ViewTarget"), Target);
+		SyncPawnWeapon(PC);
+	}
+
+	void SyncPawnWeapon(FUSObject* PC)
+	{
 		// Pawn.Weapon is not replicated: UE2's client sets it when the weapon comes up (Weapon.ClientWeaponSet / BringUp),
 		// which our play layer does (FUE2NetPlay)
 		FUSObject* Pawn = GetObj(PC, TEXT("Pawn"));
@@ -2781,10 +2978,12 @@ struct FUE2NetScriptHUD::FImpl
 		{
 			return;
 		}
-		for (const TPair<int32, FUSObject*>& KV : Mirrors)
+		// a copy: PostRender2D is script, which may destroy actors (Forget changes Mirrors)
+		const TArray<TPair<int32, FUSObject*>> Pawns = Mirrors.Array();
+		for (const TPair<int32, FUSObject*>& KV : Pawns)
 		{
 			FUSObject* O = KV.Value;
-			if (!O || O == Level || !O->Data || !O->Class || !O->Class->IsChildOf(RTPawn()))
+			if (!O || O == Level || O->IsPendingKill() || !O->Data || !O->Class || !O->Class->IsChildOf(RTPawn()))
 			{
 				continue;
 			}
@@ -2903,7 +3102,7 @@ struct FUE2NetScriptHUD::FImpl
 		}
 		USCanvas::SetBackend(nullptr);
 		Backend.Canvas = nullptr;
-		PurgeClientRuns();
+		ForgetDestroyed();
 		Script->CleanupDestroyed();
 		const double Now = FPlatformTime::Seconds();
 		if (bLogFrames && Now >= NextLog)
@@ -2998,6 +3197,8 @@ struct FUE2NetScriptHUD::FImpl
 		if (bRun)
 		{
 			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: the server's %s %s"), *N.ToString(), *Menu);
+			TGuardValue<FUSObject*> GA(DeliveringActor, PC);
+			TGuardValue<FUSFunction*> GF(DeliveringFunction, F);
 			USVM::ProcessEvent(PC, F, Block);
 		}
 		F->DestroyValue(Block);
@@ -3120,6 +3321,7 @@ struct FUE2NetScriptHUD::FImpl
 		Gui->Draw(CanvasObj, float(Canvas->SizeX), float(Canvas->SizeY));
 		USCanvas::SetBackend(nullptr);
 		Backend.Canvas = nullptr;
+		ForgetDestroyed();
 		Script->CleanupDestroyed();
 		return true;
 	}
@@ -3294,6 +3496,10 @@ void FUE2NetScriptHUD::SetModBind(const FString& KeyName, const FString& Command
 	}
 }
 FString FUE2NetScriptHUD::DumpMenus() const { return Impl->bReady && Impl->Gui ? Impl->Gui->DumpTop() : FString(); }
+bool FUE2NetScriptHUD::GetModWeaponAmmo(int32 Channel, int32& OutCur, int32& OutMax, FString& OutText) const
+{
+	return Impl->bReady && Channel && Impl->GetModWeaponAmmoImpl(Channel, OutCur, OutMax, OutText);
+}
 FString FUE2NetScriptHUD::DescribePCProperty(const FString& Path) const
 {
 	FUSObject* O = Impl->bReady ? Impl->GetPC() : nullptr;
@@ -3302,6 +3508,10 @@ FString FUE2NetScriptHUD::DescribePCProperty(const FString& Path) const
 	FString Out = TEXT("None");
 	for (int32 i = 0; O && i < Parts.Num(); ++i)
 	{
+		if (Parts[i] == TEXT("@state"))
+		{
+			return O->StateFrame && O->StateFrame->StateNode ? O->StateFrame->StateNode->GetName() : FString(TEXT("(none)"));
+		}
 		FUSProperty* P = O->Data ? O->FindProperty(FName(*Parts[i])) : nullptr;
 		if (!P)
 		{
@@ -3353,6 +3563,7 @@ bool FUE2NetScriptHUD::OpenMenu(const FString&) { return false; }
 FString FUE2NetScriptHUD::GetModBind(const FString&) const { return FString(); }
 void FUE2NetScriptHUD::SetModBind(const FString&, const FString&) {}
 FString FUE2NetScriptHUD::DumpMenus() const { return FString(); }
+bool FUE2NetScriptHUD::GetModWeaponAmmo(int32, int32&, int32&, FString&) const { return false; }
 FString FUE2NetScriptHUD::DescribePCProperty(const FString&) const { return FString(); }
 bool FUE2NetScriptHUD::ClickMenu(const FString&) { return false; }
 

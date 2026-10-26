@@ -348,6 +348,8 @@ struct FUSFunction : FUSStruct
 {
 	uint32 FunctionFlags = 0;
 	uint16 iNative = 0;
+	/** FUNC_Net: offset of the replication condition in the declaring class's Script (UE2 RepOffset). */
+	uint16 RepOffset = 0xFFFF;
 	uint8 OperPrecedence = 0;
 	uint8 NumParms = 0;
 	int32 ParmsSize = 0;
@@ -492,6 +494,12 @@ namespace USVM
 	bool IsProxy(const FUSObject* Self);
 	/** A replicated function (its first declaration has FUNC_Net). */
 	bool IsNetFunction(const FUSFunction* Function);
+	/**
+	 * UE2 AActor::ProcessRemoteFunction's test: the function's replication condition (the declaring class's replication
+	 * block, `reliable if (Role < ROLE_Authority) ServerStartFire`) evaluated on Self as it is here. False when it does
+	 * not hold or the function is not replicated / has no condition.
+	 */
+	bool EvalNetCondition(FUSObject* Self, const FUSFunction* Function);
 	/** Calls a function with a parameter block laid out like Function's locals (C++ -> script). */
 	void ProcessEvent(FUSObject* Self, FUSFunction* Function, void* Parms);
 	/** Runs Self's state code until it blocks on a latent action or ends (called by the world tick). */
