@@ -2722,6 +2722,23 @@ void FUE2NetPlay::Tick(float DeltaSeconds)
 		Send(PCChannel(), TEXT("ServerSetReadyToStart"), {});
 		RequestRestart();
 	}
+	// PlayerController.PlayerTick (3369): once the client has precached (ForcePrecacheTime, 1.2 s after its controller
+	// arrived) it calls ServerShortTimeout. The server then drops the connection after ConnectionTimeout (20 s) without
+	// packets instead of InitialConnectTimeout (200 s): a client that vanishes without a close (killed, network gone) is
+	// not left in the game for minutes. It also has the server send the pickups and objectives soon.
+	if (!bShortTimeoutSent && Connection->GetState() == FUE2NetConnection::EState::Joined && PCChannel())
+	{
+		if (ControllerArrivedTime <= 0.0)
+		{
+			ControllerArrivedTime = Now;
+		}
+		else if (Now - ControllerArrivedTime > 1.2)
+		{
+			bShortTimeoutSent = true;
+			const bool bSent = Send(PCChannel(), TEXT("ServerShortTimeout"), {});
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetPlay: ServerShortTimeout %s"), bSent ? TEXT("sent") : TEXT("could not be sent"));
+		}
+	}
 	if (OwnPawnChannel && !LocalPawn.IsValid())
 	{
 		TrySpawnLocalPawn();

@@ -121,6 +121,8 @@ cd OpenUT2k4/Client && Scripts/build-linux.sh      # see "Build" below
    - Missing server packages download automatically. They go into a separate net cache.
    - No CD key is needed: the client logs in the way the OldUnreal 3374 patch does.
    - Stats tracking is off by default, as in UT2004.
+   - Leaving tells the server at once, as UT2004 does: the menu, joining another server, quitting, closing the window
+     and even a crash. A client killed outright is dropped after the server's usual 20 s timeout.
 6. **Hosting**: **Host Game** starts a listen server or a dedicated server on your machine. Both OpenUT2k4 and
    UT2004 players can join. To be reachable from the internet, forward the UDP ports listed under
    [Ports](#ports-and-firewall).

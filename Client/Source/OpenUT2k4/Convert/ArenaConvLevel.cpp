@@ -28,7 +28,11 @@ namespace ArenaConvLevelLocal
 		PF_NoMerge = 0x00010000, PF_NoZTest = 0x00020000, PF_Additive = 0x00040000, PF_SpecialLit = 0x00100000,
 		PF_Wireframe = 0x00200000, PF_Unlit = 0x00400000, PF_Portal = 0x04000000, PF_Mirrored = 0x08000000, PF_Flag29 = 0x20000000,
 	};
-	constexpr uint32 SkipFlags = PF_Invisible | PF_Portal | PF_FakeBackdrop;
+	/**
+	 * A zone portal is drawn like any other surface unless it is also Invisible: water, lava and grate sheets are
+	 * often the portal between the water zone and the air above it.
+	 */
+	constexpr uint32 SkipFlags = PF_Invisible | PF_FakeBackdrop;
 	/**
 	 * Invisible and sky (FakeBackdrop) surfaces still bound solid space in UE2 (invisible walls / floors, the sky
 	 * players and projectiles run into): exported as collision only.
@@ -1767,6 +1771,12 @@ FConvJson FConvMapExporter::ExportBsp(FConvPackage* Pkg, int32 ModelIdx, const F
 			Mp = &MatCache.Add(MatKey, P);
 		}
 		const FString MatPath = *Mp;
+		// a portal left with no material or the editor's default texture is a zone boundary nobody textured
+		if ((Sf.Flags & ArenaConvLevelLocal::PF_Portal) && (MatPath == TEXT("None") || MatPath == TEXT("Engine.DefaultTexture")))
+		{
+			++SkippedInvisible;
+			continue;
+		}
 		const uint32 Fl = bCollisionOnly ? Sf.Flags & uint32(ArenaConvLevelLocal::PF_Invisible | ArenaConvLevelLocal::PF_FakeBackdrop) : Sf.Flags & RenderFlags;
 		// polygon
 		TArray<double, TInlineAllocator<64>> Poly;

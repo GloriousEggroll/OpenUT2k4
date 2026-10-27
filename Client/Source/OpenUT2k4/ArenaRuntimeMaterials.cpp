@@ -1158,6 +1158,7 @@ UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath
 	FScopeUs Timer(Stats().MaterialUs);
 	const bool bForce2S = EnumHasAnyFlags(Variant, ArenaRuntimeContent::EMaterialVariant::TwoSided);
 	const bool bForceUnlit = EnumHasAnyFlags(Variant, ArenaRuntimeContent::EMaterialVariant::Unlit);
+	const bool bForceTranslucent = EnumHasAnyFlags(Variant, ArenaRuntimeContent::EMaterialVariant::Translucent);
 	if ((ObjectPath.IsEmpty() || ObjectPath == TEXT("None")) && !bForce2S && !bForceUnlit)
 	{
 		return DefaultMaterial();
@@ -1168,10 +1169,15 @@ UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath
 		UE_LOG(LogOpenUT2k4, Verbose, TEXT("RuntimeContent: material %s not in the cache, using a plain default"), *ObjectPath);
 	}
 	const bool bTwoSided = Info.bTwoSided || bForce2S;
-	const bool bLit = Info.Blend == TEXT("opaque") || Info.Blend == TEXT("masked") || Info.Blend == TEXT("translucent");
-	UMaterialInterface* Master = GetMaster(MasterFor(Info.Blend) + (bTwoSided ? TEXT("_2S") : TEXT("")));
+	// a Translucent BSP poly: UE2 wraps its material in an FB_Translucent FinalBlend (the "additive" master here), unless
+	// the material blends by itself already
+	const bool bMakeTranslucent = bForceTranslucent && (Info.Blend == TEXT("opaque") || Info.Blend == TEXT("masked"));
+	const FString Blend = bMakeTranslucent ? FString(TEXT("additive")) : Info.Blend;
+	const bool bLit = Blend == TEXT("opaque") || Blend == TEXT("masked") || Blend == TEXT("translucent");
+	UMaterialInterface* Master = GetMaster(MasterFor(Blend) + (bTwoSided ? TEXT("_2S") : TEXT("")));
 
-	const FString Name = AssetName(ObjectPath) + (bForce2S && !Info.bTwoSided ? TEXT("_2S") : TEXT("")) + (bForceUnlit && !Info.bUnlit ? TEXT("_U") : TEXT(""));
+	const FString Name = AssetName(ObjectPath) + (bForce2S && !Info.bTwoSided ? TEXT("_2S") : TEXT("")) + (bForceUnlit && !Info.bUnlit ? TEXT("_U") : TEXT(""))
+		+ (bMakeTranslucent ? TEXT("_T") : TEXT(""));
 	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Master, AssetOuter(), MakeUniqueObjectName(AssetOuter(), UMaterialInstanceDynamic::StaticClass(), FName(*Name)));
 	if (!MID)
 	{
@@ -1188,7 +1194,7 @@ UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath
 		}
 	}
 	const FResolution& R = Info.Res;
-	MID->SetScalarParameterValue(TEXT("Opacity"), Info.Blend == TEXT("invisible") ? 0.f : 1.f);
+	MID->SetScalarParameterValue(TEXT("Opacity"), Blend == TEXT("invisible") ? 0.f : 1.f);
 	if (bLit)
 	{
 		const double Emissive = (Info.bUnlit || bForceUnlit) ? 1.0 : (Info.bHasParams ? R.Emissive : 0.0);
@@ -1219,8 +1225,8 @@ UMaterialInterface* ArenaRuntimePrivate::BuildMaterial(const FString& ObjectPath
 	{
 		// (the white default texture times the colour; an additive sheen over another layer stays faint, a modulating one
 		// leaves it as it is)
-		const float Scale = Info.Blend == TEXT("additive") ? 0.3f : 1.f;
-		const FLinearColor Tint = Info.Blend == TEXT("modulate") ? FLinearColor::White : StandIn * Scale;
+		const float Scale = Blend == TEXT("additive") ? 0.3f : 1.f;
+		const FLinearColor Tint = Blend == TEXT("modulate") ? FLinearColor::White : StandIn * Scale;
 		MID->SetVectorParameterValue(TEXT("Tint"), FLinearColor(Tint.R, Tint.G, Tint.B, 1.f));
 		if (bShiny && bLit)
 		{

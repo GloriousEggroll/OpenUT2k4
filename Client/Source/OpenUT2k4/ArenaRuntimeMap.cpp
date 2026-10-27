@@ -282,7 +282,7 @@ namespace ArenaRuntimeMapLocal
 		}
 	};
 
-	/** bsp.gltf -> primitives keyed like ImportUT2004.import_bsp: (material, TwoSided, Unlit, !NotSolid). */
+	/** bsp.gltf -> primitives keyed like ImportUT2004.import_bsp: (material, TwoSided, Unlit, !NotSolid), plus Translucent. */
 	bool ReadBsp(const FString& Path, TArray<FWorldPrim>& OutPrims)
 	{
 		FGltf Gltf;
@@ -328,6 +328,10 @@ namespace ArenaRuntimeMapLocal
 				if (Flags.Contains(TEXT("Unlit")))
 				{
 					Prim.Variant |= EMaterialVariant::Unlit;
+				}
+				if (Flags.Contains(TEXT("Translucent")))
+				{
+					Prim.Variant |= EMaterialVariant::Translucent;
 				}
 				Prim.bCollides = !Flags.Contains(TEXT("NotSolid"));
 				Prim.bSky = BoolField(ObjectField(P, TEXT("extras")), TEXT("sky_zone"));

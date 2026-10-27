@@ -28,6 +28,12 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 
+#if PLATFORM_LINUX
+THIRD_PARTY_INCLUDES_START
+#include "SDL3/SDL.h"
+THIRD_PARTY_INCLUDES_END
+#endif
+
 /**
  * Joining flow (Docs/UE2Net.md "Joining"):
  *   JoinServer -> FUE2NetConnection handshake -> WELCOME names the map -> we open our converted copy of that map
@@ -417,6 +423,19 @@ namespace UE2NetJoinLocal
 		UGameplayStatics::OpenLevel(World, FName(*Level), true, Options);
 	}
 
+	void OnPreLoadMap(const FString& MapName)
+	{
+		// a map load while joined that is not the server's map we opened: the player leaves (the menu, a local match, the
+		// disconnect command). Close now, as UE2's Browse closes the connection before it loads the next level: a load
+		// takes seconds and the server keeps the player in the game until the close arrives.
+		if (bWaitingForMap || !GConnection || !GConnection->IsOpen())
+		{
+			return;
+		}
+		ResetNetWorld();
+		GConnection->Close(TEXT(""));
+	}
+
 	void OnPostLoadMap(UWorld* World)
 	{
 		if (!World || !GConnection || !GConnection->IsOpen())
@@ -605,8 +624,23 @@ namespace UE2NetJoinLocal
 	void Register()
 	{
 		GTickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic(&Tick), 0.f);
+		FCoreUObjectDelegates::PreLoadMap.AddStatic(&OnPreLoadMap);
 		FCoreUObjectDelegates::PostLoadMapWithWorld.AddStatic(&OnPostLoadMap);
+		// every way out ends with the close a stock client sends: quit, SIGTERM/SIGINT and the window's close button
+		// (a requested exit, OnPreExit), and a crash (the error handler: the close packet alone)
 		FCoreDelegates::OnPreExit.AddStatic([]() { ArenaNet::LeaveServer(); });
+		FCoreDelegates::OnHandleSystemError.AddStatic([]()
+		{
+			if (GConnection)
+			{
+				GConnection->SendEmergencyClose();
+			}
+		});
+#if PLATFORM_LINUX
+		// SDL ends the process at once (a forced exit, no OnPreExit) when the last window is closed; without the quit the
+		// engine closes the window and exits normally (UGameEngine: "All Windows Closed")
+		SDL_SetHint(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0");
+#endif
 	}
 
 	FDelayedAutoRegisterHelper GRegister(EDelayedRegisterRunPhase::EndOfEngineInit, &Register);

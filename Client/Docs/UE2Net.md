@@ -165,7 +165,7 @@ bunch   = bControl [bOpen bClose]  bReliable  ChIndex:ReadInt(1023)
   ignored if their channel is not open.
 - `bClose` ends a channel: the server closes actor channels when an actor stops being relevant or is destroyed, and
   closes the control channel to kick the client. Our clean disconnect is a reliable close bunch on the control
-  channel; the server then logs `Close TcpipConnection`.
+  channel; the server then logs `Close TcpipConnection` (see "Joining, map changes and leaving").
 - **No partial bunches.** Unlike UE3 and later, UE2 has no bit for bunches split across packets. Every bunch fits
   in one packet, which also caps an actor's initial bunch. The header above was checked against real traffic: a
   wrong field width would break the parsing of the next bunch in the packet, and no such error occurred over
@@ -564,7 +564,32 @@ server reads them either way.
    Script steps `agree` / `disagree` answer it. Tested on a local 3369 server running `Classic_FreezeTag_i4i` with
    `DruidsPlayerAgreement110.PlayerAgreementServerActor`: the page with the server's text, `yes` and Fire spawned us,
    `no` closed the connection with the kick message. FreezeTag itself spawns players who join mid-match at once.
-7. **Leaving**: opening any other map (the menu), `LeaveServer()` or quitting the game sends the control channel close.
+7. **Leaving**: the server logs a player out (`Close TcpipConnection`, "<name> left the game", its
+   PlayerReplicationInfo closes) the moment the control channel close arrives. UE2 has no goodbye message: a stock
+   client's `UNetConnection::Close` is that one reliable, empty `bClose` bunch on channel 0, flushed before the socket
+   goes. Ours goes out on every way out:
+   - another map (the menu's Leave, the `disconnect` command, a local match): `PreLoadMap`, before the load starts
+     (like UE2's `Browse`), not after it;
+   - joining another server (`JoinServer` leaves first), `LeaveServer()` (the download dialog's CANCEL);
+   - quitting, SIGTERM/SIGINT and the window's close button: the engine's exit (`OnPreExit`). SDL's own quit on the
+     last window's close (`SDL_EVENT_QUIT`: a forced exit without `OnPreExit`, so no close at all) is turned off
+     (`SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE=0`): the engine closes the window and exits normally;
+   - a crash: the error handler (`OnHandleSystemError`) sends the close packet alone (`SendEmergencyClose`).
+   `Close` sends the close twice, with any control bunch the server has not acknowledged in front of it (the server
+   handles the control channel in order, so a close behind a lost bunch would wait for it).
+   A client that vanishes without a close (killed, network gone) is dropped after the server's `ConnectionTimeout`
+   (20 s) only once it called `PlayerController.ServerShortTimeout`, which the stock client does in `PlayerTick`
+   once it has precached (1.2 s after its controller arrived); until then the server waits `InitialConnectTimeout`
+   (200 s; 3369's `UNetConnection::Tick` picks the timeout by `bShortConnectTimeOut`). We call it 1.2 s after our
+   controller arrives; before, a killed client stayed in the game for 200 s. Map changes need nothing: the server
+   closes every connection itself after `ClientTravel`.
+   Tested on a local 3369 server through a UDP relay (it keeps its socket to the server open, so the server gets no
+   ICMP "port unreachable" from a dead client, as on the internet): quit, SIGTERM, SIGINT, the window's close button,
+   `disconnect`, `open` of the menu map and SIGSEGV each sent the close and the server logged the player out in the
+   same second; SIGKILL was dropped after 20 s (200 s before `ServerShortTimeout`). The window's close button sent no
+   close before. UTComp 1.6 keeps each departed player's `UTComp_PRI` (it has no logout cleanup), so its warmup's
+   "0 of N ready" count grows with every player who left, whatever client they used; the player's own
+   PlayerReplicationInfo is gone at once.
 
 ## Mod servers
 

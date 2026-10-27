@@ -59,9 +59,10 @@ namespace ArenaConverterVersions
 	 * 5: every texture / material / mesh / sound inside the map package is exported, also when only script code or
 	 * class defaults use it; 6: invisible solid BSP surfaces as "collision_only" primitives in bsp.gltf; 7: the map's
 	 * static meshes are exported again with their UE2 collision model, static mesh json tool_version 2; 8: sky
-	 * (FakeBackdrop) surfaces as collision only "fake_backdrop" primitives) and is exported again.
+	 * (FakeBackdrop) surfaces as collision only "fake_backdrop" primitives; 9: textured zone portal surfaces such as
+	 * water are drawn) and is exported again.
 	 */
-	constexpr int32 MapSchemaVersion = 8;
+	constexpr int32 MapSchemaVersion = 9;
 
 	/**
 	 * "version" of <cache>/fonts/index.json (ArenaConvFonts.h). A cache whose fonts index is missing or older gets the

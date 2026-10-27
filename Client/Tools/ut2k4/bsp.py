@@ -38,7 +38,8 @@ POLY_FLAG_NAMES = {
     PF_PORTAL: 'Portal', PF_MIRRORED: 'Mirrored', PF_FLAG29: 'Flag29',
 }
 
-SKIP_FLAGS = PF_INVISIBLE | PF_PORTAL | PF_FAKEBACKDROP
+# a zone portal is drawn unless it is also Invisible (water, lava and grate sheets are often portals)
+SKIP_FLAGS = PF_INVISIBLE | PF_FAKEBACKDROP
 # flags that matter for rendering; surfaces are grouped by material + these
 RENDER_FLAGS = (PF_MASKED | PF_TRANSLUCENT | PF_MODULATED | PF_TWOSIDED | PF_ALPHATEXTURE
                 | PF_ADDITIVE | PF_UNLIT | PF_ENVIRONMENT | PF_MIRRORED | PF_NOTSOLID)
@@ -175,6 +176,10 @@ def triangulate(model, surf_material_path, texture_size_for, scale):
         if mp is None:
             mp = surf_material_path(mat_ref)
             mat_cache[mat_ref] = mp
+        # a portal left untextured is a zone boundary, not a surface
+        if flags & PF_PORTAL and mp in ('None', 'Engine.DefaultTexture'):
+            skipped['invisible_or_portal'] += 1
+            continue
         key = (mp, flags & RENDER_FLAGS)
         g = groups.get(key)
         if g is None:

@@ -279,7 +279,8 @@ void FUE2NetConnection::Close(const FString& Reason)
 	{
 		return;
 	}
-	// a reliable close bunch on the control channel: the server closes the connection and logs the player out
+	// UE2's UNetConnection::Close: a reliable close bunch on the control channel, flushed at once; the server closes the
+	// connection and logs the player out
 	FOutBunch CloseBunch;
 	CloseBunch.Channel = 0;
 	CloseBunch.ChType = ChControl;
@@ -287,19 +288,50 @@ void FUE2NetConnection::Close(const FString& Reason)
 	CloseBunch.bReliable = true;
 	QueueBunch(MoveTemp(CloseBunch));
 	const double Now = FPlatformTime::Seconds();
-	Flush(Now);
-	// once more in case the first packet is lost (the server drops the duplicate by its sequence number)
-	for (FOutBunch& B : OutReliableBunches)
+	// twice in case a packet is lost (the server drops duplicates by their sequence numbers). The control bunches it has
+	// not acknowledged go out again in front of the close: it handles the control channel in order, so a close behind a
+	// lost bunch would wait for that bunch until the connection times out.
+	for (int32 Pass = 0; Pass < 2; ++Pass)
 	{
-		if (B.Channel == 0 && B.bClose)
+		TArray<FOutBunch> Control;
+		for (int32 i = OutReliableBunches.Num() - 1; i >= 0; --i)
 		{
-			FOutBunch Again = B;
-			SendQueue.Add(MoveTemp(Again));
+			if (OutReliableBunches[i].Channel == 0)
+			{
+				Control.Add(MoveTemp(OutReliableBunches[i]));
+				OutReliableBunches.RemoveAt(i);
+			}
 		}
+		Control.Sort([](const FOutBunch& A, const FOutBunch& B) { return A.Sequence < B.Sequence; });
+		SendQueue.Insert(MoveTemp(Control), 0);
+		Flush(Now);
 	}
 	OutReliableBunches.Reset();
-	Flush(Now);
 	SetClosed(Reason);
+}
+
+void FUE2NetConnection::SendEmergencyClose()
+{
+	if (!Socket || !RemoteAddr.IsValid() || !IsOpen())
+	{
+		return;
+	}
+	// the close bunch alone, written straight to the socket: no queues, no log (the process is going down)
+	FOutBunch CloseBunch;
+	CloseBunch.Channel = 0;
+	CloseBunch.ChType = ChControl;
+	CloseBunch.bClose = true;
+	CloseBunch.bReliable = true;
+	CloseBunch.Sequence = OutReliable[0] + 1;
+	for (int32 Pass = 0; Pass < 2; ++Pass)
+	{
+		FUE2BitWriter Packet;
+		Packet.WriteInt(uint32(OutPacketId + Pass) & (MaxPacketId - 1), MaxPacketId);
+		WriteBunchHeader(Packet, CloseBunch);
+		const TArray<uint8> Bytes = Packet.GetPacketBytes();
+		int32 Sent = 0;
+		Socket->SendTo(Bytes.GetData(), Bytes.Num(), Sent, *RemoteAddr);
+	}
 }
 
 void FUE2NetConnection::SetClosed(const FString& Reason)

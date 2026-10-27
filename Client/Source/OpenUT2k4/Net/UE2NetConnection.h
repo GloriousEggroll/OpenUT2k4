@@ -115,6 +115,8 @@ public:
 	void SendJoin();
 	/** Closes the control channel (the server logs the player out) and the socket. */
 	void Close(const FString& Reason);
+	/** A crash's last resort: sends the control channel's close at once and leaves everything else as it is. */
+	void SendEmergencyClose();
 
 	EState GetState() const { return State; }
 	bool IsOpen() const { return State != EState::Idle && State != EState::Closed; }

@@ -67,6 +67,8 @@ namespace ArenaRuntimeContent
 		TwoSided = 1 << 0,
 		/** Force unlit (BSP Unlit polys; makes lit masters fully emissive). */
 		Unlit = 1 << 1,
+		/** BSP Translucent polys: an opaque or masked material is drawn translucent (UE2's FB_Translucent FinalBlend). */
+		Translucent = 1 << 2,
 	};
 	ENUM_CLASS_FLAGS(EMaterialVariant)
 

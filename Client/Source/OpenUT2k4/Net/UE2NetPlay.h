@@ -282,6 +282,9 @@ private:
 	int32 DeadPawnChannel = 0;
 	FName ServerState;
 	bool bReadySent = false;
+	/** PlayerController.ServerShortTimeout sent (3369's PlayerTick: once the client has precached), and when our controller arrived. */
+	bool bShortTimeoutSent = false;
+	double ControllerArrivedTime = 0.0;
 
 	// moves
 	TArray<FMove> SavedMoves;
