@@ -1377,6 +1377,7 @@ FConvJson FConvMapExporter::Volume(FConvObject* O, const FConvJson& Rec)
 			if (!R.bError && Nn > 0 && Nn <= 20000)
 			{
 				BNodes.SetNumUninitialized(Nn);
+				const int32 NodeExtra = Mo->Pkg->BspNodeExtraBytes();
 				for (int32 i = 0; i < Nn; ++i)
 				{
 					float Pl[4];
@@ -1389,7 +1390,7 @@ FConvJson FConvMapExporter::Volume(FConvObject* O, const FConvJson& Rec)
 					BNodes[i].Back = R.Index();
 					BNodes[i].Front = R.Index();
 					R.Index(); R.Index(); R.Index();
-					R.Skip(16);
+					R.Skip(16 + NodeExtra); // ExclusiveSphereBound (+ 16 more bytes in pre-126 packages)
 					R.U8(); R.U8();
 					BNodes[i].NVerts = R.U8();
 					R.Skip(20);
@@ -1640,6 +1641,7 @@ FConvJson FConvMapExporter::ExportBsp(FConvPackage* Pkg, int32 ModelIdx, const F
 	struct FNodeR { double Plane[4]; int32 VPool, Surf, NVerts, Back, Front; uint8 Zone[2]; };
 	TArray<FNodeR> Nodes;
 	Nodes.SetNumUninitialized(Nn);
+	const int32 NodeExtra = Pkg->BspNodeExtraBytes();
 	for (int32 i = 0; i < Nn; ++i)
 	{
 		float Pl[4];
@@ -1652,7 +1654,7 @@ FConvJson FConvMapExporter::ExportBsp(FConvPackage* Pkg, int32 ModelIdx, const F
 		Nodes[i].Back = R.Index();
 		Nodes[i].Front = R.Index();
 		R.Index(); R.Index(); R.Index();
-		R.Skip(16);
+		R.Skip(16 + NodeExtra); // ExclusiveSphereBound (+ 16 more bytes in pre-126 packages)
 		Nodes[i].Zone[0] = R.U8();
 		Nodes[i].Zone[1] = R.U8();
 		Nodes[i].NVerts = R.U8();

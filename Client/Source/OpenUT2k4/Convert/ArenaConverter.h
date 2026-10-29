@@ -60,9 +60,10 @@ namespace ArenaConverterVersions
 	 * class defaults use it; 6: invisible solid BSP surfaces as "collision_only" primitives in bsp.gltf; 7: the map's
 	 * static meshes are exported again with their UE2 collision model, static mesh json tool_version 2; 8: sky
 	 * (FakeBackdrop) surfaces as collision only "fake_backdrop" primitives; 9: textured zone portal surfaces such as
-	 * water are drawn) and is exported again.
+	 * water are drawn; 10: maps saved with package version < 126, whose BSP nodes are 16 bytes longer, get their BSP
+	 * and the collision models of their own static meshes instead of failing) and is exported again.
 	 */
-	constexpr int32 MapSchemaVersion = 9;
+	constexpr int32 MapSchemaVersion = 10;
 
 	/**
 	 * "version" of <cache>/fonts/index.json (ArenaConvFonts.h). A cache whose fonts index is missing or older gets the

@@ -36,6 +36,7 @@ namespace ArenaConvExporterLocal
 		struct FNode { float Plane[4]; int32 VPool, NVerts; };
 		TArray<FNode> Nodes;
 		Nodes.SetNumUninitialized(Nn);
+		const int32 NodeExtra = Mo->Pkg->BspNodeExtraBytes();
 		for (int32 i = 0; i < Nn && !R.bError; ++i)
 		{
 			R.Raw(Nodes[i].Plane, 16);
@@ -45,7 +46,7 @@ namespace ArenaConvExporterLocal
 			R.Index(); // iSurf
 			R.Index(); R.Index(); R.Index(); // iBack, iFront, iPlane
 			R.Index(); R.Index(); // iCollisionBound, iRenderBound
-			R.Skip(16);
+			R.Skip(16 + NodeExtra); // ExclusiveSphereBound (+ 16 more bytes in pre-126 packages)
 			R.U8(); R.U8();
 			Nodes[i].NVerts = R.U8();
 			R.Skip(20);

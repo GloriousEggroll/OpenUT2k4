@@ -209,6 +209,13 @@ public:
 
 	const uint8* Buf() const { return Data.IsValid() ? Data->Data : nullptr; }
 	int64 BufSize() const { return Data.IsValid() ? Data->Size : 0; }
+	/**
+	 * Bytes an FBspNode (UModel nodes: level BSP, brushes, static mesh collision models) has after ExclusiveSphereBound
+	 * besides the stock layout. Packages older than version 126 (pre-release UT2004 builds that some custom maps were
+	 * saved with, e.g. DM-(ED)-CarPark, DM-Bartokk, DM-ShudderCreek at 121) store 16 more bytes there (zero in every map
+	 * seen); stock maps and packages (126 - 128) do not. bsp.py NODE_EXTRA_PRE126.
+	 */
+	int32 BspNodeExtraBytes() const { return Version < 126 ? 16 : 0; }
 
 	bool NameAt(int32 I, FString& Out) const;
 	const FString& NameAtOr(int32 I) const;

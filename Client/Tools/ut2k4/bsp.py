@@ -49,6 +49,12 @@ def flag_names(flags):
     return [n for bit, n in sorted(POLY_FLAG_NAMES.items()) if flags & bit]
 
 
+# Packages older than version 126 (pre-release UT2004 builds; some custom maps were saved with them)
+# store 16 more bytes in every FBspNode, between ExclusiveSphereBound and iZone. They are zero in
+# every map seen so far. Version 126+ (all stock maps) does not have them.
+NODE_EXTRA_PRE126 = 16
+
+
 class BspError(Exception):
     pass
 
@@ -56,6 +62,7 @@ class BspError(Exception):
 def read_model(obj):
     """Parse a Model export: vectors, points, nodes, surfs, verts."""
     r = obj.native_reader()
+    extra = NODE_EXTRA_PRE126 if obj.pkg.version < 126 else 0
     r.box()
     r.sphere()
     nvec = r.index()
@@ -84,6 +91,8 @@ def read_model(obj):
         idx()
         idx()                   # iCollisionBound, iRenderBound
         r.plane()               # ExclusiveSphereBound
+        if extra:
+            r.skip(extra)       # pre-126 packages: 16 more bytes (NODE_EXTRA_PRE126)
         n_zone[i, 0] = r.u8()
         n_zone[i, 1] = r.u8()
         n_nverts[i] = r.u8()

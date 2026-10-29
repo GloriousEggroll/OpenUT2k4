@@ -890,7 +890,11 @@ collision helpers have `bCollideActors=False` (DM-UCMP-BloodRun).
 Converter: map.json schema 5 (`ArenaConverterVersions::MapSchemaVersion`) adds the BSP zone tree, sky zone
 primitives, volume `brush` faces / planes / BSP, `subobjects`, `class_defaults`, and every asset inside the map
 package; schema 6 adds `collision_only` BSP primitives, schema 7 re-exports the maps' static meshes with their UE2
-collision model, schema 8 adds the sky surfaces as collision (see "World collision" above). Older caches are re-exported automatically. UE2 `Color` structs are stored B,G,R,A (cache format 2 fixed
+collision model, schema 8 adds the sky surfaces as collision (see "World collision" above), schema 10 reads the
+BSP of maps saved by pre-release UT2004 builds (package version < 126, e.g. the community maps DM-(ED)-CarPark,
+DM-Bartokk and DM-ShudderCreek at 121), whose `FBspNode` has 16 more bytes after `ExclusiveSphereBound`
+(`FConvPackage::BspNodeExtraBytes`, `Tools/ut2k4/bsp.py`); before, their level BSP, volume brushes and static mesh
+collision models failed to parse and the level had no world geometry. Older caches are re-exported automatically. UE2 `Color` structs are stored B,G,R,A (cache format 2 fixed
 swapped red / blue). Cooked levels (`Tools/ImportUT2004.py`) are unchanged and keep the static behaviour.
 
 Test hooks (non-shipping): `-UE2Report` logs each character's volume, gravity, zone and movement base every 3 s,
