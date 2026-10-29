@@ -11,6 +11,7 @@ class FUE2NetConnection;
 class UWorld;
 struct FUE2NetActor;
 struct FUE2NetValue;
+struct FUE2ObjectRef;
 struct FUSClass;
 struct FUSFunction;
 
@@ -274,6 +275,13 @@ private:
 	int32 ProjectilesClosed = 0;
 	double ProjectileDistance = 0.0;
 	int32 PickupsUnmatched = 0;
+	/** ONS: the server's link setup (ONSPlayerReplicationInfo.ServerSendPowerLinks, see ApplyPowerLinkCall). */
+	bool bPowerLinksRequested = false;
+	bool bPowerLinksClearPending = false;
+	int32 PowerLinksReceived = 0;
+	void RequestPowerLinks();
+	bool ApplyPowerLinkCall(const FUE2NetActor& A, const FString& Name, const TArray<TPair<FName, FUE2NetValue>>& Params);
+	class AArenaONS_PowerNode* PowerNodeOfRef(const FUE2ObjectRef& Ref);
 	int32 MessagesShown = 0;
 	int32 SoundsPlayed = 0;
 	int32 KillLines = 0;

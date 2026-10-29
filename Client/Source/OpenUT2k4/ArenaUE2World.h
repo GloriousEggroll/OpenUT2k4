@@ -160,6 +160,14 @@ namespace ArenaUE2World
 {
 	/** UE2 unit -> centimetres (the converter's scale). */
 	constexpr float Scale = 2.f;
+
+	/**
+	 * True in a world that shows a UT2004 server's game (?UE2Net=1, Net/UE2NetWorld.h). Its gameplay is the server's:
+	 * pickups, damage, deaths, events, triggers and teleporters are not run locally there (Docs/UE2Net.md "Offline
+	 * gameplay in server worlds"). The world is standalone, so HasAuthority() is true there and does not tell.
+	 */
+	OPENUT2K4_API bool IsUE2NetWorld(const UWorld* World);
+	OPENUT2K4_API bool IsUE2NetWorld(const UObject* WorldContext);
 	/** UE2 LevelInfo.DefaultGravity of stock maps: our world gravity stands for this value. */
 	constexpr float UE2DefaultGravity = -950.f;
 

@@ -1540,6 +1540,30 @@ and UTComp's) before.
   is `VehicleFire(bAlt)` / `VehicleCeaseFire(bAlt)`; the server aims turrets from `View`. Vehicles are not predicted
   (UE2 clients do not either): the vehicle is the server's. Leaving (Use again) gives us our xPawn back, with another
   `ServerAcknowledgePossession`.
+- **Who gets in (3369 script)**: `PlayerController.ServerUse` (no parameters) leaves the vehicle we drive
+  (`KDriverLeave`); on foot it walks `Pawn.VisibleCollidingActors(class'Vehicle', VehicleCheckRadius = 700)` and asks each
+  one `FindEntryVehicle(Pawn)` then `TryToDrive(Pawn)`. `Vehicle.FindEntryVehicle`: our pawn's centre within
+  `EntryRadius` of `Location + (EntryPosition >> Rotation)` (3D). `ONSVehicle.FindEntryVehicle`: an empty driver seat
+  first (that radius, or any `WeaponPawns[x]` radius picks the driver seat too); with a driver, the nearest free gunner
+  seat in range. `EntryRadius`: Scorpion 160, Manta 140, Hellbender 190 (`EntryPosition` (20,-60,10)), Raptor 210,
+  Goliath 375. So the pawn has to stand against the vehicle, at its side for a Scorpion. `TryToDrive` refuses a crouched
+  pawn, a vehicle with a driver, `bNonHumanControl`, a dead vehicle and `GameInfo.CanEnterVehicle` (mutators);
+  `bTeamLocked` vehicles (parked ones; `bEnterringUnlocks` unlocks them at the first entry) take only their team,
+  others get `VehicleLocked` (`ONSOnslaughtMessage` 4, "Vehicle is Locked!"). `ONSVehicle.TryToDrive` flips an
+  upside-down vehicle instead (`NeedsFlip`, `Flip`), and an unlocked enemy vehicle with a gunner cannot be stolen.
+  `KDriverEnter` then `Possess`es the vehicle, which reaches us as `ClientRestart` / `GivePawn` (above).
+  ColorfulVehiclesFixV6 changes none of this for its Scorpion / Hellbender / Manta / Raptor / Goliath.
+- **No phantom vehicles**: watching or playing on a server (`?UE2Net=1`), our ONS rules make no vehicle bays
+  (`UArenaRules_ONS::SpawnFactories`), as the Assault rules already did. Before, our own `AArenaONS_Vehicle`s stood at the
+  map's factories next to the server's vehicles, and stayed there when the server's were driven away: they looked like
+  vehicles to get in (Use found nothing on the server) and blocked our pawn where the server had nothing, so the server
+  kept correcting us (ONS-Lolkheim: about 30 UU while standing still, "wall probe: our blocker ArenaONS_Vehicle_...").
+  The server's vehicles (`AUE2NetVehicle`) have no collision on our side: walking into one, the server stops us and
+  corrects us by a few UU.
+- **Prompt**: stock UT2004 shows none near a vehicle. The only hints are the Onslaught tutorial line "The 'USE' key gets
+  in or out of vehicles." (`ActionMessage_ONS`, training only), the loading hints, "Vehicle is Locked!", and the
+  vehicle's name for 1.5 s after getting in (`HudCDeathmatch.DrawVehicleName`). Use is `E` (also `U` and `Enter`) in
+  `DefUser.ini`; ours is `E` and the gamepad's left face button.
 - **Ladders**: the server's `PHYS_Ladder` (11) in an adjustment puts our pawn in a ladder mode
   (`UArenaCharacterMovement::CustomLadder`). `PlayerClimbing` sends `Acceleration = aForward * ClimbDir`; our pawn
   climbs along it at `LadderSpeed` (200 UU/s) and steps off onto a walkable floor going down. Our level has no ladder
@@ -1627,6 +1651,7 @@ Round 2 (box collision, exact braking, per-surface floor offsets, MoveActor back
 | Movement test (jumps, double jumps, 10 dodges), DM-Rankin | | before 41 (6.0 / 67 UU), after back-off in the air 44 (**2.2 / 11.5 UU**) | | dodge landings now within 1 - 3 UU; most of the rest are jumps against a wall (1.5 UU) |
 | DM-1on1-Spirit lift, riding it up and down, 55 s | | **268 → 1** | 8.9 UU → one of 16 UU as the lift starts | comparing relative to the lift; the server drives our movers |
 | ONS-Torlan: Manta, Hellbender (driven about 3300 / 1400 UU, in and out), the manual gun turret | | | | `ServerDrive`, the vehicle camera; no corrections while driving (the vehicle is the server's) |
+| ONS-Torlan, 2 bots, walk to a Scorpion, Use, drive 13 s, Use to get out, walk on; stock and with ColorfulVehiclesFixV6 (`ColorfulScorpion`) | | walking up to the vehicle: before the phantom fix 24 (25 / 41.5 UU), our pawn against our own `ArenaONS_Vehicle` at the server's vehicle; after it 14 (3.5 / 4.2 UU) | | in on the 2nd Use (1.4 s apart, the first one from 400 UU), `GivePawn` of the vehicle, the chase camera, about 6000 UU driven, out on Use and walking again; the mod run the same |
 | DM-CBP2-KillbillyBarn ladder (a server given the client's map paths), climbed 1260 UU at 200 UU/s | | climbing: 0 - 0.3 UU after the first | | the terrain around it: 10 - 30 UU height corrections (world side) |
 | DM-Rankin with `TestAdrenaline=1` | | | | `ServerDoCombo`: Speed ("Speed!", GroundSpeed 440 → 616 → 440), Booster (health 150 → 199), Berserk |
 | Login name `Net Tester` | | | | the server renames it `Net_Tester`; our player state follows |
@@ -1702,6 +1727,30 @@ these changes.
 - UE2 merges a held-back walking move into the next one (`ReplicateMove`); we send each physics step as its own move.
 - No "not ready" call exists in 3369; tournament ready-up uses `ServerReStartPlayer` while the match waits.
 
+### Offline gameplay in server worlds
+
+A server's world (`?UE2Net=1`) is a standalone world: `HasAuthority()` is true in it, and the server's GRI phase
+makes `IsPlaying()` true too, so neither keeps our offline gameplay code from running there. That code checks
+`ArenaUE2World::IsUE2NetWorld(World)` (the `UE2Net` URL option) or the character's `bNetProxy` (our own
+`AUE2NetLocalPawn` and every remote `AUE2NetPawn`). What is left to the server, and why:
+
+| System | Online | Why |
+|---|---|---|
+| Pickups (`AArenaPickup`) | every map pickup is spawned (no local rule filter) but starts hidden and not available; `ApplyPickup` shows the one it matches to a server pickup (one server pickup per local one), its `bHidden` hides it, a closed channel hides it again. `GiveTo` refuses `bNetProxy` pawns: no local health, shield, damage amp, weapon, auto switch, sound, pickup message or respawn timer | UE2 clients have only the pickups the server replicates (`bAlwaysRelevant`, `bOnlyReplicateHidden`); the server gives the item. Before, a server with `MutInstaGib` (no pickups) showed all of ours, and walking over them gave us health and ammo the server never had |
+| Damage and deaths | `AUE2NetPawn` sets `bNetProxy`; `AArenaCharacter::Die` returns for `bNetProxy`; `AArenaGameMode::Killed` returns in a server world | volume pain and other code went around `AUE2NetPawn::TakeDamage` (`ArenaDamage::ApplyDamage` -> `ReceiveArenaDamage`): a bot in lava died locally (ragdoll, local score, kill line, rules) |
+| Pain, lava and heal volumes | `AArenaPhysicsVolume::CausePainTo` does nothing | UE2 `PhysicsVolume.CausePainTo` is server code (its `PainTimer` is the authority's) |
+| Events | `UArenaEventSubsystem::TriggerEvent` / `UntriggerEvent` do nothing (the net layer never calls them) | `TriggerEvent` runs in non-simulated code on the server; what events do (movers, objectives, volumes) arrives as actor state |
+| Triggers | event actors only test our own pawn; `AArenaTrigger::Touch` does nothing (no event, no `Message`) | `Trigger.Touch` is server code; its message comes as `ClientMessage` |
+| Scripted triggers | `AArenaScriptedTrigger::Run` does nothing | server code |
+| Teleporters | no local teleport, not even of our pawn | `Engine.Teleporter` is `bStatic` with `RemoteRole = ROLE_SimulatedProxy`: on a client its `Role` is `SimulatedProxy`, and its `Touch` (which queues the simulated `PostTouch`) is not simulated, so UE2 clients never predict a teleport. The server moves us (`ClientAdjustPosition`, `ClientSetRotation`). Several exits are picked with `rand` anyway |
+| Jump pads | only our own pawn is launched (prediction, as before); the server's pawns are skipped | the server launches its pawns; before, every remote pawn on a pad played the pad's sound |
+| Map UScript | `ArenaUScriptHooks::LevelBuilt` is not called (no `FUSGameWorld`, no map script actors with `Role` 4) | the server runs them; the script mirror (`UE2NetScriptHUD`) has its own simulated copies and does not use `FUSGameWorld` |
+| DOM | `EnsureReachable` (moving points to where bots reach them) does not run, so our points stay where the map has its `xDomPointA` / `xDomPointB`. A map's points are static actors and the server sends no `Location` for them; should one ever come, `ApplyDomPoint` moves our point onto the floor under it when they are more than 1.5 m apart | before, DOM-Access's points were drawn 37-38 m away from the server's (`DOM: point A ... is not reachable for bots, moved to ... (3809 away)`) |
+| ONS links | the client asks for the server's links as `ONSHUDOnslaught` does: `ServerSendPowerLinks` on our `ONSPlayerReplicationInfo`; the answer (`ClientReceivePowerLink(From, To)`, `ClientRemovePowerLink`, `ClientPrepareToReceivePowerLinks` for a new setup) replaces our node links and link beams (`UArenaRules_ONS::NetAddLink` ...). A node with `CoreStage` 255 (not in the server's setup, `PowerCoreDisabled`: `bHidden`) is hidden, without collision, and left off the HUD map | the link setup is not a replicated property: `ONSPowerCore.PowerLinks` is built per machine, and servers pick any setup (`?LinkSetup=`, custom setups); our map's "Default" setup was drawn before |
+| Invasion HUD | the wave number from `InvasionGameReplicationInfo.WaveNumber` + 1; no local wave count, countdown, monsters left, team lives or boss bar; the UT HUD radar shows the server's monsters (`AUE2NetPawn::bNetMonster`) | our wave state does not run there (it showed "0 / 16", "0 s"); the server's wave messages (`InvasionMessage`, `InvasionTimerMessage`) come as messages |
+| Nav graph | not built, unless the play script walks (`route=`, `goto=`) or `-UE2NetNavGraph` is given; every `GetNavGraph()` user takes null | it is for bots (ONS-Dria: 14 s, 213233 nodes) |
+| ONS vehicle bays | none (`SpawnFactories`) | see "Vehicles, ladders, lifts, death camera" |
+
 ## Testing, evidence, open problems
 
 Tested against local dedicated servers (`Scripts/ut2004-test-server.sh`, native Linux 3369.3, bound to
@@ -1740,6 +1789,7 @@ Tested against local dedicated servers (`Scripts/ut2004-test-server.sh`, native 
 | Step 3 follow-up, ONS-Adara, 10 bots | SPMA (ONSArtillery) 6 of 6 and Paladin (ONSShockTank) 8 of 8 wheels found from the class's wheel subobjects; screenshots show their wheels on the ground. Riders with the 2004 characters' own `Vehicle_Driving` |
 | Step 3 follow-up, AS-Convoy / AS-Glacier, 8 bots | all **8 of 8** (Convoy) and **13 of 13** (Glacier) server objectives matched; Convoy: the Lock Panel and the bonus Gate Terminal current, then the Bridge Controls after the panel was completed; Glacier: the two "Operate" objectives of one priority current at once, completed in turn; the bot-only HoldObjective0 inactive |
 | Step 3 game objects, FPS (MangoHud, same setup, heavier GPU sharing than the row above) | ONS-Torlan 24.0 average, BR-Colossus 19.7, AS-Convoy 17.4, CTF-Face3 22.8 (CTF has no vehicles: the drop from the earlier row is the shared GPU) |
+| Offline gameplay off in server worlds (see "Offline gameplay in server worlds"), local 3369.3 servers | DM-Deck17 + `MutInstaGib`: before, our 72 pickups all shown with the server sending none, and walking the pickup route gave "Health Vial" / "Carbine Ammo" and health 115 → 130 → 145; after, "72 of ours, 0 matched, 0 shown, 72 hidden", health 100. DM-Deck17 stock: 87 of 87 matched, hidden ones shown again on respawn (17 hidden at 30 s, 8 at 60 s), 1 server pickup not ours drawn from its mesh; 0 local events; walked into `Teleporter3`: no local teleport, the server's correction put us at `Teleporter4` (4650 UU); our jump pad launch still predicted. ONS-Dria with `?LinkSetup=Four_Nodes`: 6 links from `ClientReceivePowerLink` replace our 10 "Default" ones, 4 nodes `CoreStage` 255 hidden, HUD map shows the server's setup; a Scorpion (`ONSRV`) entered and left with Use; 73 of the server's 87 pickups matched. DOM-Access: our points no longer moved 37-38 m. Invasion: wave from `WaveNumber` ("Wave 4 in Grendelkeep" on the scoreboard), radar dots for the server's monsters. No local `Kill:` line in any server run; 0 bunch errors. Offline DM-Deck17 / ONS-Dria / DOM-Access with 6 bots unchanged: lava kills, bot jump pad launches, teleports, weapon pickups, nodes built, vehicles, DOM points moved for bots and claimed |
 
 Open problems:
 

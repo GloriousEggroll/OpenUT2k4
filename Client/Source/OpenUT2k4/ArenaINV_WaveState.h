@@ -33,6 +33,9 @@ public:
 	UPROPERTY(Replicated) FString BossName;
 	/** Next wave contains a boss (shown during the countdown). */
 	UPROPERTY(Replicated) bool bNextWaveBoss = false;
+	/** A UT2004 server's world: only Wave is known (InvasionGameReplicationInfo.WaveNumber, Net/UE2NetWorld.cpp); the
+	 *  local wave logic does not run, so the other fields mean nothing. */
+	bool bNetDriven = false;
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

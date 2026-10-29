@@ -75,6 +75,16 @@ public:
 	void NotifyCoreDestroyed(AArenaONS_PowerNode* Core, AController* By);
 	/** Recompute attackable / buildable flags of every node. */
 	void RefreshNetwork();
+	/**
+	 * A UT2004 server's link setup (Net/UE2NetWorld.cpp): it sends its links when the client asks
+	 * (ONSPlayerReplicationInfo.ServerSendPowerLinks -> ClientReceivePowerLink, ClientRemovePowerLink,
+	 * ClientPrepareToReceivePowerLinks), as the stock HUD does. They replace the links of ours (the map's "Default"
+	 * setup), which the server may not use. Node links and the link beams only: the server's node state says who can
+	 * attack or build what.
+	 */
+	void NetClearLinks();
+	void NetAddLink(AArenaONS_PowerNode* A, AArenaONS_PowerNode* B);
+	void NetRemoveLink(AArenaONS_PowerNode* A, AArenaONS_PowerNode* B);
 
 	// ---- queries ----
 	const TArray<TObjectPtr<AArenaONS_PowerNode>>& GetNodes() const { return Nodes; }

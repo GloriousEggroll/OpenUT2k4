@@ -495,7 +495,10 @@ FString AArenaPhysicsVolume::GetDamageName() const
 
 void AArenaPhysicsVolume::CausePainTo(AActor* Other)
 {
-	if (!Other || DamagePerSec == 0.f)
+	// UE2 PhysicsVolume.CausePainTo is server code (its PainTimer only on the authority): in a UT2004 server's world
+	// the server hurts and heals, and pawns that mirror the server's (bNetProxy) are never hurt or healed here
+	const AArenaCharacter* Char = Cast<AArenaCharacter>(Other);
+	if (!Other || DamagePerSec == 0.f || (Char && Char->bNetProxy) || ArenaUE2World::IsUE2NetWorld(GetWorld()))
 	{
 		return;
 	}

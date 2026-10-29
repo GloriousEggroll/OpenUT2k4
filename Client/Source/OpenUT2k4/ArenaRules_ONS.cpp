@@ -892,6 +892,13 @@ void UArenaRules_ONS::SpawnFactories()
 	{
 		return;
 	}
+	// watching / playing on a UT2004 server: its vehicles are its own (Net/UE2NetWorld.h shows them). Our bays would
+	// park vehicles of ours that the server does not have: they block our pawn where the server has nothing (position
+	// corrections) and look like vehicles to get in, while the server's Use finds none
+	if (World->URL.HasOption(TEXT("UE2Net")))
+	{
+		return;
+	}
 	// Imported maps without vehicle factories (e.g. CTF maps): open-sky nav points near each core get bays.
 	AArenaNavGraph* Nav = GetNavGraph();
 	if (FactoryDefs.Num() == 0 && Nav && Nodes.Num() >= 2)
@@ -1187,6 +1194,66 @@ void UArenaRules_ONS::RefreshNetwork()
 		if (Node)
 		{
 			Node->SetNetworkFlags(IsNodeAttackableBy(Node, 0), IsNodeAttackableBy(Node, 1), IsNodeBuildableBy(Node, 0), IsNodeBuildableBy(Node, 1));
+		}
+	}
+}
+
+void UArenaRules_ONS::NetClearLinks()
+{
+	for (AArenaONS_PowerNode* Node : Nodes)
+	{
+		if (Node)
+		{
+			Node->ClearLinks();
+		}
+	}
+	for (AArenaONS_PowerLink* L : LinkActors)
+	{
+		if (L)
+		{
+			L->Destroy();
+		}
+	}
+	LinkActors.Reset();
+}
+
+void UArenaRules_ONS::NetAddLink(AArenaONS_PowerNode* A, AArenaONS_PowerNode* B)
+{
+	UWorld* World = GetWorld();
+	if (!World || !A || !B || A == B || A->IsLinkedTo(B))
+	{
+		return;
+	}
+	A->AddLink(B);
+	B->AddLink(A);
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AArenaONS_PowerNode* From = A->GetNodeIndex() < B->GetNodeIndex() ? A : B;
+	if (AArenaONS_PowerLink* LinkActor = World->SpawnActor<AArenaONS_PowerLink>(AArenaONS_PowerLink::StaticClass(), From->GetActorTransform(), Params))
+	{
+		LinkActor->InitLink(From, From == A ? B : A);
+		LinkActors.Add(LinkActor);
+	}
+}
+
+void UArenaRules_ONS::NetRemoveLink(AArenaONS_PowerNode* A, AArenaONS_PowerNode* B)
+{
+	if (!A || !B)
+	{
+		return;
+	}
+	A->RemoveLink(B);
+	B->RemoveLink(A);
+	for (int32 i = LinkActors.Num() - 1; i >= 0; --i)
+	{
+		AArenaONS_PowerLink* L = LinkActors[i];
+		if (!L || (L->GetA() == A && L->GetB() == B) || (L->GetA() == B && L->GetB() == A))
+		{
+			if (L)
+			{
+				L->Destroy();
+			}
+			LinkActors.RemoveAt(i);
 		}
 	}
 }
@@ -2042,7 +2109,11 @@ bool UArenaRules_ONS::DrawScoreInfo(AArenaHUD* HUD, UCanvas* Canvas)
 		TArray<AArenaONS_PowerNode*> All;
 		for (TActorIterator<AArenaONS_PowerNode> It(World); It; ++It)
 		{
-			All.Add(*It);
+			// hidden: a node a UT2004 server's link setup leaves out (CoreStage 255; the stock HUD hides it too)
+			if (!It->IsHidden())
+			{
+				All.Add(*It);
+			}
 		}
 		All.Sort([](const AArenaONS_PowerNode& A, const AArenaONS_PowerNode& B) { return A.GetNodeIndex() < B.GetNodeIndex(); });
 		TArray<AArenaHUD::FUTPowerNode> HudNodes;
@@ -2195,6 +2266,10 @@ void UArenaRules_ONS::DrawHUD(AArenaHUD* HUD, UCanvas* Canvas)
 	AArenaONS_PowerNode* Cores[2] = { nullptr, nullptr };
 	for (TActorIterator<AArenaONS_PowerNode> It(World); It; ++It)
 	{
+		if (It->IsHidden())
+		{
+			continue; // left out of a UT2004 server's link setup
+		}
 		AllNodes.Add(*It);
 		if (It->IsCore() && (It->GetTeam() == 0 || It->GetTeam() == 1))
 		{

@@ -12,6 +12,7 @@
 #include "ArenaNavGraph.h"
 #include "ArenaPickup.h"
 #include "ArenaDOM_ControlPoint.h"
+#include "ArenaUE2World.h"
 #include "Engine/World.h"
 #include "Engine/Canvas.h"
 #include "EngineUtils.h"
@@ -366,7 +367,11 @@ void UArenaRules_DOM::GetNavHints(TArray<FVector>& OutPoints) const
 
 void UArenaRules_DOM::OnStartPlay()
 {
-	EnsureReachable();
+	// bots only: a UT2004 server's world has none, and its points are where the server has them (ApplyDomPoint)
+	if (!ArenaUE2World::IsUE2NetWorld(GetWorld()))
+	{
+		EnsureReachable();
+	}
 }
 
 void UArenaRules_DOM::EnsureReachable()

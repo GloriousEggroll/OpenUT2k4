@@ -72,6 +72,8 @@ public:
 
 	const TArray<TObjectPtr<AArenaONS_PowerNode>>& GetLinks() const { return Links; }
 	void AddLink(AArenaONS_PowerNode* Other);
+	void RemoveLink(AArenaONS_PowerNode* Other) { Links.Remove(Other); }
+	void ClearLinks() { Links.Reset(); }
 	bool IsLinkedTo(const AArenaONS_PowerNode* Other) const { return Links.Contains(Other); }
 
 	/** Server: start construction for a team (touch). */

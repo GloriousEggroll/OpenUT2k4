@@ -66,6 +66,8 @@ public:
 	/** bTearOff: the server killed this pawn. Momentum / hit location in UE2 units; bGib for gibbing damage. */
 	void NetDie(const FVector& MomentumUU, const FVector& HitLocationUU, bool bGib);
 	bool IsNetDead() const { return bNetDead; }
+	/** One of Invasion's monsters (its class is a SkaarjPack.Monster). */
+	bool bNetMonster = false;
 	/** Actor.OverlayMaterial / OverlayTimer: a material drawn over the body (shield hits, damage flashes, a mod's
 	 *  glow) for Seconds (0: until replaced or cleared); null clears it. */
 	void SetNetOverlay(UMaterialInterface* Material, float Seconds);

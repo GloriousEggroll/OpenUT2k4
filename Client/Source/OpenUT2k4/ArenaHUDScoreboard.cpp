@@ -6,6 +6,7 @@
 // 16:9 area in the middle so the rows are not stretched across ultra wide screens.
 
 #include "ArenaHUD.h"
+#include "ArenaINV_WaveState.h"
 #include "ArenaHUDWidgets.h"
 #include "ArenaCharacter.h"
 #include "ArenaGameRules.h"
@@ -337,7 +338,10 @@ void AArenaHUD::DrawUTScoreboardDM()
 	FString TitleExtra;
 	if (bInvasion)
 	{
-		TitleExtra = TEXT(" ") + UTString(TEXT("SkaarjPack"), TEXT("ScoreBoardInvasion"), TEXT("WaveString"), TEXT("Wave")) + TEXT(" ") + FString::FromInt(GS->Round);
+		// WaveNumber + 1: the local wave, or a UT2004 server's (InvasionGameReplicationInfo.WaveNumber)
+		const AArenaINV_WaveState* WaveState = AArenaINV_WaveState::Get(this);
+		TitleExtra = TEXT(" ") + UTString(TEXT("SkaarjPack"), TEXT("ScoreBoardInvasion"), TEXT("WaveString"), TEXT("Wave")) + TEXT(" ")
+			+ FString::FromInt(WaveState ? FMath::Max(1, WaveState->Wave) : GS->Round);
 	}
 	DrawUTScoreTitle(B, this, GS, Font, float(HeaderOffsetY), float((PlayerCount + 1) * Row), float(PlayerBoxSizeY), false, TitleExtra);
 

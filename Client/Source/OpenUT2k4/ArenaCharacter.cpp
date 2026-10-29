@@ -1754,7 +1754,9 @@ void AArenaCharacter::FellOutOfWorld(const UDamageType& DmgType)
 
 void AArenaCharacter::Die(AController* Killer, AActor* DamageCauser, const FString& WeaponName)
 {
-	if (bDead)
+	// a mirror of a UT2004 server's pawn dies when the server says so (AUE2NetPawn::NetDie), never here: no local
+	// scoring, kill line or rules (suicide, the void and kill volumes all end up here)
+	if (bDead || bNetProxy)
 	{
 		return;
 	}

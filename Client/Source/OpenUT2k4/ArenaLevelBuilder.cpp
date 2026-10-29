@@ -1250,6 +1250,10 @@ APlayerStart* AArenaLevelBuilder::AddPlayerStart(const FVector& Location, float 
 bool AArenaLevelBuilder::IsPickupAllowed(int32 PickupType, TSubclassOf<AArenaWeapon> WeaponClass) const
 {
 	const UWorld* World = GetWorld();
+	if (ArenaUE2World::IsUE2NetWorld(World))
+	{
+		return true; // a UT2004 server's world: every map pickup, hidden until the server shows it (AArenaPickup::BeginPlay)
+	}
 	const AArenaGameMode* GM = World ? World->GetAuthGameMode<AArenaGameMode>() : nullptr;
 	const UArenaGameRules* Rules = GM ? GM->GetRules() : nullptr;
 	if (!Rules)

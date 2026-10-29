@@ -16,6 +16,8 @@
 #include "ArenaHudFonts.h"
 #include "ArenaWeapons.h"
 #include "ArenaFX.h"
+#include "ArenaUE2World.h"
+#include "Net/UE2NetActors.h"
 #include "ArenaAssets.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/PlayerStart.h"
@@ -1103,10 +1105,31 @@ bool UArenaRules_INV::DrawScoreInfo(AArenaHUD* HUD, UCanvas* Canvas)
 				RadarDots.Add(It->GetActorLocation());
 			}
 		}
+		// a UT2004 server's monsters (Net/UE2NetWorld.cpp)
+		for (TActorIterator<AUE2NetPawn> It(HUD->GetWorld()); It; ++It)
+		{
+			if (It->bNetMonster && !It->IsNetDead())
+			{
+				RadarDots.Add(It->GetActorLocation());
+			}
+		}
 		HUD->DrawUTInvasionRadar(RadarDots);
 		return true;
 	}
 	const FArenaDraw& D = HUD->GetDraw();
+	if (WS->bNetDriven || ArenaUE2World::IsUE2NetWorld(HUD->GetWorld()))
+	{
+		// a UT2004 server's world: the server sends the wave number only (InvasionGameReplicationInfo.WaveNumber); its
+		// countdowns and wave messages come as its messages (InvasionMessage, InvasionTimerMessage)
+		const float PW = D.S(170.f);
+		const float PH = D.S(72.f);
+		const float X = D.W() - D.S(24.f) - PW;
+		const float Top = D.S(24.f);
+		D.Panel(X, Top, PW, PH, ArenaINVRules::WaveColor);
+		D.Text(TEXT("WAVE"), X + D.S(18.f), Top + D.S(10.f), ArenaHudStyle::TextDim(), D.S(14.f));
+		D.Text(WS->bNetDriven && WS->Wave > 0 ? FString::FromInt(WS->Wave) : FString(TEXT("--")), X + D.S(18.f), Top + D.S(26.f), ArenaHudStyle::TextWhite(), D.S(36.f));
+		return true;
+	}
 	const float PW = D.S(270.f);
 	const float PH = D.S(124.f);
 	const float Right = D.W() - D.S(24.f);
@@ -1154,7 +1177,8 @@ void UArenaRules_INV::DrawHUD(AArenaHUD* HUD, UCanvas* Canvas)
 {
 	const AArenaGameState* GS = GetGameState();
 	const AArenaINV_WaveState* WS = AArenaINV_WaveState::Get(HUD);
-	if (!HUD || !GS || !WS || GS->Phase == EArenaMatchPhase::Ended)
+	// a UT2004 server's world: no local wave countdown or boss (the server's messages say when a wave comes)
+	if (!HUD || !GS || !WS || GS->Phase == EArenaMatchPhase::Ended || WS->bNetDriven || ArenaUE2World::IsUE2NetWorld(HUD->GetWorld()))
 	{
 		return;
 	}

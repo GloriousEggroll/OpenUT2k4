@@ -133,10 +133,12 @@ void AArenaUE2EventActor::Tick(float DeltaSeconds)
 		return;
 	}
 	TSet<TWeakObjectPtr<APawn>> Now;
+	// a UT2004 server's world: only our own pawn touches anything here (the server's pawns are its business)
+	const bool bNetWorld = ArenaUE2World::IsUE2NetWorld(GetWorld());
 	for (TActorIterator<APawn> It(GetWorld()); It; ++It)
 	{
 		APawn* P = *It;
-		if (IsValid(P) && IsTouching(P))
+		if (IsValid(P) && (!bNetWorld || P->IsLocallyControlled()) && IsTouching(P))
 		{
 			Now.Add(P);
 			if (!Touching.Contains(P))
@@ -249,7 +251,9 @@ bool AArenaTrigger::IsRelevant(const APawn* Other) const
 
 void AArenaTrigger::Touch(APawn* Other)
 {
-	if (!IsRelevant(Other))
+	// a UT2004 server's world: Trigger.Touch is server code; its events and its Message (ClientMessage) come from the
+	// server
+	if (!IsRelevant(Other) || ArenaUE2World::IsUE2NetWorld(GetWorld()))
 	{
 		return;
 	}
@@ -511,7 +515,12 @@ TArray<AArenaTeleporter*> AArenaTeleporter::GetDestinations() const
 
 void AArenaTeleporter::Touch(APawn* Other)
 {
-	if (!bEnabled || !Other)
+	// a UT2004 server's world: no local teleport, not even of our own pawn. UE2 clients do not predict teleporters:
+	// Teleporter is bStatic with RemoteRole SimulatedProxy, so a client's copy has Role SimulatedProxy and its
+	// non-simulated Touch (which queues the simulated PostTouch) never runs there; the server moves the pawn and
+	// corrects ours (ClientSetRotation, ClientAdjustPosition). A teleporter with several exits picks one at random,
+	// which the client could not know anyway.
+	if (!bEnabled || !Other || ArenaUE2World::IsUE2NetWorld(GetWorld()))
 	{
 		return;
 	}
@@ -695,7 +704,9 @@ void AArenaScriptedTrigger::Tick(float DeltaSeconds)
 
 void AArenaScriptedTrigger::Run()
 {
-	if (bDone)
+	// a UT2004 server's world: ScriptedTrigger is server code (the movers, sounds and messages its actions cause
+	// reach us from the server)
+	if (bDone || ArenaUE2World::IsUE2NetWorld(GetWorld()))
 	{
 		return;
 	}

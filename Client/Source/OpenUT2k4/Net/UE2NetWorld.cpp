@@ -9,6 +9,7 @@
 #include "../ArenaDOM_ControlPoint.h"
 #include "../ArenaFlag.h"
 #include "../ArenaFX.h"
+#include "../ArenaGameMode.h"
 #include "../ArenaGameState.h"
 #include "../ArenaLocalMessages.h"
 #include "../ArenaMover.h"
@@ -16,6 +17,8 @@
 #include "../ArenaPickup.h"
 #include "../ArenaPlayerController.h"
 #include "../ArenaPlayerState.h"
+#include "../ArenaINV_WaveState.h"
+#include "../ArenaRules_ONS.h"
 #include "../ArenaRuntimeContent.h"
 #include "../ArenaTranslocator.h"
 #include "../ArenaTypes.h"
@@ -662,6 +665,23 @@ void FUE2NetWorld::ActorClosed(const FUE2NetActor& A)
 			Pawn->SetNetWeapon(FString());
 		}
 		break;
+	case EKind::Pickup:
+		if (AArenaPickup* Pickup = E.bOwned ? nullptr : Cast<AArenaPickup>(Native))
+		{
+			// pickups are bAlwaysRelevant: the channel closes when the server destroys its pickup (a mutator, a
+			// dropped weapon taken), and a UE2 client's copy goes with it. Ours is hidden unless another of the
+			// server's pickups shows it
+			bool bShownByOther = false;
+			for (const TPair<int32, FEntity>& P : Entities)
+			{
+				bShownByOther |= P.Value.Kind == EKind::Pickup && P.Value.Native.Get() == Pickup;
+			}
+			if (!bShownByOther)
+			{
+				Pickup->SetNetAvailable(false);
+			}
+		}
+		break;
 	case EKind::Vehicle:
 	case EKind::WeaponPawn:
 		if (AUE2NetPawn* Pawn = PawnForChannel(E.PawnChannel))
@@ -965,6 +985,21 @@ void FUE2NetWorld::ApplyGRI(FEntity& E, const FUE2NetActor& A, const TArray<FStr
 			GS->RemainingTime = RemainingTime = FMath::Max(0, RoundTimeLimit - (ElapsedTime - RoundStartTime));
 		}
 	}
+	if (Has(E, TEXT("invasiongamereplicationinfo")))
+	{
+		// InvasionGameReplicationInfo.WaveNumber (0 based; ScoreboardInvasion shows WaveNumber + 1): the Invasion
+		// HUD's wave instead of our local wave state, which does not run here
+		if (AArenaINV_WaveState* WS = AArenaINV_WaveState::Get(W))
+		{
+			const int32 Wave = GetInt(A, TEXT("WaveNumber")) + 1;
+			if (!WS->bNetDriven || WS->Wave != Wave)
+			{
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: Invasion wave %d (InvasionGameReplicationInfo.WaveNumber)"), Wave);
+			}
+			WS->bNetDriven = true;
+			WS->Wave = Wave;
+		}
+	}
 	const EArenaMatchPhase Phase = bGameEnded ? EArenaMatchPhase::Ended : (bMatchHasBegun ? EArenaMatchPhase::Playing : EArenaMatchPhase::Countdown);
 	if (GS->Phase != Phase)
 	{
@@ -1031,6 +1066,7 @@ void FUE2NetWorld::ApplyPawn(FEntity& E, const FUE2NetActor& A, const TArray<FSt
 		E.Native = Pawn;
 		E.bOwned = true;
 		bInitial = true;
+		Pawn->bNetMonster = Has(E, TEXT("monster")); // Invasion's monsters (SkaarjPack.Monster): the HUD radar's dots
 	}
 	auto Changes = [&](const TCHAR* Key) { return bInitial || Changed.Contains(Key); };
 	ON_SCOPE_EXIT
@@ -1437,13 +1473,23 @@ void FUE2NetWorld::ApplyPickup(FEntity& E, const FUE2NetActor& A, const TArray<F
 	AArenaPickup* Pickup = Cast<AArenaPickup>(E.Native.Get());
 	if (!Pickup && bInitial)
 	{
-		// the map's pickups and the items on pickup bases are spawned actors in UE2: match ours by location
+		// the map's pickups and the items on pickup bases are spawned actors in UE2: match ours by location (ours are
+		// hidden until then: AArenaPickup::BeginPlay). One of ours another server pickup already shows is not taken
+		// again (a weapon dropped next to a base)
 		const FVector Loc = GetVec(A, TEXT("Location"), ToVec(A.SpawnLocation)) * S;
 		float Best = FMath::Square(160.f);
+		TSet<const AActor*> Claimed;
+		for (const TPair<int32, FEntity>& P : Entities)
+		{
+			if (P.Value.Kind == EKind::Pickup && P.Key != A.Channel && P.Value.Native.IsValid())
+			{
+				Claimed.Add(P.Value.Native.Get());
+			}
+		}
 		for (TActorIterator<AArenaPickup> It(W); It; ++It)
 		{
 			const float D = FVector::DistSquared(It->GetActorLocation(), Loc);
-			if (D < Best)
+			if (D < Best && !Claimed.Contains(*It))
 			{
 				Best = D;
 				Pickup = *It;
@@ -1468,7 +1514,14 @@ void FUE2NetWorld::ApplyPickup(FEntity& E, const FUE2NetActor& A, const TArray<F
 		}
 		else
 		{
-			++PickupsUnmatched; // dropped weapons, mod pickups
+			++PickupsUnmatched; // dropped weapons, mod pickups: drawn from the server's own mesh (ApplyDecoration)
+			float Nearest = TNumericLimits<float>::Max();
+			for (TActorIterator<AArenaPickup> It(W); It; ++It)
+			{
+				Nearest = FMath::Min(Nearest, float(FVector::Dist(It->GetActorLocation(), Loc)));
+			}
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: pickup %s at %s not one of ours (nearest of ours %.0f cm away): drawn as the server's mesh"),
+				*E.ClassPath, *Loc.ToCompactString(), Nearest);
 		}
 	}
 	if (!Pickup)
@@ -1785,6 +1838,20 @@ void FUE2NetWorld::ApplyDomPoint(FEntity& E, const FUE2NetActor& A, const TArray
 		{
 			return;
 		}
+		// drawn where the server's point is: on the floor under it (ours may come from a fallback position)
+		const FVector Ours = Point->GetActorLocation();
+		if (!Loc.IsNearlyZero() && FVector::Dist2D(Ours, Loc) > 150.f)
+		{
+			FHitResult Hit;
+			FCollisionQueryParams Q(SCENE_QUERY_STAT(UE2NetDomFloor), false, Point);
+			const FVector Floor = W->LineTraceSingleByChannel(Hit, Loc + FVector(0.f, 0.f, 20.f), Loc - FVector(0.f, 0.f, 600.f), ECC_WorldStatic, Q) ? Hit.ImpactPoint : Loc;
+			Point->SetActorLocation(Floor);
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: DOM point %s moved to the server's spot %s (was %.0f cm away)"), *Point->Label, *Floor.ToCompactString(), FVector::Dist(Ours, Floor));
+		}
+		// a map's xDomPoint is a static actor: its Location is not sent, and ours stands where the map has it
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: DOM point %s is the server's %s (%s): ours at %s%s"), *Point->Label, *E.ClassName, *MapActorName(A),
+			*Point->GetActorLocation().ToCompactString(), Loc.IsNearlyZero() ? TEXT(" (the map's spot; no location from the server)")
+			: *FString::Printf(TEXT(", the server's at %s (%.0f cm apart, horizontally)"), *Loc.ToCompactString(), FVector::Dist2D(Point->GetActorLocation(), Loc)));
 	}
 	// DominationPoint: ControllingTeam (a TeamInfo), bControllable (false while locked after a score)
 	if (!GetBool(A, TEXT("bControllable"), true))
@@ -2424,6 +2491,14 @@ void FUE2NetWorld::ApplyPowerNode(FEntity& E, const FUE2NetActor& A, const TArra
 	// owner (2 / 255 none); Health of DamageCapacity (construction counts it up); bPoweredByRed / Blue: linked to that
 	// team's network (it can attack or build it); bUnderAttack
 	const int32 Stage = GetInt(A, TEXT("CoreStage"), 4);
+	// CoreStage 255: not part of the server's link setup (ONSPowerCore.PowerCoreDisabled: bHidden), nor of its HUD map
+	const bool bDisabled = Stage == 255;
+	if (Node->IsHidden() != bDisabled)
+	{
+		Node->SetActorHiddenInGame(bDisabled);
+		Node->SetActorEnableCollision(!bDisabled);
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: power node %s %s by the server's link setup"), *Node->UE2SourceName, bDisabled ? TEXT("disabled") : TEXT("enabled"));
+	}
 	const int32 Defender = GetInt(A, TEXT("DefenderTeamIndex"), 255);
 	const int32 Team = Defender == 0 || Defender == 1 ? Defender : ArenaTeam::None;
 	const float Health = float(GetInt(A, TEXT("Health")));
@@ -2825,8 +2900,119 @@ bool FUE2NetWorld::ShowScriptedMessage(const FString& ClassPath, FUSClass* Class
 // Function calls on our PlayerController
 // =================================================================================================
 
+AArenaONS_PowerNode* FUE2NetWorld::PowerNodeOfRef(const FUE2ObjectRef& Ref)
+{
+	if (Ref.IsDynamic())
+	{
+		const FEntity* E = FindEntity(Ref.Channel);
+		return E ? Cast<AArenaONS_PowerNode>(E->Native.Get()) : nullptr;
+	}
+	if (!Ref.IsStatic())
+	{
+		return nullptr;
+	}
+	// cores and nodes are bNoDelete map actors: the reference is the map's export ("ONSPowerNodeNeutral12")
+	FString Name = Connection->GetPackageMap().GetObjectPath(Ref);
+	int32 Dot = INDEX_NONE;
+	if (Name.FindLastChar(TEXT('.'), Dot))
+	{
+		Name.RightChopInline(Dot + 1);
+	}
+	for (TActorIterator<AArenaONS_PowerNode> It(World.Get()); It && !Name.IsEmpty(); ++It)
+	{
+		if (It->UE2SourceName.Equals(Name, ESearchCase::IgnoreCase))
+		{
+			return *It;
+		}
+	}
+	return nullptr;
+}
+
+void FUE2NetWorld::RequestPowerLinks()
+{
+	// ONSHUDOnslaught.Tick / ResetLinks: OwnerPRI.ServerSendPowerLinks() once the HUD has our ONSPlayerReplicationInfo
+	const FEntity* PRI = FindEntity(OwnPRIChannel);
+	UWorld* W = World.Get();
+	const AArenaGameMode* GM = W ? W->GetAuthGameMode<AArenaGameMode>() : nullptr;
+	if (bPowerLinksRequested || !PRI || !Has(*PRI, TEXT("onsplayerreplicationinfo")) || !GM || !Cast<UArenaRules_ONS>(GM->GetRules()))
+	{
+		return;
+	}
+	if (Connection->SendFunction(OwnPRIChannel, TEXT("ServerSendPowerLinks"), {}))
+	{
+		bPowerLinksRequested = true;
+		bPowerLinksClearPending = true;
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: ONS link setup requested (ServerSendPowerLinks)"));
+	}
+}
+
+bool FUE2NetWorld::ApplyPowerLinkCall(const FUE2NetActor& A, const FString& Name, const TArray<TPair<FName, FUE2NetValue>>& Params)
+{
+	const bool bAdd = Name == TEXT("ClientReceivePowerLink");
+	const bool bRemove = Name == TEXT("ClientRemovePowerLink");
+	const bool bReset = Name == TEXT("ClientPrepareToReceivePowerLinks");
+	if ((!bAdd && !bRemove && !bReset) || A.Channel != OwnPRIChannel)
+	{
+		return false;
+	}
+	UWorld* W = World.Get();
+	const AArenaGameMode* GM = W ? W->GetAuthGameMode<AArenaGameMode>() : nullptr;
+	UArenaRules_ONS* Rules = GM ? Cast<UArenaRules_ONS>(GM->GetRules()) : nullptr;
+	if (!Rules)
+	{
+		return true;
+	}
+	if (bReset)
+	{
+		// a new link setup (the server's admin or link designer): ResetLinks clears and asks again
+		Rules->NetClearLinks();
+		bPowerLinksRequested = false;
+		bPowerLinksClearPending = false;
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: ONS link setup reset by the server"));
+		RequestPowerLinks();
+		return true;
+	}
+	const FUE2NetValue* From = nullptr;
+	const FUE2NetValue* To = nullptr;
+	for (const TPair<FName, FUE2NetValue>& P : Params)
+	{
+		if (P.Key == TEXT("From"))
+		{
+			From = &P.Value;
+		}
+		else if (P.Key == TEXT("To"))
+		{
+			To = &P.Value;
+		}
+	}
+	AArenaONS_PowerNode* NA = From ? PowerNodeOfRef(From->Obj) : nullptr;
+	AArenaONS_PowerNode* NB = To ? PowerNodeOfRef(To->Obj) : nullptr;
+	if (bAdd && bPowerLinksClearPending)
+	{
+		// the first link of the answer: the server's setup replaces the one of ours
+		Rules->NetClearLinks();
+		bPowerLinksClearPending = false;
+	}
+	if (bAdd)
+	{
+		Rules->NetAddLink(NA, NB);
+		++PowerLinksReceived;
+	}
+	else
+	{
+		Rules->NetRemoveLink(NA, NB);
+	}
+	UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld: ONS link %s %s - %s%s"), bAdd ? TEXT("from the server:") : TEXT("removed by the server:"),
+		NA ? *NA->UE2SourceName : TEXT("?"), NB ? *NB->UE2SourceName : TEXT("?"), NA && NB ? TEXT("") : TEXT(" (node not found)"));
+	return true;
+}
+
 void FUE2NetWorld::FunctionCall(const FUE2NetActor& A, FUSFunction* Function, const TArray<TPair<FName, FUE2NetValue>>& Params)
 {
+	if (Function && ApplyPowerLinkCall(A, Function->Name.ToString(), Params))
+	{
+		return; // calls to our ONSPlayerReplicationInfo
+	}
 	if (!Function || A.Channel != Connection->FindPlayerControllerChannel())
 	{
 		return;
@@ -3294,6 +3480,7 @@ void FUE2NetWorld::Tick(float DeltaSeconds)
 	{
 		return;
 	}
+	RequestPowerLinks();
 	for (auto It = PrePivoted.CreateIterator(); It; ++It)
 	{
 		USceneComponent* C = It.Value().Comp.Get();
@@ -3572,6 +3759,25 @@ void FUE2NetWorld::LogSummary()
 		FPlatformTime::Seconds() - StartTime, *Kinds, AUE2NetProjectile::NumEnded, AUE2NetProjectile::NumEnded ? AUE2NetProjectile::SumDistance / AUE2NetProjectile::NumEnded : 0.0,
 		AUE2NetPawn::NumCorrections, AUE2NetPawn::NumCorrections ? AUE2NetPawn::SumCorrection / AUE2NetPawn::NumCorrections : 0.0, AUE2NetPawn::MaxCorrection, PickupsMatched, PickupsUnmatched, MessagesShown, KillLines, SoundsPlayed,
 		Unknown.Num() ? *FString::Join(Unknown, TEXT(", ")) : TEXT("none"), Msgs.Num() ? *FString::Join(Msgs, TEXT(", ")) : TEXT("none"));
+	{
+		// our map pickups: shown only while one of the server's shows them (AArenaPickup::BeginPlay, ApplyPickup)
+		int32 Local = 0, Shown = 0, Held = 0;
+		TSet<const AActor*> Claimed;
+		for (const TPair<int32, FEntity>& P : Entities)
+		{
+			if (P.Value.Kind == EKind::Pickup && P.Value.Native.IsValid())
+			{
+				Claimed.Add(P.Value.Native.Get());
+			}
+		}
+		for (TActorIterator<AArenaPickup> It(World.Get()); It; ++It)
+		{
+			++Local;
+			Shown += It->IsAvailable() ? 1 : 0;
+			Held += Claimed.Contains(*It) ? 1 : 0;
+		}
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld summary (map pickups): %d of ours, %d matched to a server pickup now, %d shown, %d hidden"), Local, Held, Shown, Local - Shown);
+	}
 	UE_LOG(LogUE2Net, Log, TEXT("UE2NetWorld summary (game objects): power nodes matched %d (updates %d), objectives matched %d (updates %d), ball updates %d; vehicle aim updates %d (aim check: %d, barrel off the aim point by %.1f deg on average, max %.0f), weapon flashes %d, seats shown %d, wrecks %d; script messages %d"),
 		NodesMatched, NodeUpdates, ObjectivesMatched, ObjectiveUpdates, BallUpdates, AUE2NetVehicle::NumAimUpdates, AUE2NetVehicle::NumAimChecks,
 		AUE2NetVehicle::NumAimChecks ? AUE2NetVehicle::SumAimError / AUE2NetVehicle::NumAimChecks : 0.0, AUE2NetVehicle::MaxAimError, AUE2NetVehicle::NumFlashes, AUE2NetVehicle::NumSeatsShown,

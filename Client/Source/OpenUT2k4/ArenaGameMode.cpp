@@ -17,6 +17,7 @@
 #include "ArenaLevelBuilder.h"
 #include "ArenaContent.h"
 #include "ArenaRuntimeMap.h"
+#include "ArenaUE2World.h"
 #include "ArenaNavGraph.h"
 #include "ArenaFlag.h"
 #include "ArenaGameRules.h"
@@ -282,7 +283,12 @@ void AArenaGameMode::InitGame(const FString& MapName, const FString& Options, FS
 			Rules->OnLevelBuilt(LevelBuilder);
 		}
 	}
-	ArenaUScriptHooks::LevelBuilt(this);
+	// the map's script actors (map UScript, UScript/UScriptBridge.h) run as the authority: not in a UT2004 server's
+	// world, where the server runs them and our script mirror (Net/UE2NetScriptHUD.h) shows its simulated copies
+	if (!ArenaUE2World::IsUE2NetWorld(GetWorld()))
+	{
+		ArenaUScriptHooks::LevelBuilt(this);
+	}
 }
 
 void AArenaGameMode::InitGameState()
@@ -339,7 +345,17 @@ void AArenaGameMode::StartPlay()
 
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	NavGraph = GetWorld()->SpawnActor<AArenaNavGraph>(AArenaNavGraph::StaticClass(), FTransform::Identity, Params);
+	// the nav graph is for bots and the rules' bot helpers. A UT2004 server's world has neither (seconds on large
+	// maps): only test runs whose play script walks routes (Net/UE2NetPlay.h route= / goto=) or -UE2NetNavGraph build it
+	bool bWantNavGraph = true;
+	if (ArenaUE2World::IsUE2NetWorld(GetWorld()))
+	{
+		FString PlayScript;
+		FParse::Value(FCommandLine::Get(), TEXT("UE2NetPlayScript="), PlayScript, false);
+		bWantNavGraph = FParse::Param(FCommandLine::Get(), TEXT("UE2NetNavGraph")) || PlayScript.Contains(TEXT("route=")) || PlayScript.Contains(TEXT("goto="));
+		UE_LOG(LogOpenUT2k4, Log, TEXT("Arena: UT2004 server world, nav graph %s"), bWantNavGraph ? TEXT("built for the play script") : TEXT("not built"));
+	}
+	NavGraph = bWantNavGraph ? GetWorld()->SpawnActor<AArenaNavGraph>(AArenaNavGraph::StaticClass(), FTransform::Identity, Params) : nullptr;
 	if (NavGraph && LevelBuilder)
 	{
 		TArray<FVector> NavHints;
@@ -689,6 +705,12 @@ bool AArenaGameMode::PlayerUse(AController* Controller)
 
 void AArenaGameMode::Killed(AController* Killer, AController* Victim, AArenaCharacter* VictimPawn, const FString& WeaponName, bool bHeadshot)
 {
+	if (ArenaUE2World::IsUE2NetWorld(GetWorld()))
+	{
+		// a UT2004 server's world: kills, scores, kill lines and respawns are the server's (Net/UE2NetWorld.h)
+		UE_LOG(LogOpenUT2k4, Warning, TEXT("Kill: local kill of %s ignored (UT2004 server world)"), VictimPawn ? *VictimPawn->GetName() : TEXT("?"));
+		return;
+	}
 	AArenaPlayerState* VictimPS = Victim ? Victim->GetPlayerState<AArenaPlayerState>() : (VictimPawn ? VictimPawn->GetPlayerState<AArenaPlayerState>() : nullptr);
 	AArenaPlayerState* KillerPS = Killer ? Killer->GetPlayerState<AArenaPlayerState>() : nullptr;
 	const bool bSuicide = !Killer || Killer == Victim;

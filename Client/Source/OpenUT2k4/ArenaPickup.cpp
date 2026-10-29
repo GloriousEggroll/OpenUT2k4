@@ -1,4 +1,5 @@
 #include "ArenaPickup.h"
+#include "ArenaUE2World.h"
 #include "OpenUT2k4.h"
 #include "ArenaAssets.h"
 #include "ArenaArtItems.h"
@@ -92,7 +93,17 @@ void AArenaPickup::BeginPlay()
 	ModelRoot->SetRelativeRotation(FRotator(0.f, FMath::FRandRange(0.f, 360.f), 0.f));
 	BuildModel();
 	Trigger->OnComponentBeginOverlap.AddDynamic(this, &AArenaPickup::OnOverlap);
-	SetAvailable(true);
+	if (ArenaUE2World::IsUE2NetWorld(GetWorld()))
+	{
+		// a UT2004 server's world: hidden until the server's pickup actor is matched to this one and shows it
+		// (Net/UE2NetWorld.cpp ApplyPickup), as a UE2 client has only the pickups the server replicates. One the server
+		// does not have (a mutator removed it, other game rules) stays hidden.
+		SetNetAvailable(false);
+	}
+	else
+	{
+		SetAvailable(true);
+	}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -371,7 +382,9 @@ void AArenaPickup::CheckOverlappingCharacters()
 
 bool AArenaPickup::GiveTo(AArenaCharacter* Character)
 {
-	if (!Character || !Character->IsAlive() || !bAvailable)
+	// bNetProxy: a UT2004 server's pawn (ours included): the server gives the item, its inventory and the pickup
+	// message reach us from it
+	if (!Character || Character->bNetProxy || !Character->IsAlive() || !bAvailable)
 	{
 		return false;
 	}

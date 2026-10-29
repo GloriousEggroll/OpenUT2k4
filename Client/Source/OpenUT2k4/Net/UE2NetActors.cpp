@@ -377,6 +377,9 @@ AUE2NetPawn::AUE2NetPawn()
 	PrimaryActorTick.bCanEverTick = true;
 	bUseControllerRotationYaw = false;
 	SetReplicates(false);
+	// the server's pawn: no local damage, deaths, pickups or volume pain (ArenaDamage, ArenaPickup, ArenaWorldZones
+	// go around TakeDamage); its death comes from the server (NetDie)
+	bNetProxy = true;
 }
 
 void AUE2NetPawn::BeginPlay()

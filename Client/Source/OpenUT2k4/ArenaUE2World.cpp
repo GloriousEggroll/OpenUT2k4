@@ -472,7 +472,9 @@ TArray<AActor*> UArenaEventSubsystem::GetTaggedActors(FName Tag) const
 
 void UArenaEventSubsystem::TriggerEvent(FName Event, AActor* Other, APawn* EventInstigator)
 {
-	if (Event.IsNone() || Depth > 32)
+	// a UT2004 server's world: its events are the server's (UE2 TriggerEvent runs in non-simulated code); what they
+	// do (movers, objectives, volumes) reaches us as the server's actor state
+	if (Event.IsNone() || Depth > 32 || ArenaUE2World::IsUE2NetWorld(GetWorld()))
 	{
 		return;
 	}
@@ -495,7 +497,7 @@ void UArenaEventSubsystem::TriggerEvent(FName Event, AActor* Other, APawn* Event
 
 void UArenaEventSubsystem::UntriggerEvent(FName Event, AActor* Other, APawn* EventInstigator)
 {
-	if (Event.IsNone() || Depth > 32)
+	if (Event.IsNone() || Depth > 32 || ArenaUE2World::IsUE2NetWorld(GetWorld()))
 	{
 		return;
 	}
@@ -518,6 +520,16 @@ void UArenaEventSubsystem::UntriggerEvent(FName Event, AActor* Other, APawn* Eve
 // ---------------------------------------------------------------------------------------------
 // ArenaUE2World
 // ---------------------------------------------------------------------------------------------
+
+bool ArenaUE2World::IsUE2NetWorld(const UWorld* World)
+{
+	return World && World->URL.HasOption(TEXT("UE2Net"));
+}
+
+bool ArenaUE2World::IsUE2NetWorld(const UObject* WorldContext)
+{
+	return WorldContext && IsUE2NetWorld(WorldContext->GetWorld());
+}
 
 void ArenaUE2World::RegisterClass(const FString& UE2Class, UClass* NativeClass)
 {

@@ -252,7 +252,8 @@ void AArenaJumpPad::Tick(float DeltaSeconds)
 	for (TActorIterator<AArenaCharacter> It(World); It; ++It)
 	{
 		AArenaCharacter* Character = *It;
-		if (!Character->IsAlive())
+		// a UT2004 server's pawns (bNetProxy) are launched by the server; only our own one is predicted here
+		if (!Character->IsAlive() || (Character->bNetProxy && !Character->IsLocallyControlled()))
 		{
 			Touchers.Remove(Character);
 			continue;
