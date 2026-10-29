@@ -674,4 +674,6 @@ namespace USNatives
 	void RegisterCanvas();
 	/** The natives of UE2's menu classes (UScriptGUI.cpp, UScriptGUI.h). */
 	void RegisterGUI();
+	/** xUtil's character records and DecoText (UScriptNativesXGame.cpp). */
+	void RegisterXGame();
 }

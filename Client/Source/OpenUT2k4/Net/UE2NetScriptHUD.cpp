@@ -21,6 +21,8 @@
 #include "Engine/Canvas.h"
 #include "Engine/Font.h"
 #include "Engine/Texture2D.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Engine/World.h"
 #include "GameFramework/HUD.h"
 #include "Kismet/GameplayStatics.h"
@@ -833,6 +835,8 @@ struct FUE2NetScriptHUD::FImpl
 	FUSObject* CanvasObj = nullptr;
 	FUSObject* PlayerObj = nullptr;
 	FUSObject* InteractionMaster = nullptr;
+	/** Player.Console: the viewport's console (UT2004.ini [Engine.Engine] Console), a global interaction. */
+	FUSObject* ConsoleObj = nullptr;
 	FUSObject* GRI = nullptr;
 	int32 PCChannel = 0;
 	bool bPCInitialised = false;
@@ -1852,13 +1856,169 @@ struct FUE2NetScriptHUD::FImpl
 		USVM::ProcessState(A, DeltaSeconds);
 	}
 
-	/** Skins of mirrored mod pawns their client code set, by object (paths last applied). */
+	/** Skins of mirrored mod pawns their client code set, by object (the skin keys last applied). */
 	TMap<FUSObject*, TArray<FString>> PawnSkins;
+	/** Tinted instances made for run-time skins, by skin key (kept for the session: a key's look never changes). */
+	TMap<FString, TStrongObjectPtr<UMaterialInterface>> TintedSkins;
 
 	/**
-	 * A mod pawn's client code setting its Skins to a mod's own materials (a bright skin, a mod's team skins): shown on our
-	 * pawn. Materials made at run time by script (Freon's frozen Combiners) and UT2004's own skins (the character's, which
-	 * ours already show) are left out.
+	 * A pawn skin as we show it: a content material ("Pkg.Group.Name") times a colour. UE2 materials that a mod's code
+	 * makes at run time (new class'Combiner' ...) are followed to the content material under them:
+	 *  - Combiner CO_Add of a material and itself (UTComp's bright skins): the material twice as bright
+	 *  - Combiner CO_Add / CO_Multiply of a material and a ConstantColor (UTComp's coloured skins): plus / times the colour
+	 *  - Combiner CO_Add of a material and another texture (Freon's frozen body: the ice): the material (the ice is our
+	 *    pawn's frozen overlay)
+	 *  - ColorModifier: its material times its Color; Shader / FinalBlend / Modifier: their Diffuse / Material
+	 *  - ConstantColor alone: a plain material of that colour
+	 */
+	struct FPawnSkin
+	{
+		FString Path;
+		FLinearColor Tint = FLinearColor::White;
+		FLinearColor Add = FLinearColor::Black;
+
+		bool IsPlain() const { return Tint.Equals(FLinearColor::White, 1e-3f) && Add.Equals(FLinearColor::Black, 1e-3f); }
+		FString Key() const
+		{
+			return IsPlain() ? Path : FString::Printf(TEXT("%s|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f"), *Path, Tint.R, Tint.G, Tint.B, Add.R, Add.G, Add.B);
+		}
+	};
+
+	static FUSObject* ObjectProp(const FUSObject* O, const TCHAR* Name)
+	{
+		FUSProperty* P = O && O->Data ? O->FindProperty(Name) : nullptr;
+		return P && P->Type == EUSType::Object ? *reinterpret_cast<FUSObject* const*>(O->Data + P->Offset) : nullptr;
+	}
+
+	static FLinearColor ColorProp(const FUSObject* O, const TCHAR* Name)
+	{
+		FUSProperty* P = O && O->Data ? O->FindProperty(Name) : nullptr;
+		if (!P || P->Type != EUSType::Struct || P->ElementSize < 4)
+		{
+			return FLinearColor::White;
+		}
+		// UE2 Color: B, G, R, A bytes
+		const uint8* C = O->Data + P->Offset;
+		return FLinearColor(C[2] / 255.f, C[1] / 255.f, C[0] / 255.f, 1.f);
+	}
+
+	/** True for a material object the mod's code made (new class'Combiner' ...), as opposed to a package's. */
+	static bool IsRunTimeMaterial(const FUSObject* O)
+	{
+		return O && O->World && !(O->Flags & USF_Placeholder) && O->Data;
+	}
+
+	static bool ResolvePawnSkin(const FUSObject* M, FPawnSkin& Out, int32 Depth = 0)
+	{
+		if (!M || Depth > 8)
+		{
+			return false;
+		}
+		if (!IsRunTimeMaterial(M))
+		{
+			Out.Path = M->GetPathName();
+			return true;
+		}
+		const FUSClass* C = M->Class;
+		if (ChainHas(C, TEXT("Combiner")))
+		{
+			const FUSObject* M1 = ObjectProp(M, TEXT("Material1"));
+			const FUSObject* M2 = ObjectProp(M, TEXT("Material2"));
+			FUSProperty* OpProp = M->FindProperty(TEXT("CombineOperation"));
+			const uint8 Op = OpProp ? M->Data[OpProp->Offset] : 0;
+			enum { CO_Use_Color_From_Material1, CO_Use_Color_From_Material2, CO_Multiply, CO_Add };
+			if (Op == CO_Use_Color_From_Material2)
+			{
+				Swap(M1, M2);
+			}
+			if (!M1 || (ChainHas(M1->Class, TEXT("ConstantColor")) && M2 && !ChainHas(M2->Class, TEXT("ConstantColor"))))
+			{
+				Swap(M1, M2);
+			}
+			if (!ResolvePawnSkin(M1, Out, Depth + 1))
+			{
+				return false;
+			}
+			if (M2 && M2 != M1 && IsRunTimeMaterial(M2) && ChainHas(M2->Class, TEXT("ConstantColor")) && (Op == CO_Add || Op == CO_Multiply))
+			{
+				const FLinearColor K = ColorProp(M2, TEXT("Color"));
+				if (Op == CO_Add)
+				{
+					Out.Add += K * Out.Tint;
+				}
+				else
+				{
+					Out.Tint *= K;
+					Out.Add *= K;
+				}
+			}
+			else if (Op == CO_Add && M2)
+			{
+				FPawnSkin Other;
+				if (M2 == M1 || (ResolvePawnSkin(M2, Other, Depth + 1) && Other.Path.Equals(Out.Path, ESearchCase::IgnoreCase)))
+				{
+					// the material added to itself
+					Out.Tint *= 2.f;
+					Out.Add *= 2.f;
+				}
+			}
+			return true;
+		}
+		if (ChainHas(C, TEXT("ConstantColor")))
+		{
+			Out.Path.Reset();
+			Out.Tint = ColorProp(M, TEXT("Color"));
+			return true;
+		}
+		if (ChainHas(C, TEXT("ColorModifier")))
+		{
+			if (!ResolvePawnSkin(ObjectProp(M, TEXT("Material")), Out, Depth + 1))
+			{
+				return false;
+			}
+			const FLinearColor K = ColorProp(M, TEXT("Color"));
+			Out.Tint *= K;
+			Out.Add *= K;
+			return true;
+		}
+		if (ChainHas(C, TEXT("Shader")))
+		{
+			return ResolvePawnSkin(ObjectProp(M, TEXT("Diffuse")), Out, Depth + 1);
+		}
+		return ResolvePawnSkin(ObjectProp(M, TEXT("Material")), Out, Depth + 1);
+	}
+
+	/** Our material for a pawn skin; null (the pawn keeps its own skin) when the content does not have it. */
+	UMaterialInterface* PawnSkinMaterial(const FPawnSkin& Skin)
+	{
+		if (Skin.IsPlain())
+		{
+			return Skin.Path.IsEmpty() ? nullptr : UE2NetModWeapons::LoadSkins({ Skin.Path })[0];
+		}
+		const FString Key = Skin.Key();
+		if (TStrongObjectPtr<UMaterialInterface>* Hit = TintedSkins.Find(Key))
+		{
+			return Hit->Get();
+		}
+		UMaterialInterface* Base = Skin.Path.IsEmpty() ? ArenaRuntimeContent::LoadMaterialByObjectPath(FString()) : UE2NetModWeapons::LoadSkins({ Skin.Path })[0];
+		UMaterialInstanceDynamic* MID = Base ? ArenaRuntimeContent::CreateMaterialInstance(Base, GetTransientPackage()) : nullptr;
+		if (MID)
+		{
+			// UE2 adds the colour (Combiner CO_Add): shown as the material brightened towards it, plus a little glow
+			FLinearColor Was = FLinearColor::White;
+			MID->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Tint")), Was);
+			const FLinearColor Tint = Skin.Tint + Skin.Add * 2.f;
+			MID->SetVectorParameterValue(TEXT("Tint"), FLinearColor(Was.R * Tint.R, Was.G * Tint.G, Was.B * Tint.B, 1.f));
+			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: pawn skin %s"), *Key);
+		}
+		TintedSkins.Add(Key, TStrongObjectPtr<UMaterialInterface>(MID));
+		return MID;
+	}
+
+	/**
+	 * A mod pawn's client code setting its Skins (a bright skin, a mod's team skins, Freon's frozen body, the character the
+	 * mod picks): shown on our pawn. The materials its code makes at run time are shown as the content material under
+	 * them (ResolvePawnSkin); a skin the content does not have leaves our pawn's own.
 	 */
 	void SyncPawnSkins()
 	{
@@ -1870,29 +2030,43 @@ struct FUE2NetScriptHUD::FImpl
 			{
 				continue;
 			}
-			TArray<FString> Paths;
+			TArray<FPawnSkin> Skins;
 			if (FUSProperty* P = O->FindProperty(TEXT("Skins")); P && P->Type == EUSType::Array && P->Inner && P->Inner->Type == EUSType::Object)
 			{
 				const FUSScriptArray& Arr = *reinterpret_cast<const FUSScriptArray*>(O->Data + P->Offset);
 				for (int32 i = 0; i < Arr.Num && Arr.Data; ++i)
 				{
 					const FUSObject* M = *reinterpret_cast<FUSObject* const*>(Arr.Data + i * P->Inner->ElementSize);
-					const FString Path = M ? M->GetPathName() : FString();
+					FPawnSkin S;
 					FString Pkg;
-					Paths.Add(Path.Split(TEXT("."), &Pkg, nullptr) && !IsStockPackage(Pkg) && !UE2NetModWeapons::IsStockClass(Path) ? Path : FString());
+					if (!ResolvePawnSkin(M, S) || (!S.Path.IsEmpty() && (!S.Path.Split(TEXT("."), &Pkg, nullptr) || IsStockPackage(Pkg) || UE2NetModWeapons::IsStockClass(S.Path))))
+					{
+						S = FPawnSkin();
+					}
+					Skins.Add(S);
 				}
 			}
+			TArray<FString> Keys;
+			for (const FPawnSkin& S : Skins)
+			{
+				Keys.Add(S.Path.IsEmpty() && S.IsPlain() ? FString() : S.Key());
+			}
 			TArray<FString>& Last = PawnSkins.FindOrAdd(O);
-			if (Paths == Last)
+			if (Keys == Last)
 			{
 				continue;
 			}
-			Last = Paths;
+			Last = Keys;
 			const int32* Ch = ChannelOf.Find(O);
 			AUE2NetPawn* Pawn = Ch ? Cast<AUE2NetPawn>(NW->GetNativeActor(*Ch)) : nullptr;
 			if (Pawn)
 			{
-				Pawn->SetScriptSkins(UE2NetModWeapons::LoadSkins(Paths));
+				TArray<UMaterialInterface*> Materials;
+				for (int32 i = 0; i < Skins.Num(); ++i)
+				{
+					Materials.Add(Keys[i].IsEmpty() ? nullptr : PawnSkinMaterial(Skins[i]));
+				}
+				Pawn->SetScriptSkins(Materials);
 			}
 		}
 		for (auto It = PawnSkins.CreateIterator(); It; ++It)
@@ -2800,6 +2974,7 @@ struct FUE2NetScriptHUD::FImpl
 		SetObj(CanvasObj, TEXT("Viewport"), PlayerObj);
 		// Player.GUIController before the controller's own code runs (mods open their menus through it)
 		EnsureGui();
+		EnsureConsole();
 		if (!bPCInitialised)
 		{
 			bPCInitialised = true;
@@ -2918,17 +3093,64 @@ struct FUE2NetScriptHUD::FImpl
 		}
 	}
 
-	/** InteractionMaster.Process_PostRender / Process_Tick over the viewport's interactions. */
-	void ProcessInteractions(const TCHAR* Event, FUSObject* CanvasArg, float DeltaSeconds)
+	/**
+	 * Player.Console, as UE2's engine makes it for the viewport: the class UT2004.ini names ([Engine.Engine] Console,
+	 * XInterface.ExtendedConsole), added to the InteractionMaster's global interactions, with its ViewportOwner and
+	 * InteractionMaster.Console set. Mods' menus use it: UT2Vote's map vote sends its vote and runs its commands through
+	 * PlayerOwner().Player.Console.DelayedConsoleCommand (Console.Tick runs them through the controller's ConsoleCommand)
+	 * and closes the typing line with TypingClose / ConsoleClose. Only ticked (keys, messages and drawing stay ours).
+	 */
+	void EnsureConsole()
 	{
-		FUSProperty* Local = PlayerObj ? PlayerObj->FindProperty(TEXT("LocalInteractions")) : nullptr;
+		if (ConsoleObj || !PlayerObj || !InteractionMaster)
+		{
+			return;
+		}
+		FUSRuntime& RT = FUSRuntime::Get();
+		FUSClass* Base = RT.FindClass(TEXT("Engine.Console"));
+		FUSFunction* Add = USVM::FindFunction(InteractionMaster, TEXT("AddInteraction"));
+		if (!Base || !Add)
+		{
+			return;
+		}
+		TArray<FString> Values;
+		FString ClassName = RT.GetConfigValue(TEXT("Engine.Engine"), TEXT("Console"), Values) && Values.Num() ? Values[0] : FString();
+		FUSClass* C = ClassName.IsEmpty() ? nullptr : RT.FindClass(ClassName);
+		if (!C || !C->IsChildOf(Base))
+		{
+			C = RT.FindClass(TEXT("XInterface.ExtendedConsole"));
+			C = C && C->IsChildOf(Base) ? C : Base;
+		}
+		FUSParms Parms(Add);
+		Parms.Str(C->GetPathName()).Object(nullptr);
+		Parms.Call(InteractionMaster);
+		ConsoleObj = Parms.ReturnObject();
+		if (!ConsoleObj)
+		{
+			UE_LOG(LogUE2Net, Warning, TEXT("UE2NetScriptHUD: no console (%s)"), *C->GetPathName());
+			return;
+		}
+		SetObj(ConsoleObj, TEXT("ViewportOwner"), PlayerObj);
+		SetObj(PlayerObj, TEXT("Console"), ConsoleObj);
+		SetObj(InteractionMaster, TEXT("Console"), ConsoleObj);
+		UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD: console %s"), *C->GetPathName());
+	}
+
+	/**
+	 * InteractionMaster.Process_PostRender / Process_Tick over the viewport's interactions; with bGlobal over the
+	 * InteractionMaster's global ones (the console) instead.
+	 */
+	void ProcessInteractions(const TCHAR* Event, FUSObject* CanvasArg, float DeltaSeconds, bool bGlobal = false)
+	{
+		FUSObject* Owner = bGlobal ? InteractionMaster : PlayerObj;
+		FUSProperty* Local = Owner ? Owner->FindProperty(bGlobal ? TEXT("GlobalInteractions") : TEXT("LocalInteractions")) : nullptr;
 		FUSFunction* F = InteractionMaster ? USVM::FindFunction(InteractionMaster, FName(Event)) : nullptr;
-		if (!Local || !F || reinterpret_cast<FUSScriptArray*>(PlayerObj->Data + Local->Offset)->Num == 0 || F->Parms.Num() < 2)
+		if (!Local || Local->Type != EUSType::Array || !F || reinterpret_cast<FUSScriptArray*>(Owner->Data + Local->Offset)->Num == 0 || F->Parms.Num() < 2)
 		{
 			return;
 		}
 		FUSParms Parms(F);
-		Local->CopyComplete(Parms.ParmAddr(0), PlayerObj->Data + Local->Offset);
+		Local->CopyComplete(Parms.ParmAddr(0), Owner->Data + Local->Offset);
 		if (CanvasArg)
 		{
 			*reinterpret_cast<FUSObject**>(Parms.ParmAddr(1)) = CanvasArg;
@@ -3128,6 +3350,8 @@ struct FUE2NetScriptHUD::FImpl
 			NextSummary = FPlatformTime::Seconds() + 30.0;
 			UE_LOG(LogUE2Net, Log, TEXT("UE2NetScriptHUD summary: %s"), *Describe());
 		}
+		// as UE2's InteractionMaster: the global interactions (the console: its delayed commands) tick first
+		ProcessInteractions(TEXT("Process_Tick"), nullptr, DeltaSeconds, true);
 		ProcessInteractions(TEXT("Process_Tick"), nullptr, DeltaSeconds);
 		SyncClientVisuals();
 		ForgetDestroyed();

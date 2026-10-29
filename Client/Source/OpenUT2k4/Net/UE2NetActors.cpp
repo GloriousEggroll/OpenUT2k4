@@ -939,12 +939,22 @@ void AUE2NetPawn::SetNetOverlay(UMaterialInterface* Material, float Seconds)
 
 void AUE2NetPawn::SetScriptSkins(const TArray<UMaterialInterface*>& Skins)
 {
+	// a slot the script no longer sets goes back to the character's own skin
+	bool bCleared = false;
+	for (int32 i = 0; i < ScriptSkins.Num(); ++i)
+	{
+		bCleared |= ScriptSkins[i] && (!Skins.IsValidIndex(i) || !Skins[i]);
+	}
 	ScriptSkins.Reset();
 	for (UMaterialInterface* M : Skins)
 	{
 		ScriptSkins.Add(M);
 	}
 	bScriptSkinsApplied = false;
+	if (bCleared && bModelApplied)
+	{
+		ApplyCharacterSkin();
+	}
 }
 
 void AUE2NetPawn::SetNetFrozen(bool bFrozen, UMaterialInterface* Ice)

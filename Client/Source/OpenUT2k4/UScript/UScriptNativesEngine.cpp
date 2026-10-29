@@ -473,6 +473,20 @@ namespace USEngineNatives
 		UE_LOG(LogUScript, Log, TEXT("%s: ConsoleCommand \"%s\" (ignored)"), *Stack.Describe(), *Cmd);
 		US_RESULT(FString) = FString();
 	}
+	/** Interaction.ConsoleCommand (bool: handled): an interaction's command (a mod's console or menu interaction). */
+	US_NATIVE(InteractionConsoleCommand)
+	{
+		USP_GET_STR(Cmd);
+		USP_FINISH;
+		FString Out;
+		if (FUSRuntime::Get().ConsoleCommandHook && FUSRuntime::Get().ConsoleCommandHook(Self, Cmd, Out))
+		{
+			US_RESULT(uint32) = 1u;
+			return;
+		}
+		UE_LOG(LogUScript, Log, TEXT("%s: ConsoleCommand \"%s\" (ignored)"), *Stack.Describe(), *Cmd);
+		US_RESULT(uint32) = 0u;
+	}
 	US_NATIVE(ParseKillMessage)
 	{
 		USP_GET_STR(KillerName);
@@ -767,7 +781,7 @@ void USNatives::RegisterEngine()
 		{ TEXT("Controller"), TEXT("WaitForLanding"), &LatentMoveDone },
 		{ TEXT("Actor"), TEXT("GetURLMap"), &GetURLMap }, { TEXT("LevelInfo"), TEXT("GetLocalURL"), &GetLocalURL },
 		{ TEXT("LevelInfo"), TEXT("GetAddressURL"), &GetAddressURL }, { TEXT("Actor"), TEXT("ConsoleCommand"), &ConsoleCommand },
-		{ TEXT("PlayerController"), TEXT("ConsoleCommand"), &ConsoleCommand },
+		{ TEXT("PlayerController"), TEXT("ConsoleCommand"), &ConsoleCommand }, { TEXT("Interaction"), TEXT("ConsoleCommand"), &InteractionConsoleCommand },
 		{ TEXT("GameInfo"), TEXT("ParseKillMessage"), &ParseKillMessage }, { TEXT("GameInfo"), TEXT("GetNetworkNumber"), &GetNetworkNumber },
 		{ TEXT("LevelInfo"), TEXT("GetPhysicsVolume"), &GetPhysicsVolume },
 		{ TEXT("Actor"), TEXT("Add_ColorColor"), &Add_ColorColor }, { TEXT("Actor"), TEXT("Subtract_ColorColor"), &Subtract_ColorColor },

@@ -119,7 +119,9 @@ cd OpenUT2k4/Client && Scripts/build-linux.sh      # see "Build" below
    - **Join Game** lists UT2004 servers from the 333networks and OpenSpy master servers, plus LAN servers.
    - You can also join with **Open IP** or a `ut2004://host:port` link.
    - Missing server packages download automatically. They go into a separate net cache.
-   - No CD key is needed: the client logs in the way the OldUnreal 3374 patch does.
+   - No CD key is needed. An install without one, such as the OldUnreal download, gets a random key generated into
+     `System/cdkey` and `Registry_Fix.reg`, as the OldUnreal 3374 patch does. To play under your own key, put it in
+     `System/cdkey` of the install (format `XXXXX-XXXXX-XXXXX-XXXXX`).
    - Stats tracking is off by default, as in UT2004.
    - Leaving tells the server at once, as UT2004 does: the menu, joining another server, quitting, closing the window
      and even a crash. A client killed outright is dropped after the server's usual 20 s timeout.

@@ -230,9 +230,8 @@ public:
 	UPROPERTY(config) FString StatsUsername;
 	UPROPERTY(config) FString StatsPassword;
 	/**
-	 * Online identity for players without a CD key (Net/UE2NetCDKey): 32 random hex digits made once, on the first
-	 * join, and kept. It is not a CD key; the AUTH login sends only its MD5, like the OldUnreal client does with the
-	 * unique key it creates when none is installed. Never logged.
+	 * A CD key generated for an install that has none and cannot be written (Net/UE2NetCDKey). Normally the generated
+	 * key goes into the install itself. Never logged.
 	 */
-	UPROPERTY(config) FString NetIdentity;
+	UPROPERTY(config) FString GeneratedCDKey;
 };

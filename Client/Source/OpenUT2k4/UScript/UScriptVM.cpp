@@ -2107,6 +2107,7 @@ void USVM::Init()
 	}
 	USNatives::RegisterCore();
 	USNatives::RegisterEngine();
+	USNatives::RegisterXGame();
 }
 
 void USSkipNativeParms(FUSFrame& Stack)

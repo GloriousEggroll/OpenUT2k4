@@ -67,6 +67,22 @@ namespace
 		return R && !R->IsPendingKill() ? R : nullptr;
 	}
 	FString GetS(const FUSObject* O, const TCHAR* N) { const FString* V = Ptr<FString>(O, N, EUSType::Str); return V ? *V : FString(); }
+	/** Text as shown, without UE2 colour codes (ESC R G B; the canvas draws them as colours): for the log and test hooks. */
+	FString WithoutColourCodes(const FString& S)
+	{
+		FString Out;
+		Out.Reserve(S.Len());
+		for (int32 i = 0; i < S.Len(); ++i)
+		{
+			if (S[i] == 27)
+			{
+				i += 3;
+				continue;
+			}
+			Out.AppendChar(S[i]);
+		}
+		return Out;
+	}
 	FUSColor GetC(const FUSObject* O, const TCHAR* N)
 	{
 		FUSProperty* P = Prop(O, N, EUSType::Struct);
@@ -2928,7 +2944,7 @@ struct FUSGUI::FImpl
 			return;
 		}
 		const FScriptCall Bound = FindDelegate(C, TEXT("OnClick"), false);
-		UE_LOG(LogUScript, Log, TEXT("UScriptGUI: click on %s (%s) -> %s"), *C->GetName(), *GetS(C, TEXT("Caption")),
+		UE_LOG(LogUScript, Log, TEXT("UScriptGUI: click on %s (%s) -> %s"), *C->GetName(), *WithoutColourCodes(GetS(C, TEXT("Caption"))),
 			Bound.Function ? *FString::Printf(TEXT("%s.%s"), *Bound.Target->GetName(), *Bound.Function->GetName()) : TEXT("its default"));
 		// UE2 GUIComponent: a click plays the component's OnClickSound through the controller
 		G.PlayInterfaceSound(GetB(C, TEXT("OnClickSound")));
@@ -3383,10 +3399,10 @@ namespace
 {
 	FString DescribeComponent(FUSObject* C)
 	{
-		FString Text = GetS(C, TEXT("Caption"));
+		FString Text = WithoutColourCodes(GetS(C, TEXT("Caption")));
 		if (Text.IsEmpty())
 		{
-			Text = GetS(C, TEXT("TextStr"));
+			Text = WithoutColourCodes(GetS(C, TEXT("TextStr")));
 		}
 		FString Value;
 		if (Is(C, K().CheckBox))
@@ -3457,7 +3473,7 @@ namespace
 				return Hit;
 			}
 		}
-		if (C->GetName().Equals(Name, ESearchCase::IgnoreCase) || GetS(C, TEXT("Caption")).Equals(Name, ESearchCase::IgnoreCase))
+		if (C->GetName().Equals(Name, ESearchCase::IgnoreCase) || WithoutColourCodes(GetS(C, TEXT("Caption"))).Equals(Name, ESearchCase::IgnoreCase))
 		{
 			return C;
 		}

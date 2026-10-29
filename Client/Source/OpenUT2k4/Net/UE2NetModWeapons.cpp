@@ -502,7 +502,19 @@ TArray<UMaterialInterface*> UE2NetModWeapons::LoadSkins(const TArray<FString>& S
 		{
 			UE2NetModContent::EnsureConverted(S, FString());
 		}
-		Out.Add(S.IsEmpty() ? nullptr : ArenaRuntimeContent::LoadMaterialByObjectPath(S));
+		// (a material the content does not have would be a plain white one: none, the mesh keeps its own)
+		const bool bKnown = !S.IsEmpty() && (!ArenaRuntimeContent::FindCacheFileByObjectPath(TEXT("materials"), S, TEXT(".json")).IsEmpty()
+			|| !ArenaRuntimeContent::FindCacheFileByObjectPath(TEXT("textures"), S, TEXT(".json")).IsEmpty());
+		if (!S.IsEmpty() && !bKnown)
+		{
+			static TSet<FString> Logged;
+			if (!Logged.Contains(S))
+			{
+				Logged.Add(S);
+				UE_LOG(LogUE2Net, Log, TEXT("UE2NetModWeapons: skin %s is not in the content (left as it is)"), *S);
+			}
+		}
+		Out.Add(bKnown ? ArenaRuntimeContent::LoadMaterialByObjectPath(S) : nullptr);
 	}
 	return Out;
 }

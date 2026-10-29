@@ -261,20 +261,25 @@ LOGIN RESPONSE=<int> URL=<options>
 - **With a CD key** (`System/cdkey`, a `Registry_Fix.reg` next to the install or one folder up, or the Windows
   registry): HASH = MD5 of the key (dashed, upper case). The key is read only when joining, hashed and wiped. Before
   this change our client sent the server-side salted hash as HASH and the key's MD5 as GM.
-- **Without a CD key**: OpenUT2k4 does not make CD keys. Instead `UArenaUserSettings::NetIdentity` is 32 random hex
-  digits, made on the first join and saved with the settings. It plays the part of the 3374 client's generated key:
-  HASH = its MD5, so a server sees a unique, stable 32-hex id exactly like the one from a no-key OldUnreal install.
-  Before this change no AUTH was sent without a key, and `bBanByID` servers answer an empty id with `LOCALBAN`.
+- **Without a CD key** (an install from the OldUnreal image has none): like the 3374 client, which makes a unique key
+  when none is installed, OpenUT2k4 generates a random key in the UT2004 layout (four groups of five upper-case letters
+  and digits). It is written into the install as `System/cdkey` and as `Registry_Fix.reg` (CDKey, Folder, Version, for
+  importing into a Wine prefix with regedit; written for both registry views, since the 32-bit UT2004.exe reads
+  WOW6432Node in a 64-bit prefix): right after the OldUnreal install, or on the first join for an install
+  that has none. HASH = its MD5 from then on, so a server sees one stable id. Only when the install cannot be written is
+  the generated key kept in the settings (`UArenaUserSettings::GeneratedCDKey`). Before this change, keyless clients
+  sent the MD5 of a random 32-hex `NetIdentity` instead, which no key and no GUID tool could reproduce.
 - GM: built as above with an all-zero hidden MD5 (`UE2NetCDKey::MakeGM`).
 - Stats: `bTrackStats`, `StatsUsername`, `StatsPassword` on `UArenaUserSettings` (off and blank by default, as in
-  UT2004). Sent only to `STATS=1` servers, with the password encrypted as above, using the key or NetIdentity, and
+  UT2004). Sent only to `STATS=1` servers, with the password encrypted as above, using the key, and
   only when the account follows the UT2004 rules (username at least 4 characters, password at least 6). They are set
   in Settings > Game > Stats (UT2K4Tab_GameSettings: Track Stats, UserName, masked Password). On `NEEDSTATS` the
   server browser shows UT2K4StatsPrompt; YES opens that tab, and closing it joins again when the account is valid.
-- ClientValidate is answered from the key, or from NetIdentity when there is none.
+- ClientValidate is answered from the key.
 
-The key, NetIdentity, the hashes and the stats password are never logged: the trace masks the whole AUTH line.
-Test switches (not in Shipping): `-UE2NoCDKey` ignores an installed key to test the no-key login, and `-UE2TestStats`
+The key, the hashes and the stats password are never logged: the trace masks the whole AUTH line.
+Test switches (not in Shipping): `-UE2NoCDKey` ignores an installed key (and the registry) and writes nothing into the
+install, to test the no-key login: its generated key is kept in the settings (`GeneratedCDKey`). `-UE2TestStats`
 makes up a throw-away stats account for one run (never saved, password never logged).
 
 ### Tests
@@ -292,9 +297,9 @@ logging proxy that decoded the AUTH line in memory (hash values masked in all sa
 | ours, key | STATS=0 | HASH = MD5 of the key | welcomed |
 | ours, key, Track Stats off | STATS=1 | blank account | `NEEDSTATS` |
 | ours, key, Track Stats on | STATS=1 | account, password encrypted with the key | welcomed |
-| ours, `-UE2NoCDKey`, Track Stats on | STATS=1 | HASH = MD5 of NetIdentity, password encrypted with it | welcomed |
+| ours, `-UE2NoCDKey`, Track Stats on (before generated keys) | STATS=1 | HASH = MD5 of NetIdentity, password encrypted with it | welcomed |
 | ours, `-UE2NoCDKey`, Track Stats on | STATS=0 | blank account | welcomed |
-| ours, `-UE2NoCDKey` | STATS=0 | HASH = MD5 of NetIdentity | welcomed |
+| ours, `-UE2NoCDKey` (before generated keys) | STATS=0 | HASH = MD5 of NetIdentity | welcomed |
 
 In every case our AUTH had the same layout and order as the 3374 client's, and GM decoded to the same all-zero MD5.
 
@@ -1072,6 +1077,15 @@ focus, every widget's `InitComponent`, value and key handling, the mod's pages a
   `OnSortChanged` flips it to ascending) or flips the order, and hovering a column shows its `ColumnHeadingHints`.
 - **`RelativeLeft / Top / Width / Height`** keep a value that is already relative ((-2, 2)): FloatingWindow's
   `SetDefaultPosition` passes its `DefaultWidth=0.8` through them (xVoting's map voting window was a pixel wide).
+- **The console** (`Player.Console`): the viewport has one as in UE2, the class UT2004.ini names (`[Engine.Engine]
+  Console`, `XInterface.ExtendedConsole`), added through `InteractionMaster.AddInteraction` as a global interaction
+  with its `ViewportOwner`, and ticked before the local interactions; its keys, messages and drawing stay ours.
+  UT2Vote's map vote page (`UT2VoteMenuMap`, opened by the server's `ClientOpenMenu` at the end of a match) closes the
+  typing line through it (`TypingClose`, `ConsoleClose`) and sends its vote and close commands with
+  `Console.DelayedConsoleCommand`, which `Console.Tick` runs through the controller's `ConsoleCommand` ("mutate
+  <code>UT2VOTE=<map>"). Without it, its `HandleParameters`, `OnClickSubmit` and `OnClose` stopped on "Accessed
+  None" and no vote reached the server. `Interaction.ConsoleCommand` (a mod interaction's command) works like the
+  controller's. Captions in the log and the test hooks are shown without their colour codes.
 - **`SetOwner`** calls the old owner's `LostChild` and the new one's `GainedChild` (UE2's `AActor::SetOwner`):
   `PlayerController.GainedChild` links its `VoteReplicationInfo`.
 - Test hook `-UE2ScriptVoting` (development builds): xVoting's `VotingReplicationInfo` runs its client code in the
@@ -2061,8 +2075,8 @@ names from `IpDrv.u`):
 - TCP to the master (28902), every message framed as `[int32 length][payload]` in UE2 archive encoding. The master
   speaks first: a challenge string.
 - The server answers: CD key hash, `MD5(key + challenge)`, `"UT2K4SERVER"`, int version (3369), byte platform (8 on
-  Linux), language `"int"`, int match id (-1), byte bIgnoreUTANBans. The key is the player's CD key or, without one, the
-  same per-install `NetIdentity` the client uses (`UE2NetCDKey`).
+  Linux), language `"int"`, int match id (-1), byte bIgnoreUTANBans. The key is the install's CD key, generated into it
+  when it has none, as for the client (`UE2NetCDKey`).
 - `"APPROVED"`: the server sends int behind-NAT (0) and int GameSpy link (0). `DENIED` / `UPGRADE` end the uplink for
   the match; anything else retries after 30 s with the next master of the list.
 - The master asks for UDP heartbeats (`byte 0, byte type, int code`); each is answered from the matching socket

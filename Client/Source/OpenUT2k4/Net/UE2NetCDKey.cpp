@@ -2,10 +2,12 @@
 
 #include "../ArenaContent.h"
 #include "../ArenaUserSettings.h"
+#include "UE2NetLog.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
+#include <random>
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"
 #endif
@@ -97,52 +99,69 @@ namespace UE2NetCDKeyLocal
 		return bOk;
 	}
 
-	/** The player's CD key: System/cdkey, a Registry_Fix.reg next to the install, or the Windows registry. */
-	bool ReadKey(FString& OutKey)
+	/** The key kept in an install: System/cdkey, or a Registry_Fix.reg in the install or one directory up. */
+	bool ReadInstallKey(const FString& Install, FString& OutKey)
 	{
 		OutKey.Empty();
-#if !UE_BUILD_SHIPPING
-		// -UE2NoCDKey: test the no-key login (as with an OldUnreal install, which has no key) on a keyed install
-		if (FParse::Param(FCommandLine::Get(), TEXT("UE2NoCDKey")))
+		if (Install.IsEmpty())
 		{
 			return false;
 		}
-#endif
-		const FString Install = ArenaContent::FindUT2004Install();
-		if (!Install.IsEmpty())
+		// case-insensitive "System/cdkey"
+		FString Found;
+		IFileManager::Get().IterateDirectory(*FPaths::Combine(Install, TEXT("System")), [&Found](const TCHAR* Path, bool bIsDir)
 		{
-			// case-insensitive "System/cdkey"
-			FString Found;
-			IFileManager::Get().IterateDirectory(*FPaths::Combine(Install, TEXT("System")), [&Found](const TCHAR* Path, bool bIsDir)
+			if (!bIsDir && FPaths::GetCleanFilename(Path).Equals(TEXT("cdkey"), ESearchCase::IgnoreCase))
 			{
-				if (!bIsDir && FPaths::GetCleanFilename(Path).Equals(TEXT("cdkey"), ESearchCase::IgnoreCase))
-				{
-					Found = Path;
-					return false;
-				}
-				return true;
-			});
-			FString Raw;
-			if (!Found.IsEmpty() && FFileHelper::LoadFileToString(Raw, *Found, FFileHelper::EHashOptions::None, FILEREAD_Silent))
-			{
-				OutKey = Normalize(Raw);
-				Wipe(Raw);
+				Found = Path;
+				return false;
 			}
-			// Registry export kept next to the install (the user's Linux layout): <install>/Registry_Fix.reg, or one directory up
-			if (OutKey.IsEmpty())
+			return true;
+		});
+		FString Raw;
+		if (!Found.IsEmpty() && FFileHelper::LoadFileToString(Raw, *Found, FFileHelper::EHashOptions::None, FILEREAD_Silent))
+		{
+			OutKey = Normalize(Raw);
+			Wipe(Raw);
+		}
+		// Registry export kept next to the install (the user's Linux layout): <install>/Registry_Fix.reg, or one directory up
+		if (OutKey.IsEmpty())
+		{
+			for (const FString& Dir : { Install, FPaths::GetPath(Install) })
 			{
-				for (const FString& Dir : { Install, FPaths::GetPath(Install) })
+				const FString Reg = FPaths::Combine(Dir, TEXT("Registry_Fix.reg"));
+				if (IFileManager::Get().FileExists(*Reg) && ReadKeyFromReg(Reg, OutKey))
 				{
-					const FString Reg = FPaths::Combine(Dir, TEXT("Registry_Fix.reg"));
-					if (IFileManager::Get().FileExists(*Reg) && ReadKeyFromReg(Reg, OutKey))
-					{
-						break;
-					}
+					break;
 				}
 			}
 		}
+		return !OutKey.IsEmpty();
+	}
+
+	/**
+	 * -UE2NoCDKey (not in Shipping): the installed key and the Windows registry are ignored and nothing is written into
+	 * the install, to test a keyless login on a keyed install; the key generated for it is kept in the settings.
+	 */
+	bool IgnoreInstalledKey()
+	{
+#if !UE_BUILD_SHIPPING
+		return FParse::Param(FCommandLine::Get(), TEXT("UE2NoCDKey"));
+#else
+		return false;
+#endif
+	}
+
+	/** The player's CD key: the install's (ReadInstallKey), the Windows registry, or one generated earlier. */
+	bool ReadKey(FString& OutKey)
+	{
+		OutKey.Empty();
+		if (!IgnoreInstalledKey() && ReadInstallKey(ArenaContent::FindUT2004Install(), OutKey))
+		{
+			return true;
+		}
 #if PLATFORM_WINDOWS
-		if (OutKey.IsEmpty())
+		if (!IgnoreInstalledKey())
 		{
 			FString Raw;
 			if (FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\Unreal Technology\\Installed Apps\\UT2004"), TEXT("CDKey"), Raw)
@@ -153,16 +172,82 @@ namespace UE2NetCDKeyLocal
 			}
 		}
 #endif
+		if (OutKey.IsEmpty() && !UArenaUserSettings::Get()->GeneratedCDKey.IsEmpty())
+		{
+			OutKey = Normalize(UArenaUserSettings::Get()->GeneratedCDKey);
+		}
 		return !OutKey.IsEmpty();
 	}
-}
 
-namespace UE2NetCDKeyLocal
-{
 	/**
-	 * The secret behind the AUTH HASH: the player's CD key when the install has one, otherwise the per-install
-	 * NetIdentity (made on first use and saved). The OldUnreal 3374 client in the same situation creates a unique key
-	 * of its own and keeps it in System/cdkey; NetIdentity plays that role without being a key.
+	 * A new key in the UT2004 layout (four dash-separated groups of five upper-case letters and digits), from the
+	 * system's random source. Like the OldUnreal 3374 client, which makes a unique key when none is installed.
+	 */
+	FString GenerateKey()
+	{
+		static const TCHAR Alphabet[] = TEXT("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+		std::random_device Rng;
+		FString Chars;
+		for (int32 i = 0; i < 20; ++i)
+		{
+			Chars.AppendChar(Alphabet[Rng() % 36]);
+		}
+		FString Key = Normalize(Chars);
+		Wipe(Chars);
+		return Key;
+	}
+
+	/**
+	 * Keeps Key in the install as UT2004 does on Linux (System/cdkey) and as a Registry_Fix.reg for Wine (regedit),
+	 * with the same values a Windows install registers. False when System/cdkey cannot be written. The .reg is written
+	 * only after System/cdkey, so a failed write never leaves behind a key other than the one in use.
+	 */
+	bool WriteInstallKey(const FString& Install, const FString& Key)
+	{
+		// the install's own System folder, in whatever case it has (as ReadInstallKey finds it)
+		FString SystemDir;
+		IFileManager::Get().IterateDirectory(*Install, [&SystemDir](const TCHAR* Path, bool bIsDir)
+		{
+			if (bIsDir && FPaths::GetCleanFilename(Path).Equals(TEXT("System"), ESearchCase::IgnoreCase))
+			{
+				SystemDir = Path;
+				return false;
+			}
+			return true;
+		});
+		if (SystemDir.IsEmpty())
+		{
+			SystemDir = FPaths::Combine(Install, TEXT("System"));
+		}
+		FString Line = Key + TEXT("\n");
+		const bool bOk = FFileHelper::SaveStringToFile(Line, *FPaths::Combine(SystemDir, TEXT("cdkey")));
+		Wipe(Line);
+		if (!bOk)
+		{
+			return false;
+		}
+		// Folder as the game sees it: a Windows path (Wine maps "/" to drive Z:), escaped for a .reg string value
+		FString Folder = FPaths::ConvertRelativePathToFull(Install);
+		FPaths::NormalizeDirectoryName(Folder);
+#if !PLATFORM_WINDOWS
+		Folder = TEXT("Z:") + Folder;
+#endif
+		Folder = Folder.Replace(TEXT("\\"), TEXT("/")).Replace(TEXT("/"), TEXT("\\\\")).Replace(TEXT("\""), TEXT("\\\""));
+		// UT2004.exe is 32-bit: in a 64-bit prefix it reads the WOW6432Node view, where plain "wine regedit" (64-bit)
+		// would not put the first section. Both sections, so either regedit imports it where the game looks.
+		FString Values = FString::Printf(TEXT("\"CDKey\"=\"%s\"\r\n\"Folder\"=\"%s\"\r\n\"Version\"=\"3369\"\r\n"), *Key, *Folder);
+		FString Reg = FString::Printf(TEXT("Windows Registry Editor Version 5.00\r\n\r\n[HKEY_LOCAL_MACHINE\\SOFTWARE\\Unreal Technology\\Installed Apps\\UT2004]\r\n%s\r\n"
+			"[HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Unreal Technology\\Installed Apps\\UT2004]\r\n%s"), *Values, *Values);
+		// the .reg is a convenience for Wine (regedit); System/cdkey holds the key
+		FFileHelper::SaveStringToFile(Reg, *FPaths::Combine(Install, TEXT("Registry_Fix.reg")));
+		Wipe(Reg);
+		Wipe(Values);
+		return true;
+	}
+
+	/**
+	 * The secret behind the AUTH HASH: always a CD key. Without one, a key is generated and kept in the install
+	 * (UE2NetCDKey::EnsureInstallKey), or in the settings when the install cannot be written.
 	 */
 	void ReadSecret(FString& OutSecret)
 	{
@@ -170,19 +255,39 @@ namespace UE2NetCDKeyLocal
 		{
 			return;
 		}
+		const FString Install = IgnoreInstalledKey() ? FString() : ArenaContent::FindUT2004Install();
+		if (!Install.IsEmpty() && UE2NetCDKey::EnsureInstallKey(Install) && ReadKey(OutSecret))
+		{
+			return;
+		}
 		UArenaUserSettings* Settings = UArenaUserSettings::Get();
-		bool bValid = Settings->NetIdentity.Len() == 32;
-		for (TCHAR C : Settings->NetIdentity)
-		{
-			bValid = bValid && FChar::IsHexDigit(C);
-		}
-		if (!bValid)
-		{
-			Settings->NetIdentity = FGuid::NewGuid().ToString(EGuidFormats::Digits).ToLower();
-			Settings->Save();
-		}
-		OutSecret = Settings->NetIdentity;
+		Settings->GeneratedCDKey = GenerateKey();
+		Settings->Save();
+		OutSecret = Settings->GeneratedCDKey;
 	}
+}
+
+bool UE2NetCDKey::EnsureInstallKey(const FString& Install)
+{
+	using namespace UE2NetCDKeyLocal;
+	FString Key;
+	if (ReadInstallKey(Install, Key))
+	{
+		Wipe(Key);
+		return true;
+	}
+	Key = GenerateKey();
+	const bool bOk = WriteInstallKey(Install, Key);
+	Wipe(Key);
+	if (bOk)
+	{
+		UE_LOG(LogUE2Net, Log, TEXT("CD key: none in %s; generated one into System/cdkey and Registry_Fix.reg"), *Install);
+	}
+	else
+	{
+		UE_LOG(LogUE2Net, Warning, TEXT("CD key: none in %s, and it cannot be written; a generated key is kept in the settings"), *Install);
+	}
+	return bOk;
 }
 
 FString UE2NetCDKey::ComputeAuthHash()

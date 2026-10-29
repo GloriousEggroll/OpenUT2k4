@@ -187,102 +187,44 @@ namespace ArenaSPDataLocal
 	TArray<FPlayerRecord> ReadPlayerLists()
 	{
 		TArray<FPlayerRecord> Out;
-		// the .upl character lists: the content cache's copy (localization folder), else the install's System folder
-		TArray<FString> Dirs;
-		Dirs.Add(ArenaContent::GetCacheDir() / TEXT("localization"));
-		const FString Install = ArenaContent::FindUT2004Install();
-		if (!Install.IsEmpty())
+		for (const TMap<FString, FString>& KV : ReadPlayerListFields())
 		{
-			Dirs.Add(Install / TEXT("System"));
-		}
-		TSet<FString> Seen;
-		for (const FString& Dir : Dirs)
-		{
-			TArray<FString> Files;
-			IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.upl")), true, false);
-			Files.Sort();
-			for (const FString& F : Files)
+			FPlayerRecord P;
+			auto S = [&KV](const TCHAR* K) { const FString* V = KV.Find(K); return V ? *V : FString(); };
+			auto N = [&KV](const TCHAR* K) { const FString* V = KV.Find(K); return V ? FCString::Atof(**V) : 0.f; };
+			P.DefaultName = S(TEXT("defaultname"));
+			if (P.DefaultName.IsEmpty())
 			{
-				FString Text;
-				if (Seen.Contains(F.ToLower()) || !FFileHelper::LoadFileToString(Text, *(Dir / F)))
-				{
-					continue;
-				}
-				Seen.Add(F.ToLower());
-				TArray<FString> Lines;
-				Text.ParseIntoArrayLines(Lines);
-				for (const FString& Line : Lines)
-				{
-					if (!Line.StartsWith(TEXT("Player=("), ESearchCase::IgnoreCase))
-					{
-						continue;
-					}
-					// key=value pairs separated by commas outside quotes
-					TMap<FString, FString> KV;
-					const FString Body = Line.Mid(8, Line.Len() - 8);
-					FString Cur;
-					bool bQuote = false;
-					auto Flush = [&]()
-					{
-						FString K, V;
-						if (Cur.Split(TEXT("="), &K, &V))
-						{
-							KV.Add(K.TrimStartAndEnd().ToLower(), Unquote(V));
-						}
-						Cur.Reset();
-					};
-					for (TCHAR Ch : Body)
-					{
-						if (Ch == TEXT('"'))
-						{
-							bQuote = !bQuote;
-						}
-						if (!bQuote && (Ch == TEXT(',') || Ch == TEXT(')')))
-						{
-							Flush();
-							continue;
-						}
-						Cur.AppendChar(Ch);
-					}
-					Flush();
-					FPlayerRecord P;
-					auto S = [&KV](const TCHAR* K) { const FString* V = KV.Find(K); return V ? *V : FString(); };
-					auto N = [&KV](const TCHAR* K) { const FString* V = KV.Find(K); return V ? FCString::Atof(**V) : 0.f; };
-					P.DefaultName = S(TEXT("defaultname"));
-					if (P.DefaultName.IsEmpty())
-					{
-						continue;
-					}
-					P.Race = S(TEXT("race"));
-					P.Mesh = S(TEXT("mesh"));
-					P.Species = S(TEXT("species"));
-					P.BodySkin = S(TEXT("bodyskin"));
-					P.FaceSkin = S(TEXT("faceskin"));
-					P.Portrait = S(TEXT("portrait"));
-					P.TextName = S(TEXT("text"));
-					P.Sex = S(TEXT("sex"));
-					P.Menu = S(TEXT("menu"));
-					P.FavoriteWeapon = S(TEXT("favoriteweapon"));
-					P.Accuracy = N(TEXT("accuracy"));
-					P.Aggressiveness = N(TEXT("aggressiveness"));
-					P.StrafingAbility = N(TEXT("strafingability"));
-					P.CombatStyle = N(TEXT("combatstyle"));
-					P.Tactics = N(TEXT("tactics"));
-					P.ReactionTime = N(TEXT("reactiontime"));
-					P.Jumpiness = N(TEXT("jumpiness"));
-					P.BotUse = KV.Contains(TEXT("botuse")) ? int32(N(TEXT("botuse"))) : 1;
-					// characters of packs that are not in the converted content (no portrait / skins) are left out, like
-					// characters of packages a UT2004 install does not have
-					FString PortraitPkg;
-					if (P.Portrait.Split(TEXT("."), &PortraitPkg, nullptr) && !IFileManager::Get().DirectoryExists(*(ArenaContent::GetCacheDir() / TEXT("textures") / PortraitPkg)))
-					{
-						continue;
-					}
-					if (!Out.ContainsByPredicate([&P](const FPlayerRecord& R) { return R.DefaultName.Equals(P.DefaultName, ESearchCase::IgnoreCase); }))
-					{
-						Out.Add(P);
-					}
-				}
+				continue;
+			}
+			P.Race = S(TEXT("race"));
+			P.Mesh = S(TEXT("mesh"));
+			P.Species = S(TEXT("species"));
+			P.BodySkin = S(TEXT("bodyskin"));
+			P.FaceSkin = S(TEXT("faceskin"));
+			P.Portrait = S(TEXT("portrait"));
+			P.TextName = S(TEXT("text"));
+			P.Sex = S(TEXT("sex"));
+			P.Menu = S(TEXT("menu"));
+			P.FavoriteWeapon = S(TEXT("favoriteweapon"));
+			P.Accuracy = N(TEXT("accuracy"));
+			P.Aggressiveness = N(TEXT("aggressiveness"));
+			P.StrafingAbility = N(TEXT("strafingability"));
+			P.CombatStyle = N(TEXT("combatstyle"));
+			P.Tactics = N(TEXT("tactics"));
+			P.ReactionTime = N(TEXT("reactiontime"));
+			P.Jumpiness = N(TEXT("jumpiness"));
+			P.BotUse = KV.Contains(TEXT("botuse")) ? int32(N(TEXT("botuse"))) : 1;
+			// characters of packs that are not in the converted content (no portrait / skins) are left out, like
+			// characters of packages a UT2004 install does not have
+			FString PortraitPkg;
+			if (P.Portrait.Split(TEXT("."), &PortraitPkg, nullptr) && !IFileManager::Get().DirectoryExists(*(ArenaContent::GetCacheDir() / TEXT("textures") / PortraitPkg)))
+			{
+				continue;
+			}
+			if (!Out.ContainsByPredicate([&P](const FPlayerRecord& R) { return R.DefaultName.Equals(P.DefaultName, ESearchCase::IgnoreCase); }))
+			{
+				Out.Add(P);
 			}
 		}
 		return Out;
@@ -463,6 +405,83 @@ namespace ArenaSPDataLocal
 #endif
 		return D;
 	}
+}
+
+TArray<TMap<FString, FString>> ArenaSP::ReadPlayerListFields()
+{
+	TArray<TMap<FString, FString>> Out;
+	// the .upl character lists: the content cache's copy (localization folder), else the install's System folder
+	TArray<FString> Dirs;
+	Dirs.Add(ArenaContent::GetCacheDir() / TEXT("localization"));
+	const FString Install = ArenaContent::FindUT2004Install();
+	if (!Install.IsEmpty())
+	{
+		Dirs.Add(Install / TEXT("System"));
+	}
+	TSet<FString> Seen;
+	for (const FString& Dir : Dirs)
+	{
+		TArray<FString> Files;
+		IFileManager::Get().FindFiles(Files, *(Dir / TEXT("*.upl")), true, false);
+		Files.Sort();
+		for (const FString& F : Files)
+		{
+			FString Text;
+			if (Seen.Contains(F.ToLower()) || !FFileHelper::LoadFileToString(Text, *(Dir / F)))
+			{
+				continue;
+			}
+			Seen.Add(F.ToLower());
+			TArray<FString> Lines;
+			Text.ParseIntoArrayLines(Lines);
+			for (const FString& Line : Lines)
+			{
+				TMap<FString, FString> KV;
+				if (ParsePlayerLine(Line, KV))
+				{
+					Out.Add(MoveTemp(KV));
+				}
+			}
+		}
+	}
+	return Out;
+}
+
+bool ArenaSP::ParsePlayerLine(const FString& Line, TMap<FString, FString>& OutFields)
+{
+	OutFields.Reset();
+	if (!Line.StartsWith(TEXT("Player=("), ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+	// key=value pairs separated by commas outside quotes
+	const FString Body = Line.Mid(8);
+	FString Cur;
+	bool bQuote = false;
+	auto Flush = [&]()
+	{
+		FString K, V;
+		if (Cur.Split(TEXT("="), &K, &V))
+		{
+			OutFields.Add(K.TrimStartAndEnd().ToLower(), ArenaSPDataLocal::Unquote(V));
+		}
+		Cur.Reset();
+	};
+	for (TCHAR Ch : Body)
+	{
+		if (Ch == TEXT('"'))
+		{
+			bQuote = !bQuote;
+		}
+		if (!bQuote && (Ch == TEXT(',') || Ch == TEXT(')')))
+		{
+			Flush();
+			continue;
+		}
+		Cur.AppendChar(Ch);
+	}
+	Flush();
+	return true;
 }
 
 const ArenaSP::FData& ArenaSP::Get()

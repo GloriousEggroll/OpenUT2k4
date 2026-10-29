@@ -7,6 +7,7 @@
 #include "Download/ArenaDlCab.h"
 #include "Download/ArenaDlHttp.h"
 #include "Download/ArenaDlIso.h"
+#include "Net/UE2NetCDKey.h"
 #include "Containers/Ticker.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformFileManager.h"
@@ -686,6 +687,8 @@ void FArenaContentDownload::Run(FOptions Options)
 		Finish(EArenaDownloadStage::Failed, FString::Printf(TEXT("Cannot rename %s to %s"), *WorkDir, *Options.InstallDir));
 		return;
 	}
+	// the image has no CD key: make one, as the OldUnreal client would on its first start
+	UE2NetCDKey::EnsureInstallKey(Options.InstallDir);
 	if (bDownload && !Options.bKeepIso)
 	{
 		FM.Delete(*IsoPath, false, true, true);

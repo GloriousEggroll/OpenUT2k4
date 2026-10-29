@@ -195,6 +195,15 @@ namespace ArenaSP
 	/** Value of Key in a "(Key=Value,Key2=\"Text\")" struct text (quotes removed). */
 	OPENUT2K4_API FString StructField(const FString& StructText, const TCHAR* Key);
 
+	/**
+	 * The fields of a System .upl "Player=(DefaultName=\"Gorge\",Mesh=Jugg.JuggMaleA,...)" line by lower-case key, quotes
+	 * removed (a malformed pair such as "Tactics+1.0" is left out). False for any other line.
+	 */
+	OPENUT2K4_API bool ParsePlayerLine(const FString& Line, TMap<FString, FString>& OutFields);
+	/** Every "Player=" record of the .upl files (the content cache's copies, then the install's System folder; each file
+	 *  once, in name order), as ParsePlayerLine fields, in file order. Read from disk on each call. */
+	OPENUT2K4_API TArray<TMap<FString, FString>> ReadPlayerListFields();
+
 	/** Localized string of the stock .int files, Fallback otherwise. */
 	OPENUT2K4_API FString Loc(const TCHAR* Package, const TCHAR* Section, const TCHAR* Key, const FString& Fallback);
 	/** Element of a localized array value ("(\"A\",\"B\")"). */
